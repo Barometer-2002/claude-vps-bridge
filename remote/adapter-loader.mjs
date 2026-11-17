@@ -7,6 +7,11 @@ const here=path.dirname(fileURLToPath(import.meta.url));
 export async function loadClaudeAdapter(){
   const config=JSON.parse(await fs.readFile(path.join(here,'adapter-selection.json'),'utf8'));
   if(config.schemaVersion!==1||!path.isAbsolute(config.modulePath))throw new Error('Invalid managed Claude adapter selection');
+  const platformRoot=path.resolve(config.modulePath,'../../../..');
+  for(const name of ['cli','cli-linux-x64']){
+    const pkg=JSON.parse(await fs.readFile(path.join(platformRoot,'..',name,'package.json'),'utf8'));
+    if(pkg.name!=='@codexhost/'+name||pkg.version!==config.version)throw new Error('Managed Claude dependency version mismatch');
+  }
   const bytes=await fs.readFile(config.modulePath);
   const sha=createHash('sha256').update(bytes).digest('hex');
   if(sha!==config.sha256)throw new Error('Managed Claude adapter changed; validate the candidate before selecting it');

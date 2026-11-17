@@ -37,9 +37,12 @@ try {
     if ($request.action -ne 'cli') { Fail-Bridge 'INVALID_ARGUMENT' 'Use the harness, delegate or thread CLI commands, or resolve an explicit agent/native-session pair.' }
     if ($request.argv -isnot [array] -or @($request.argv | Where-Object { $_ -isnot [string] }).Count -ne 0) { Fail-Bridge 'INVALID_ARGUMENT' 'Expected an argument array of strings.' }
     $cliArguments = @($request.argv)
-    if ($cliArguments.Count -eq 0 -or $cliArguments[0] -in @('--help','-h')) { $cliArguments = @('delegate','--help') }
+    if ($cliArguments.Count -eq 0) { Fail-Bridge 'INVALID_ARGUMENT' 'agent requires a non-empty argv array. Use explicit --help for help.' }
+    if ($cliArguments[0] -in @('--help','-h')) { $cliArguments = @('delegate','--help') }
     if ($cliArguments[0] -notin @('harness','delegate','thread')) { Fail-Bridge 'UNSUPPORTED_COMMAND_GROUP' 'This bridge forwards the local CodexHost harness, delegate and thread interfaces. Other Windows terminal operations use windows-run.' }
-    if ($cliArguments[0] -eq 'thread' -and $cliArguments[1] -in @('read','wait','send','cancel','watch') -and $cliArguments.Count -ge 3 -and $cliArguments[2] -notlike '--*') {
+    # Every thread subcommand takes the Thread as its first positional argument
+    # (read, send, answer, file, ...); new upstream subcommands need no list update.
+    if ($cliArguments[0] -eq 'thread' -and $cliArguments.Count -ge 3 -and $cliArguments[1] -notlike '-*' -and $cliArguments[2] -notlike '-*') {
         $reference = $cliArguments[2]
         $parsedId = [guid]::Empty
         if ($reference -notmatch '^(codex|thread)://' -and ![guid]::TryParse($reference,[ref]$parsedId)) {

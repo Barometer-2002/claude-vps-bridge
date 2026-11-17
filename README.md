@@ -31,9 +31,9 @@ Claude VPS Bridge 是一个 [CodexHost](https://github.com/BytePioneer-AI/codex-
 
 | Windows 本机 | Linux x64 VPS |
 |---|---|
-| CodexHost 0.16.1、PowerShell 7、SSH 客户端、Python 3.11+、npm、ripgrep（`rg`） | Python 3、Bash、Node.js 24/npm、官方 Claude Code |
+| CodexHost 0.20.0 或更新版本、PowerShell 7、SSH 客户端、Python 3.11+、npm、ripgrep（`rg`） | Python 3、Bash、Node.js 24/npm、官方 Claude Code |
 
-从 [CodexHost 官方发布页](https://github.com/BytePioneer-AI/codex-host/releases/tag/v0.16.1)安装宿主，在 VPS 上安装并登录 [Claude Code](https://code.claude.com/docs/en/setup)，再配置 Windows 到 VPS 的 SSH 连接。具体步骤见[安装指南](docs/SETUP.md)。
+从 [CodexHost 官方发布页](https://github.com/BytePioneer-AI/codex-host/releases/latest)安装最新版宿主，在 VPS 上安装并登录 [Claude Code](https://code.claude.com/docs/en/setup)，再配置 Windows 到 VPS 的 SSH 连接。具体步骤见[安装指南](docs/SETUP.md)。
 
 本机无需安装或登录 Claude Code，也无需开启 Windows SSH 服务。
 
@@ -64,7 +64,7 @@ Report the current Windows project path. Do not modify any files.
 
 将文件保存到项目后，可以直接告诉 Claude 文件路径，让它查看或处理。
 
-直接拖入、粘贴图片还需要 CodexHost 的附件传递修复。这部分采用独立修复包，与插件分开安装；下载与使用步骤见[附件支持](docs/ATTACHMENTS.md)。
+也可以直接拖入或粘贴图片，CodexHost 原生支持，只发图片不写文字也可以。细节见[附件支持](docs/ATTACHMENTS.md)。
 
 ## 工作原理
 
@@ -82,7 +82,7 @@ Report the current Windows project path. Do not modify any files.
 |---|---|
 | 配置 SSH、登录 Claude、完成安装 | [安装指南](docs/SETUP.md) |
 | 使用项目规则、Skills、权限与可选 MCP | [配置说明](docs/CONFIGURATION.md) |
-| 使用图片、PDF 和附件修复 | [附件支持](docs/ATTACHMENTS.md) |
+| 使用图片和 PDF | [附件支持](docs/ATTACHMENTS.md) |
 | 升级、诊断、恢复或停用插件 | [维护说明](docs/OPERATIONS.md) |
 | 了解已知问题和使用细节 | [常见问题](docs/FAQ.md) |
 
@@ -100,9 +100,9 @@ Report the current Windows project path. Do not modify any files.
 
 打开原聊天即可恢复对应的远端会话。新建聊天会建立独立会话；fork 创建聊天分支，但仍共用项目文件。
 
-**更新 CodexHost 后，附件修复怎么办？**
+**CodexHost 出了新版本，能直接升级吗？**
 
-附件修复与宿主版本对应，升级前查看[附件支持](docs/ATTACHMENTS.md)。插件更新和宿主附件修复分别维护。
+可以。插件跟随 CodexHost 最新正式版（最低 0.20.0），不修改宿主文件。宿主自动更新后，重新运行安装脚本，VPS 端会一起升到官方最新版：新版本先通过包版本、插件 API 和适配器加载检查才启用，不通过就保留当前版本。见[维护说明](docs/OPERATIONS.md#升级)。
 
 ## 项目结构
 
@@ -110,7 +110,6 @@ Report the current Windows project path. Do not modify any files.
 plugin/        Windows 本机插件，安装到 CodexHost 插件目录
 remote/        VPS 端桥接，安装到远端用户目录
 installer/     配置、安装、升级与停用脚本
-compatibility/ CodexHost 附件修复
 docs/          安装、配置、架构与维护文档
 examples/      配置示例
 scripts/       源码与公开内容检查

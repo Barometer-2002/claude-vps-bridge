@@ -2,7 +2,9 @@ param([switch]$Disable, [switch]$Uninstall)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'installer\select-python.ps1')
 $bridgePython = Resolve-BridgePython
-if ($env:CODEXHOST_PLUGIN_DIRECTORY -or $env:CODEXHOST_DATA_DIR) { throw 'A plugin directory override is present; inspect the active runtime before installing.' }
+# Host-started shells inherit the default CODEXHOST_DATA_DIR; only other locations stop here.
+& $bridgePython (Join-Path $PSScriptRoot 'installer\bridge_config.py') --check-roots
+if ($LASTEXITCODE -ne 0) { throw 'A custom CodexHost plugin/data location is set; inspect the active runtime before installing.' }
 if ($Disable -or $Uninstall) {
     & $bridgePython (Join-Path $PSScriptRoot 'installer\disable.py')
     if ($LASTEXITCODE -ne 0) { throw '停用未完成，请查看错误信息；用户数据已保留。' }

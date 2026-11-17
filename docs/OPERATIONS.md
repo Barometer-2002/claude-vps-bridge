@@ -76,10 +76,14 @@ node .\plugin\maintenance.mjs --apply --age-days 30 --max-bytes 268435456
 ## 升级
 
 1. 保留自己的本地配置、远端私有 MCP 配置和安装事务目录。
-2. 查看版本说明，确认宿主兼容范围。
+2. 查看版本说明。宿主使用官方最新版即可，插件支持的最低版本见 `installer/dependency-policy.json`。
 3. 执行 `pwsh -NoProfile -File .\install.ps1`。
 4. 安装校验通过后正常退出并重开 CodexHost。
 5. 在原来的小测试项目中验证恢复、读取与写入。
+
+宿主自动更新后，重新运行安装脚本即可让 VPS 端跟上。安装会在 VPS 上查询官方 `@codexhost/cli` 的最新版，先装到临时目录，核对包版本、插件 API、适配器入口和适配器 SHA256，通过后再切换依赖选择；不通过就保留当前已选版本，原因写在输出的 `notes` 里。准备结果保存在本机 `installation-dependency.json`，部署和校验都以它为准；旧版本的依赖目录和选择保留，可随事务回滚。升级校验比对 health 返回的依赖版本、适配器哈希、插件版本和协议，任一不符即失败。校验通过只说明新文件就位，正常重开宿主后才会生效。
+
+VPS 上的受管文件记录在 `managed-files.json`。新版本不再发布的文件会在同一事务中删除并可回滚；无法确认属于本插件的文件不会被删除，内容被改动过的退役文件会让安装停止，需要人工检查。
 
 更新不应重新要求 Claude 登录。只有官方运行时明确报告授权失效时，才由使用者进入 VPS 重新登录。
 
@@ -95,7 +99,7 @@ pwsh -NoProfile -File .\install.ps1 -Disable
 pwsh -NoProfile -File .\install.ps1 -Uninstall
 ```
 
-已核查的 CodexHost 0.15.0 CLI 未提供插件停用命令，宿主从 `$HOME/.codexhost/plugins/enabled.json` 读取启用列表。脚本只移除 `claude-vps`，保留其他条目，正常退出并重开宿主后生效。不修改宿主文件，不停止任务进程，也不连接 VPS；先让当前任务结束再停用。
+已核查的 CodexHost 0.20.0 CLI 未提供插件停用命令，宿主从 `$HOME/.codexhost/plugins/enabled.json` 读取启用列表。脚本只移除 `claude-vps`，保留其他条目，正常退出并重开宿主后生效。不修改宿主文件，不停止任务进程，也不连接 VPS；先让当前任务结束再停用。
 
 旧版宿主补丁不由安装、升级、停用或回滚自动撤销。重装或升级 CodexHost 可以清除旧补丁，随后按当前插件安装步骤检查。不要用旧宿主备份覆盖新版宿主。
 

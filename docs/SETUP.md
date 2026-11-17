@@ -2,7 +2,7 @@
 
 ## 1. 先准备两端环境
 
-Windows：CodexHost 0.16.1、PowerShell 7、OpenSSH **客户端**、Python 3.11+、npm 与 [ripgrep](https://github.com/BurntSushi/ripgrep#installation)。`rg --version` 应正常返回版本，项目搜索使用该程序。直接拖入或粘贴图片的版本要求与独立修复包用法见[附件支持](ATTACHMENTS.md)。npm 用于准备依赖，安装和插件运行使用 Host 自带 Node；开发检查另需 Node.js 24。可选浏览器需要本机 Chrome。
+Windows：CodexHost 0.20.0 或更新版本、PowerShell 7、OpenSSH **客户端**、Python 3.11+、npm 与 [ripgrep](https://github.com/BurntSushi/ripgrep#installation)。`rg --version` 应正常返回版本，项目搜索使用该程序。拖入和粘贴图片由宿主原生支持，说明见[附件支持](ATTACHMENTS.md)。npm 用于准备依赖，安装和插件运行使用 Host 自带 Node；开发检查另需 Node.js 24。可选浏览器需要本机 Chrome。
 
 Linux：x64、Python 3、Bash、Node.js 24/npm、官方 Claude Code。使用有权写入自身主目录的普通用户即可，不要求 root。PDF 按页读取另外需要 `pdftoppm`（通常来自 poppler-utils），不影响基础聊天。
 
@@ -71,7 +71,7 @@ pwsh -NoProfile -File .\install.ps1
 
 安装准备依赖并更新两端插件代码与启用条目，保留会话和用户数据，不修改宿主文件。命令以当前 Windows 用户权限运行。旧版插件曾给宿主打补丁的用户，请重装或升级 CodexHost 清除旧补丁，详见[停用与升级](OPERATIONS.md)。
 
-目前安装脚本不支持 `CODEXHOST_DATA_DIR` 或 `CODEXHOST_PLUGIN_DIRECTORY` 自定义目录；发现这些覆盖项会停止，不猜测目标位置。
+目前安装脚本只支持默认位置（`%USERPROFILE%\.codexhost`）。`CODEXHOST_DATA_DIR` 或 `CODEXHOST_PLUGIN_DIRECTORY` 指向其他目录时会停止，不猜测目标位置；CodexHost 给子进程设置的默认值不受影响。
 
 ## 5. 试用
 

@@ -8,7 +8,7 @@ node = shutil.which('node')
 if not node:
     raise SystemExit('Node.js 24 must be on PATH')
 
-python_files = [*REMOTE.glob('*.py'), *INSTALLER.glob('*.py'), *(ROOT / 'scripts').glob('*.py'), *(ROOT / 'compatibility').rglob('*.py')]
+python_files = [*REMOTE.glob('*.py'), *INSTALLER.glob('*.py'), *(ROOT / 'scripts').glob('*.py')]
 python_files += [REMOTE / 'windows-agent', REMOTE / 'windows-workspace']
 for file in python_files:
     if not file.name.startswith('test-'):
@@ -33,8 +33,9 @@ for name in re.findall(r"'([^']+)'", names):
     if not (REMOTE / name).is_file():
         raise SystemExit('Installer copies a missing remote file: remote/' + name)
 
-# The plugin and remote copies of the version must match.
-version = re.search(r"bridgeVersion:'([^']+)'", (REMOTE / 'remote-server.mjs').read_text(encoding='utf-8')).group(1)
-if version != manifest['version']:
-    raise SystemExit('Version mismatch: manifest ' + manifest['version'] + ', remote ' + version)
+# Remote metadata is generated from these same source files during deployment.
+for name in ('bridge-manifest.json','workspace-request-schema.json'):
+    if "payload['"+name+"']" not in deploy:raise SystemExit('Missing generated metadata: '+name)
+if 'bridgeVersion:' in (REMOTE / 'remote-server.mjs').read_text(encoding='utf-8'):
+    raise SystemExit('Remote version must come from the deployed manifest')
 print('PASS Source syntax, plugin entry, shared transport and install manifest; runtime acceptance was not run')

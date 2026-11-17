@@ -1,7 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "package": "@codexhost/cli",
-  "version": "0.16.1",
+  "track": "latest",
+  "minimumVersion": "0.20.0",
   "pluginApiVersion": 1,
   "bridgeProtocol": 2
 }

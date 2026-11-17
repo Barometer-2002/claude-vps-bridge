@@ -4,12 +4,12 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 const id=value=>{if(typeof value!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(value))throw new Error('Invalid fork identity');return value;};
 const posix=value=>value.replaceAll('\\','/');
-export function forkPrefix(snapshot,sourceRef,checkpoint){
+// Only ownership is checked before the fork. Which Turn a checkpoint names is the
+// official adapter's rule (0.21.0 accepts any root record of the Turn and split
+// stream IDs); repeating it here diverged whenever upstream refined it.
+export function checkForkSource(sourceRef,checkpoint){
   if(sourceRef?.harnessId!=='claude-code'||checkpoint?.harnessId!==sourceRef.harnessId||checkpoint.nativeSessionId!==sourceRef.nativeSessionId)throw new Error('Fork checkpoint does not belong to the source Claude session');
   id(sourceRef.nativeSessionId);id(checkpoint.checkpointId);
-  const index=snapshot.turns.findIndex(t=>t.checkpoint?.checkpointId===checkpoint.checkpointId&&t.nativeTurnRef?.nativeSessionId===sourceRef.nativeSessionId);
-  if(index<0)throw new Error('Fork checkpoint is unavailable; no branch was created');
-  return snapshot.turns.slice(0,index+1);
 }
 export async function inheritMedia(root,sourceBinding,turns,mediaKey){
   const mediaRoot=posix(path.join(root,'.bridge-media')),sourceKey=id(sourceBinding.mediaKey),ownKey=id(mediaKey);
@@ -32,8 +32,11 @@ export async function inheritMedia(root,sourceBinding,turns,mediaKey){
   await writeFile(temp,JSON.stringify({files:[...files.values()]}),{mode:0o600});await rename(temp,file);
   return [...files.values()];
 }
+// The official fork decides the boundary; its derived history is the source prefix.
+// Every pair is then checked for isolated identities and identical input.
 export function pairForkTurns(sourceTurns,derivedTurns){
-  if(sourceTurns.length!==derivedTurns.length)throw new Error('Native fork prefix length differs; bridge history was not copied');
+  if(!derivedTurns.length||derivedTurns.length>sourceTurns.length)throw new Error('Native fork prefix length differs; bridge history was not copied');
+  sourceTurns=sourceTurns.slice(0,derivedTurns.length);
   for(const turns of [sourceTurns,derivedTurns]){
     const session=turns[0]?.nativeTurnRef?.nativeSessionId,keys=new Set();
     for(const turn of turns){const ref=turn.nativeTurnRef;if(!ref||ref.nativeSessionId!==session||typeof ref.nativeTurnKey!=='string'||!ref.nativeTurnKey||keys.has(ref.nativeTurnKey))throw new Error('Native fork contains inconsistent session identities or duplicate turn keys');keys.add(ref.nativeTurnKey);}

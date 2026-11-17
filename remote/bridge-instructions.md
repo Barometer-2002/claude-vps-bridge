@@ -29,7 +29,7 @@ Bash 只是传输通道。每次只发一条命令，参数是一个用单引号
 | `artifact` | 核对生成的文件，返回可放进回答的 Markdown |
 | `capability` | 读取本机 Skill/命令/Agent 定义（`skill:name`）及其附带文件 |
 | `isolation` | 用户明确同意并行改代码时使用 Git worktree；`apply` 只做快进合并 |
-| `agent` | 官方 CodexHost CLI 参数（`harness`、`delegate`、`thread`） |
+| `agent` | 必填 `argv` 字符串数组，传官方 CodexHost CLI 参数（`harness`、`delegate`、`thread`）；例如 `{"action":"agent","argv":["thread","list"]}`。帮助需显式传 `["--help"]` |
 | `info` / `status` / `context` | 项目、规则、权限模式、兼容情况和任务状态 |
 
 ## 重要规则
@@ -38,6 +38,9 @@ Bash 只是传输通道。每次只发一条命令，参数是一个用单引号
 - `requestId` 是幂等的。命令启动结果不确定时，先用同一个编号查询；用同一个编号重新提交也安全，不会重复执行。绝不要换新编号重试，也不要重做。
 - 命令执行完不等于成功：要看 `exitCode` 和实际输出。
 - 同一项目的写入和命令共用一把写锁。委派出去的 Agent 会一直占着，直到你读取或等待它的结果。
+- 给当前项目持有写锁的同一个子线程追加指令，使用 `argv` 中的 `thread send <thread> --message <text> --steer true`，沿用原写入所有权。`--steer true` 与 `--interrupt` 互斥。
+- 读取会话优先用 `--format compact`，内容简短。`delegate start`、`thread send/read/wait` 需要读出任务身份和终态，若指定 `text` 会改用完整 JSON；其他命令的 `text` 输出放在 `text` 字段。CLI 失败会返回错误。
+- 每个 action 仅接受定义中的字段。字段、类型或必填项错误会返回 `INVALID_ARGUMENT` 和允许字段。`agent` 的 CLI 数组字段是 `argv`。
 - 只有用户要求时才委派，指定明确的 harness，用它的默认设置。读取会话不是委派，只读取时要说清楚。
 - 计划模式下，写入、运行程序和委派都会被拒绝。
 - Skill 里的脚本用 `run` 在 Windows 上执行；不要在 VPS 上执行 `!` 替换。Skill 需要的工具这里没有时，直接说明缺什么。

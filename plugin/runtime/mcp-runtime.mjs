@@ -128,8 +128,9 @@ async function request(request,info){
     try{c.writer.send(outgoing);}catch(error){stop(key,error,c);}
   });
 }
-return {request,closeSession,close(){for(const item of opening.values())item.cancelled=true;for(const key of clients.keys())stop(key);},inspect(){return {clients:clients.size,opening:opening.size,closing:closing.size,pending:[...clients.values()].reduce((n,c)=>n+c.pending.size,0)};}};
+return {request,closeSession,hasSession(sessionId){return [...clients.values(),...opening.values(),...closing].some(item=>item.sessionId===sessionId);},close(){for(const item of opening.values())item.cancelled=true;for(const key of clients.keys())stop(key);},inspect(){return {clients:clients.size,opening:opening.size,closing:closing.size,pending:[...clients.values()].reduce((n,c)=>n+c.pending.size,0)};}};
 }
 let runtime;
 export function mcpRequest(request,info){runtime??=createMcpRuntime({limits:getBridgeConfig().optionalTools?.playwright??{}});return runtime.request(request,info);}
 export function closeMcpSession(sessionId){runtime?.closeSession(sessionId);}
+export function hasMcpSession(sessionId){return runtime?.hasSession(sessionId)??false;}

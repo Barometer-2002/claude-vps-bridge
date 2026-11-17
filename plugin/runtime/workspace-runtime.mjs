@@ -10,6 +10,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { brokerRequest, ensureBroker } from './job-broker.mjs';
+import {deliveryOutcome} from './delivery-outcome.mjs';
+import {validateRequest} from './request-schema.mjs';
+import {executeAgentCli} from './agent-cli.mjs';
 import {acquireWriter,withWriter,withWriters,writerStatus} from './task-coordination.mjs';
 import {boundedLog} from './bounded-log.mjs';
 import {readJobOutput,jobOutputTail} from './job-output.mjs';
@@ -189,13 +192,16 @@ async function jobStatus(directory,{includeLogs=true}={}) {
   return {...value,...logs,logs:{stdout:path.join(directory,'stdout.log'),stderr:path.join(directory,'stderr.log')},nextAction:uncertain?'Inspect this task and its output files; do not resubmit':logs.output?.stdout.truncated||logs.output?.stderr.truncated?'Output is a preview only. Use job operation=output with stream and offset=0, then nextOffset, to read the saved output without rerunning. New jobs retain the entire stream; legacy rotated jobs may have missing history.':value.status==='succeeded'?'Open artifacts or read output':['running','starting','queued'].includes(value.status)?'Query or cancel this same requestId':'Read output before deciding on a new task'};
 }
 async function projectJobs(info){const root=path.join(state,'jobs',info.projectId),ids=await fs.readdir(root).catch(e=>e.code==='ENOENT'?[]:Promise.reject(e));const result=[];for(let i=0;i<ids.length;i+=20)result.push(...await Promise.all(ids.slice(i,i+20).map(id=>jobStatus(path.join(root,id),{includeLogs:false}))));return result;}
+// Conservatively protect the whole project: durable jobs outlive their chat.
+// No log bodies are read and an uncertain job must not be treated as idle.
+export async function workspaceHasBackgroundWork(info){return (await projectJobs(info)).some(job=>!['succeeded','failed','cancelled'].includes(job.status));}
 const launchClaimed=directory=>fs.access(path.join(directory,'launch.json')).then(()=>true,()=>false);
 async function launchJob(directory,id){
   try{await brokerRequest('start',{directory});return;}
   catch(error){
     if(await launchClaimed(directory))return;
     const retry=' Resubmitting with the same requestId ('+id+') is safe and never runs it twice; never use a new requestId for this work.';
-    if(error.code==='OUTCOME_UNKNOWN')fail('JOB_START_UNKNOWN',error.message+'. The command may already be running: query {"action":"job","requestId":"'+id+'","operation":"status"} first.'+retry);
+    if(deliveryOutcome(error)==='unknown')fail('JOB_START_UNKNOWN',error.message+'. The command may already be running: query {"action":"job","requestId":"'+id+'","operation":"status"} first.'+retry);
     fail('LOCAL_RUNNER_UNAVAILABLE',error.message+'. The command was not started.'+retry);
   }
 }
@@ -288,6 +294,7 @@ export async function cancelSessionJobs(sessionId,turnId){
   return states;
 }
 export async function handle(request){
+  validateRequest(request);
   if(request.action==='batch'){
     const requests=readBatch(request);
     return {bridge:'windows-workspace-v1',ok:true,data:await Promise.all(requests.map(r=>handle({...r,cwd:request.cwd,projectId:request.projectId,sessionId:request.sessionId})))};
@@ -340,7 +347,15 @@ export async function handle(request){
         let context=await environmentContext(agentEnvironment);if(request.id){const definition=await capability(agentEnvironment,request.id);if(definition.kind!=='agent')fail('INVALID_AGENT','Expected an agent definition');context+='\nLocal agent definition:\n'+definition.content;}
         argv[index+1]=context+'\n\nDelegated task (execute locally and report files, checks, and unresolved issues):\n'+argv[index+1];
       }
-      const execute=async actualArgv=>{const payload={action:request.nativeAction??'cli',argv:actualArgv,parentThread:bound.parentThread,...(request.nativeAction?{harness:request.harness,nativeSessionId:request.nativeSessionId,view:request.view,cursor:request.cursor,limit:request.limit}:{})};const encoded=Buffer.from(JSON.stringify(payload)).toString('base64');const result=await exec(pwsh,['-NoLogo','-NoProfile','-File',path.join(here,'runtime-context','Invoke-CodexHostBridge.ps1'),'-RequestBase64',encoded],{cwd:agentInfo.cwd,windowsHide:true,timeout:65000,maxBuffer:2*1024*1024});return request.argv?.some(arg=>['--help','-h'].includes(arg))||(!request.argv?.length&&!request.nativeAction)?{text:result.stdout}:JSON.parse(result.stdout);};
+      const execute=async actualArgv=>{
+        const run=async cliArgv=>{
+          const payload={action:request.nativeAction??'cli',argv:cliArgv,parentThread:bound.parentThread,...(request.nativeAction?{harness:request.harness,nativeSessionId:request.nativeSessionId,view:request.view,cursor:request.cursor,limit:request.limit}:{})};
+          const encoded=Buffer.from(JSON.stringify(payload)).toString('base64');
+          return exec(pwsh,['-NoLogo','-NoProfile','-File',path.join(here,'runtime-context','Invoke-CodexHostBridge.ps1'),'-RequestBase64',encoded],{cwd:agentInfo.cwd,windowsHide:true,timeout:65000,maxBuffer:2*1024*1024});
+        };
+        if(request.nativeAction)return JSON.parse((await run(actualArgv)).stdout);
+        return executeAgentCli(actualArgv,run);
+      };
       data=request.nativeAction?await execute(argv):await coordinatedAgent(state,agentInfo,argv,execute,{requestId:request.bridgeRequestId??request.requestId});
       if(request.isolationId)data={...data,isolationId:request.isolationId,workspace:agentInfo.cwd};
       if(taskFlag)await record(ctx,info,{kind:'delegation',harness:argv[argv.indexOf('--harness')+1],result:data});break;
@@ -352,19 +367,21 @@ export async function handle(request){
   return {bridge:'windows-workspace-v1',ok:true,projectId:info.projectId,cwd:info.cwd,data,...(hooks.length?{hookResults:hooks}:{})};
 }
 export async function control(request){
+  validateRequest(request,{internal:true});
+  const scope=Object.fromEntries(['cwd','projectId','sessionId','parentThread','bridgeRequestId','turnId'].filter(key=>request[key]!==undefined).map(key=>[key,request[key]]));
   const info=await verifyProject(request.cwd,request.projectId);
   if(request.action==='prepare-steer'){
     const ctx=await contextFor(request,info);if(!ctx.sessionId||ctx.turnId!==request.turnId)fail('INVALID_STEER_TARGET','追加指令不属于当前本机轮次');
-    const environment=await control({...request,action:'environment'});
-    const hooks=await control({...request,action:'lifecycle',event:'UserPromptSubmit',payload:{prompt:request.prompt}});
+    const environment=await control({...scope,action:'environment'});
+    const hooks=await control({...scope,action:'lifecycle',event:'UserPromptSubmit',payload:{prompt:request.prompt}});
     return {environment,hooks};
   }
   if(request.action==='prepare-turn'){
     // Same ordered operations and refusal points, one network request. A hook
     // failure leaves the native turn unsubmitted just as in the separate path.
-    await control({...request,action:'turn'});
-    const environment=await control({...request,action:'environment'});
-    const hooks=await control({...request,action:'lifecycle',event:'UserPromptSubmit',payload:{prompt:request.prompt}});
+    await control({...scope,action:'turn'});
+    const environment=await control({...scope,action:'environment'});
+    const hooks=await control({...scope,action:'lifecycle',event:'UserPromptSubmit',payload:{prompt:request.prompt}});
     return {environment,hooks};
   }
   if(request.action==='mcp'){

@@ -21,16 +21,33 @@ def compact(value):
         change['removed'] = sum(1 for line in lines if line.startswith('-') and not line.startswith('---'))
     return out
 
+def socket_request(endpoint, request, internal):
+    # Collect each chunk once; repeated bytes concatenation copies the entire
+    # accumulated attachment for every packet. Never replay an uncertain RPC.
+    payload={'sessionId':os.environ.get('WINDOWS_BRIDGE_SESSION'),'token':os.environ.get('WINDOWS_TOOL_TOKEN'),'request':request,'internal':internal}
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
+        connection.settimeout(115);connection.connect(endpoint)
+        connection.sendall((json.dumps(payload,ensure_ascii=False)+'\n').encode('utf8'))
+        chunks=[];size=0
+        while True:
+            chunk=connection.recv(65536)
+            if not chunk:raise RuntimeError('Tool channel closed; outcome unknown, no fallback or replay was submitted')
+            size+=len(chunk)
+            if size>48*1024*1024:raise ValueError('Tool response exceeds 48 MiB')
+            chunks.append(chunk)
+            if b'\n' in chunk:break
+    reply=json.loads(b''.join(chunks).split(b'\n',1)[0])
+    if not reply.get('ok'):raise RuntimeError(json.dumps(reply.get('error')))
+    return reply['value']
+
 internal = len(sys.argv) == 3 and sys.argv[1] == '--internal'
 if not internal and (len(sys.argv) < 2 or sys.argv[1] in ('--help', '-h')):
     print('Usage: windows-workspace \'{"action":"info"}\'\nActions: info/read/list/search/write/edit/run/job/jobs/artifact/media/agent. search: path+pattern returns a saved searchId; continue at nextOffset with searchId, offset and limit (bytes), without rerunning. JSON must be one single-quoted argument. For an apostrophe inside JSON use \\u0027. run: script or executable+args, requestId, waitMs<=30000, artifacts[]. job: requestId, operation=status|cancel|output, waitMs. Output reads accept stream=stdout|stderr, offset (bytes), limit=4..65536, segment=0|1, encoding=utf-8|base64 and optional segmentId; use nextOffset to continue without rerunning. media: path for image/PDF transfer or video file information; media does not process video/audio; use local programs via run. write/edit require expectedHash from read; new files use absent. agent: argv is the official CodexHost CLI argument array.')
     sys.exit(0 if len(sys.argv) == 2 else 2)
 try:
-    if internal:request=json.loads(sys.argv[2])
-    else:
-        parser_spec=importlib.util.spec_from_file_location('workspace_request',str(ROOT/'workspace-request.py'))
-        parser_module=importlib.util.module_from_spec(parser_spec);parser_spec.loader.exec_module(parser_module)
-        request=parser_module.parse(sys.argv[1:])
+    parser_spec=importlib.util.spec_from_file_location('workspace_request',str(ROOT/'workspace-request.py'))
+    parser_module=importlib.util.module_from_spec(parser_spec);parser_spec.loader.exec_module(parser_module)
+    request=parser_module.validate(json.loads(sys.argv[2]),internal=True) if internal else parser_module.parse(sys.argv[1:])
     if not isinstance(request, dict):
         raise ValueError('Expected a JSON object')
     cwd = os.environ.get('WINDOWS_PROJECT_CWD')
@@ -48,36 +65,30 @@ try:
     media = request.get('action') == 'media'
     if media:
         request['action']='media-export'
+        spec=importlib.util.spec_from_file_location('media_transfer',str(ROOT/'media-transfer.py'))
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        request.pop('knownHashes',None)
     endpoint=os.environ.get('WINDOWS_TOOL_SOCKET')
     if endpoint:
         # Once submitted, an uncertain socket result never falls back to SSH.
-        payload={'sessionId':os.environ.get('WINDOWS_BRIDGE_SESSION'),'token':os.environ.get('WINDOWS_TOOL_TOKEN'),'request':request,'internal':internal}
-        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
-            connection.settimeout(115);connection.connect(endpoint)
-            connection.sendall((json.dumps(payload,ensure_ascii=False)+'\n').encode('utf8'))
-            data=b''
-            while b'\n' not in data:
-                chunk=connection.recv(65536)
-                if not chunk:raise RuntimeError('Tool channel closed; outcome unknown, no fallback or replay was submitted')
-                data+=chunk
-                if len(data)>48*1024*1024:raise ValueError('Tool response exceeds 48 MiB')
-        reply=json.loads(data.split(b'\n')[0])
-        if not reply.get('ok'):raise RuntimeError(json.dumps(reply.get('error')))
-        value=reply['value']
+        if media:request['knownHashes']=module.known_hashes(request.get('path'))
+        value=socket_request(endpoint,request,internal)
         if media:
-            spec=importlib.util.spec_from_file_location('media_transfer',str(ROOT/'media-transfer.py'))
-            module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-            value=module.materialize(value)
+            try:value=module.materialize(value,key=request.get('path'))
+            except module.CacheMiss:
+                if not request.get('knownHashes'):raise
+                # A verified cache miss may repeat only this read-only export.
+                # Tool failures, EOF and writes/runs never take this path.
+                request.pop('knownHashes')
+                value=module.materialize(socket_request(endpoint,request,internal),key=request.get('path'))
         print(json.dumps(value if internal else compact(value),ensure_ascii=False));sys.exit(0)
     if not CONFIG.get('legacy',{}).get('enabled'):raise RuntimeError('No duplex tool channel; reopen this session through the configured desktop plugin')
     encoded = base64.b64encode(json.dumps(request, ensure_ascii=False).encode('utf8')).decode()
     script = "& '"+CONFIG['legacy']['windowsNode'].replace("'","''")+"' (Join-Path $env:USERPROFILE '.codexhost/plugins/claude-vps/runtime/workspace-runtime.mjs') " + ('--control ' if internal or media else '') + "'" + encoded + "'\n"
     result = subprocess.run([CONFIG['legacy']['windowsRun']], input=script.encode('utf8'),stdout=subprocess.PIPE if media else None)
     if media and result.returncode==0:
-        spec=importlib.util.spec_from_file_location('media_transfer',str(ROOT/'media-transfer.py'))
-        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-        print(json.dumps(module.materialize(json.loads(result.stdout))))
+        print(json.dumps(module.materialize(json.loads(result.stdout),key=request.get('path'))))
     sys.exit(result.returncode)
 except Exception as error:
-    print(json.dumps({'ok': False, 'error': {'code': 'WORKSPACE_REQUEST_FAILED', 'message': str(error)}}), file=sys.stderr)
+    print(json.dumps({'ok': False, 'error': {'code': getattr(error,'code','WORKSPACE_REQUEST_FAILED'), 'message': str(error)}}), file=sys.stderr)
     sys.exit(1)

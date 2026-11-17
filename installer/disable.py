@@ -1,7 +1,7 @@
 """Disable only the plugin registry entry. Never touch Host files or user data."""
 import json
 import os
-from bridge_config import INSTALLED
+from bridge_config import INSTALLED,custom_codexhost_roots
 
 
 def replace_if_unchanged(file, before, after):
@@ -16,7 +16,7 @@ def replace_if_unchanged(file, before, after):
 
 
 def disable(registry):
-    # CodexHost 0.15.0 exposes enabled.json discovery, no plugin-disable CLI.
+    # CodexHost 0.20.0 still exposes enabled.json discovery, no plugin-disable CLI.
     if registry.exists():
         raw=registry.read_bytes();value=json.loads(raw)
         if value.get('version')!=1 or not isinstance(value.get('enabled'),list):raise RuntimeError('插件注册表格式不匹配')
@@ -26,7 +26,7 @@ def disable(registry):
 
 
 def main():
-    if os.environ.get('CODEXHOST_PLUGIN_DIRECTORY') or os.environ.get('CODEXHOST_DATA_DIR'):raise RuntimeError('自定义插件目录尚不支持此入口')
+    if custom_codexhost_roots():raise RuntimeError('自定义插件目录尚不支持此入口')
     print(json.dumps(disable(INSTALLED.parent/'enabled.json')))
 
 if __name__=='__main__':main()

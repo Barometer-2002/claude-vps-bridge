@@ -1,11 +1,17 @@
 import {spawn} from 'node:child_process';
 import {getBridgeConfig,shellQuote} from './bridge-config.mjs';
 import {randomUUID} from 'node:crypto';
+import {deliveryError} from './delivery-outcome.mjs';
 import {JsonWriter,readJsonLines,jsonFrame,transportError,MAX_QUEUE_BYTES} from '../transport-streams.mjs';
 
+const SLOW_READ_MS=30000;
+const RECOVERY_PROBE_MS=8000;
+const RECOVERABLE_READS=new Set(['inspect','snapshot']);
+const SAFE_DURING_READ_RECOVERY=new Set(['inspect','snapshot','health','background-status','capabilities','account','usage']);
+
 export class SshTransport{
-  constructor({onFrame,onState,onIdleReset,spawnProcess=spawn,maxPending=256,maxRetainedBytes=MAX_QUEUE_BYTES}){this.onFrame=onFrame;this.onState=onState;this.onIdleReset=onIdleReset;this.spawnProcess=spawnProcess;this.id=randomUUID();this.pending=new Map();this.controlReplies=new Map();this.pendingBytes=0;this.replyBytes=0;this.maxPending=maxPending;this.maxRetainedBytes=maxRetainedBytes;this.requestNo=0;this.cursor=0;this.closed=false;this.ready=false;}
-  forget(id){const p=this.pending.get(id);if(p){this.pending.delete(id);this.pendingBytes-=p.bytes;clearTimeout(p.timer);}return p;}
+  constructor({onFrame,onState,onIdleReset,canRecoverRead=()=>true,slowReadMs=SLOW_READ_MS,recoveryProbeMs=RECOVERY_PROBE_MS,spawnProcess=spawn,maxPending=256,maxRetainedBytes=MAX_QUEUE_BYTES}){this.onFrame=onFrame;this.onState=onState;this.onIdleReset=onIdleReset;this.canRecoverRead=canRecoverRead;this.slowReadMs=slowReadMs;this.recoveryProbeMs=recoveryProbeMs;this.spawnProcess=spawnProcess;this.id=randomUUID();this.pending=new Map();this.controlReplies=new Map();this.pendingBytes=0;this.replyBytes=0;this.maxPending=maxPending;this.maxRetainedBytes=maxRetainedBytes;this.requestNo=0;this.cursor=0;this.closed=false;this.ready=false;}
+  forget(id){const p=this.pending.get(id);if(p){this.pending.delete(id);this.pendingBytes-=p.bytes;clearTimeout(p.timer);clearTimeout(p.recoveryTimer);}return p;}
   async connect(){
     if(this.closed)throw new Error('Adapter closed');if(this.fatalError)throw this.fatalError;if(this.ready)return;if(this.connecting)return this.connecting;
     this.connecting=this.reconnect().finally(()=>{this.connecting=null;});return this.connecting;
@@ -38,7 +44,7 @@ export class SshTransport{
         if(frame.fatal){const e=Object.assign(transportError(frame.code??'REMOTE_RELAY_UNAVAILABLE',frame.fatal),{fatal:true});this.fatalError=e;rejectOnce(e);if(established){this.onState?.({state:'unavailable',message:e.message,code:e.code});for(const [id,p] of this.pending){this.forget(id);p.reject(e);}}proc.kill();return;}
         if(frame.hello){
           this.remotePid=frame.hello.pid;
-          if(this.epoch&&this.epoch!==frame.hello.epoch&&![...this.pending.values()].some(p=>!['health','inspect','snapshot','usage','close','capabilities'].includes(p.frame.method))&&this.controlReplies.size===0&&this.onIdleReset?.()){
+          if(this.epoch&&this.epoch!==frame.hello.epoch&&![...this.pending.values()].some(p=>!['health','inspect','snapshot','usage','close','capabilities','background-status'].includes(p.frame.method))&&this.controlReplies.size===0&&this.onIdleReset?.()){
             this.epoch=frame.hello.epoch;this.cursor=0;this.onState?.({state:'idle-restoring'});
             for(const [id,p] of this.pending)if(!['health','inspect'].includes(p.frame.method)){this.forget(id);p.reject(Object.assign(new Error('Idle relay restarted; restore the native session before reading'),{code:'IDLE_RESTORE'}));}
           }
@@ -49,7 +55,7 @@ export class SshTransport{
           // refuses attachment before receiving any outstanding operation.
           for(const p of this.pending.values())this.write(p.frame);for(const reply of this.controlReplies.values())this.write(reply.frame);settled=true;resolve();return;}
         if(Number.isSafeInteger(frame.seq)&&frame.seq>this.cursor){if(frame.seq!==this.cursor+1)throw new Error('Transport event gap');this.cursor=frame.seq;const value=frame.payload;
-          if(value.id&&this.pending.has(value.id)){const p=this.forget(value.id);value.error?p.reject(Object.assign(new Error(typeof value.error==='string'?value.error:value.error.message),{code:value.error.code})):p.resolve(value.value);}
+          if(value.id&&this.pending.has(value.id)){const p=this.forget(value.id);value.error?p.reject(deliveryError(value.error.code,typeof value.error==='string'?value.error:value.error.message,value.error.delivery)):p.resolve(value.value);}
           else if(value.controlAck){const reply=this.controlReplies.get(value.controlAck);if(reply){this.replyBytes-=reply.bytes;this.controlReplies.delete(value.controlAck);}}
           else this.onFrame(value);
         }
@@ -58,9 +64,35 @@ export class SshTransport{
     },{onError:e=>{rejectOnce(e);proc.kill();}});
   });}
   write(frame){if(this.proc&&!this.proc.stdin.destroyed)this.writer.send(frame);}
-  async rpc(method,params,timeout=120000){await this.connect();const id=randomUUID(),frame={id,requestNo:++this.requestNo,method,params},bytes=jsonFrame(frame).length;
-    if(this.pending.size>=this.maxPending||this.pendingBytes+this.replyBytes+bytes>this.maxRetainedBytes)throw transportError('TRANSPORT_CAPACITY','Too many outstanding bridge operations; no operation was submitted');
-    return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.forget(id);reject(transportError('OUTCOME_UNKNOWN','Remote '+method+' timed out; outcome unknown, no retry was sent'));},timeout);this.pending.set(id,{resolve,reject,timer,frame,bytes});this.pendingBytes+=bytes;try{this.write(frame);}catch(error){this.forget(id);reject(error);}});
+  async recoverSlowRead(id,proc){
+    const safeToReconnect=()=>!this.closed&&this.ready&&this.proc===proc&&!proc.killed&&
+      this.pending.has(id)&&!this.controlReplies.size&&this.canRecoverRead()&&
+      [...this.pending.values()].every(({frame})=>SAFE_DURING_READ_RECOVERY.has(frame.method));
+    if(this.readProbeProcess===proc||!safeToReconnect())return;
+    this.readProbeProcess=proc;
+    try{
+      // The worker can answer health while a slow read is still computing. If
+      // health also stalls, the SSH stream may be blocking both responses.
+      await this.rpc('health',{},this.recoveryProbeMs);
+    }catch(error){
+      // Keep the original ID and cursor. The existing reconnect path retrieves
+      // the accepted response from the same relay without starting another read.
+      if(error.code==='OUTCOME_UNKNOWN'&&safeToReconnect())proc.kill();
+    }finally{
+      if(this.readProbeProcess===proc)this.readProbeProcess=null;
+    }
+  }
+  async rpc(method,params,timeout=120000){try{await this.connect();}catch(error){throw deliveryError(error.code??'TRANSPORT_UNAVAILABLE',error.message,'not-sent');}const id=randomUUID(),frame={id,requestNo:++this.requestNo,method,params},bytes=jsonFrame(frame).length;
+    if(this.pending.size>=this.maxPending||this.pendingBytes+this.replyBytes+bytes>this.maxRetainedBytes)throw deliveryError('TRANSPORT_CAPACITY','Too many outstanding bridge operations; no operation was submitted','not-sent');
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{this.forget(id);reject(transportError('OUTCOME_UNKNOWN','Remote '+method+' timed out; outcome unknown, no retry was sent'));},timeout);
+      const pending={resolve,reject,timer,frame,bytes};this.pending.set(id,pending);this.pendingBytes+=bytes;
+      if(RECOVERABLE_READS.has(method)&&timeout>this.slowReadMs+this.recoveryProbeMs){
+        const proc=this.proc;
+        pending.recoveryTimer=setTimeout(()=>{void this.recoverSlowRead(id,proc).catch(()=>{});},this.slowReadMs);
+      }
+      try{this.write(frame);}catch(error){this.forget(id);reject(error);}
+    });
   }
   async reply(frame){const previous=this.controlReplies.get(frame.controlId),bytes=jsonFrame(frame).length;
     if((!previous&&this.controlReplies.size>=this.maxPending)||this.pendingBytes+this.replyBytes-(previous?.bytes??0)+bytes>this.maxRetainedBytes)throw transportError('TRANSPORT_CAPACITY','Bridge result retention is full; result was not queued');

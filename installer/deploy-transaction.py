@@ -1,7 +1,8 @@
 """Prepare both ends first; compensate code changes on failure, retaining state."""
 from pathlib import Path
 import os,json,subprocess,datetime,hashlib,argparse
-from bridge_config import load_config,remote_python,INSTALLED,INSTALLER,PLUGIN,REMOTE,SOURCE
+from bridge_config import load_config,remote_python,custom_codexhost_roots,INSTALLED,INSTALLER,PLUGIN,REMOTE,SOURCE
+from dependency import load_policy,supported
 def sha(data):return hashlib.sha256(data).hexdigest()
 def replace(dest,data):
     dest.parent.mkdir(parents=True,exist_ok=True);tmp=dest.with_name(dest.name+'.transaction.tmp');tmp.write_bytes(data);os.replace(tmp,dest)
@@ -24,7 +25,7 @@ def restore_local(stage,journal,check_only=False):
         else:replace(p,(stage/(row['key']+'.old')).read_bytes())
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--rollback');parser.add_argument('--fail-after-local',action='store_true',help=argparse.SUPPRESS);args=parser.parse_args()
-    if os.environ.get('CODEXHOST_PLUGIN_DIRECTORY') or os.environ.get('CODEXHOST_DATA_DIR'):raise RuntimeError('Custom plugin/data roots require explicit configuration')
+    if custom_codexhost_roots():raise RuntimeError('Custom plugin/data roots require explicit configuration')
     if args.rollback:
         stage=Path(args.rollback).resolve()
         if stage.parent!=SOURCE/'transactions':raise RuntimeError('Rollback must reference a transaction under this installer')
@@ -39,6 +40,17 @@ def main():
     data=[(dest,src.read_bytes()) for src,dest in pairs]+[(target/'bridge-config.json',json.dumps(config,indent=2).encode())]
     # Retired plugin code only; deletion has the same backup/conflict/rollback checks.
     data.append((target/'runtime'/'media-config.mjs',None))
+    previous_manifest=SOURCE/'installation-workspace.json'
+    if previous_manifest.exists():
+        desired={dest.resolve() for dest,_ in data}
+        for row in json.loads(previous_manifest.read_text())['files']:
+            old=Path(row['path'])
+            try:relative=old.resolve().relative_to(target.resolve())
+            except ValueError:continue
+            if old.resolve() in desired or row.get('sha256') is None:continue
+            if any(part in ('state','runtime-context') for part in relative.parts) or relative.name in ('bridge-config.json','mcp-config.private.json'):continue
+            if old.exists() and sha(old.read_bytes())!=row['sha256']:raise RuntimeError('Retired local managed file changed: '+str(old))
+            data.append((old,None));desired.add(old.resolve())
     enabledPath=target.parent/'enabled.json';enabled=json.loads(enabledPath.read_text()) if enabledPath.exists() else {'version':1,'enabled':[]}
     if enabled.get('version')!=1 or not isinstance(enabled.get('enabled'),list):raise RuntimeError('Invalid plugin registry')
     if 'claude-vps' not in enabled['enabled']:enabled['enabled'].append('claude-vps')
@@ -51,12 +63,17 @@ def main():
         rows.append({'path':str(dest),'key':key,'beforeHash':sha(before) if before is not None else None,'sha256':sha(content) if content is not None else None})
         if content is not None and dest.suffix=='.mjs':
             check=stage/(key+'.mjs');check.write_bytes(content);subprocess.run([str(node),'--check',str(check)],check=True,capture_output=True)
-    names=('remote-config.mjs','bridge_paths.py','windows-agent','remote-server.mjs','mcp-local.py','remote-transport.mjs','relay-lock.py','transport-streams.mjs','relay-ledger.mjs','tool-bridge.mjs','context-delta.mjs','context-notice.mjs','prompt-cache.mjs','compact-context.py','workspace-request.py','workspace-map.mjs','fork-state.mjs','workspace-guard.py','workspace-settings.json','bridge-instructions.md','claude-windows','media-transfer.py','adapter-loader.mjs','start-transport','check-health','windows-workspace')
+    names=('remote-config.mjs','bridge_paths.py','windows-agent','remote-server.mjs','mcp-local.py','remote-transport.mjs','transport-proxy.py','relay-lock.py','transport-streams.mjs','relay-ledger.mjs','tool-bridge.mjs','context-delta.mjs','context-notice.mjs','prompt-cache.mjs','compact-context.py','workspace-request.py','workspace-map.mjs','fork-state.mjs','workspace-guard.py','workspace-settings.json','bridge-instructions.md','claude-windows','media-transfer.py','adapter-loader.mjs','start-transport','check-health','windows-workspace')
     payload={n:(REMOTE/n).read_text(encoding='utf8') for n in names}
-    policy=json.loads((INSTALLER/'dependency-policy.json').read_text())
-    if policy['package']!='@codexhost/cli' or not __import__('re').fullmatch(r'\d+\.\d+\.\d+',policy['version']):raise RuntimeError('Invalid dependency policy')
-    version=policy['version']
-    prepared=remote({'action':'prepare','id':tx,'files':payload,'remoteNodeExecutable':config.get('remoteNodeExecutable'),'adapterVersion':version,'adapterPath':config['remoteRoot']+'/dependencies/codexhost-'+version+'/node_modules/@codexhost/cli-linux-x64/app/plugins/claude-code/plugin.mjs','remoteConfig':{'workspaceRoot':config['remoteWorkspaceRoot'],'claudeExecutable':config['remoteClaudeExecutable'],'legacy':config.get('legacy',{})}},config)
+    payload['bridge-manifest.json']=(PLUGIN/'manifest.json').read_text(encoding='utf-8')
+    payload['workspace-request-schema.json']=(PLUGIN/'runtime/workspace-request-schema.json').read_text(encoding='utf-8')
+    policy=load_policy((INSTALLER/'dependency-policy.json').read_text())
+    # The version is whatever prepare-dependency.py validated on the VPS (latest, or the kept one).
+    prepared_dependency=SOURCE/'installation-dependency.json'
+    if not prepared_dependency.exists():raise RuntimeError('Run installer/prepare-dependency.py first')
+    version=json.loads(prepared_dependency.read_text(encoding='utf-8'))['version']
+    if not supported(version,policy):raise RuntimeError('Prepared dependency is below the supported minimum')
+    prepared=remote({'action':'prepare','id':tx,'files':payload,'remoteNodeExecutable':config.get('remoteNodeExecutable'),'adapterVersion':version,'pluginApiVersion':policy['pluginApiVersion'],'adapterPath':config['remoteRoot']+'/dependencies/codexhost-'+version+'/node_modules/@codexhost/cli-linux-x64/app/plugins/claude-code/plugin.mjs','remoteConfig':{'workspaceRoot':config['remoteWorkspaceRoot'],'claudeExecutable':config['remoteClaudeExecutable'],'legacy':config.get('legacy',{})}},config)
     journal={'id':tx,'connection':config,'phase':'prepared','files':rows,'remote':prepared,'hostVersion':json.loads((hostRoot/'app/codexhost-distribution.json').read_text())['version']};(stage/'journal.json').write_text(json.dumps(journal,indent=2))
     # Only code/enablement participate. runtime/state and runtime-context are never replaced.
     reportPath=SOURCE/'installation-workspace.json';oldReport=reportPath.read_bytes() if reportPath.exists() else None

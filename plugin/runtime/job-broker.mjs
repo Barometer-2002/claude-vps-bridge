@@ -1,4 +1,5 @@
 import {replaceFile} from './atomic-file.mjs';
+import {deliveryError} from './delivery-outcome.mjs';
 // Windows SSH sessions can terminate their descendant processes when they end.
 // This small local broker is launched by the desktop plugin, outside SSH. It
 // only starts validated, persisted workspace jobs; it is not a second agent.
@@ -16,7 +17,7 @@ const pipe='\\\\.\\pipe\\codexhost-windows-jobs-v2-'+createHash('sha256').update
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // Errors carry what is known about delivery: BROKER_UNREACHABLE (never sent),
 // BROKER_REFUSED (answered no) or OUTCOME_UNKNOWN (sent, no answer).
-const brokerError=(code,message)=>Object.assign(new Error(message),{code});
+const brokerError=(code,message)=>deliveryError(code,message,code==='BROKER_UNREACHABLE'?'not-sent':code==='BROKER_REFUSED'?'refused':'unknown');
 export async function brokerRequest(action,more={},{timeoutMs=Number(process.env.CLAUDE_VPS_BROKER_TIMEOUT_MS)||8000}={}){
   let config;
   try{config=JSON.parse(await fs.readFile(descriptor,'utf8'));}catch(error){throw brokerError('BROKER_UNREACHABLE','Local job broker is not running; the request was not sent');}

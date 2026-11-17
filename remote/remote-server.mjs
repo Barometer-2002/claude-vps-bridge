@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { prepareWorkspace } from './workspace-map.mjs';
-import {forkPrefix,inheritMedia,pairForkTurns} from './fork-state.mjs';
+import {checkForkSource,inheritMedia,pairForkTurns} from './fork-state.mjs';
 import {createToolBridge} from './tool-bridge.mjs';
 import {contextUpdate} from './context-delta.mjs';
 import {contextNotice,validNoticeState} from './context-notice.mjs';
@@ -16,7 +16,8 @@ const exec = promisify(execFile);
 import {bridgeRoot,workspaceRoot,workspaceCommand,agentCommand,remoteConfig} from './remote-config.mjs';
 const root = workspaceRoot;
 import {loadClaudeAdapter} from './adapter-loader.mjs';
-const {createHarnessAdapter,modulePath,dependencyVersion} = await loadClaudeAdapter();
+const {createHarnessAdapter,dependencyVersion,adapterSha256} = await loadClaudeAdapter();
+const {version:bridgeVersion}=JSON.parse(await readFile(path.join(bridgeRoot,'bridge-manifest.json'),'utf8'));
 const adapter = await createHarnessAdapter({ environment: { ...process.env, CODEXHOST_CLAUDE_COMMAND: path.join(bridgeRoot,'claude-windows') }, platform: 'linux', managedRemoteHost: false });
 const sessions = new Map();
 let streamClosing=false;
@@ -25,16 +26,21 @@ const send=value=>{try{output.send(value);}catch{void closeStream(2);}};
 const fail = message => ({ ok: false, error: { code: 'unavailable', message, retryable: false } });
 const limitedCapabilities = c => ({ ...c, history: { fork: c.history?.fork===true, forkAcrossCwd: false, rollbackLastTurn: false }, subagents: { observe: true, readTranscript: false } });
 const bindings = new Map();
-let accountInspection=null,cacheCapabilityUnknown=false;
+let accountInspection=null;
 async function inspectAccount(){
   if(accountInspection)return accountInspection;
-  accountInspection=(async()=>{const value=await adapter.inspectAccount?.()??null;cacheCapabilityUnknown=value?.credits===undefined;return value;})().finally(()=>{accountInspection=null;});
+  accountInspection=(async()=>{
+    try{
+      const value=await adapter.inspectAccount?.();
+      if(value!==null&&typeof value==='object')return value;
+      return null;
+    }finally{accountInspection=null;}
+  })();
   return accountInspection;
 }
-async function cacheUsage(binding,usage,{initial=false}={}){
-  if(accountInspection)await accountInspection.catch(()=>{});
+async function cacheUsage(binding,usage){
   const previous=binding.promptCache;
-  const merged=mergePromptCache(usage,previous,{capabilityUnknown:dependencyVersion==='0.15.0'&&(cacheCapabilityUnknown||initial&&usage==null)});
+  const merged=mergePromptCache(usage,previous);
   binding.promptCache=merged.indicator;
   if(binding.cacheFile&&JSON.stringify(previous)!==JSON.stringify(merged.indicator)){
     try{await saveJson(binding.cacheFile,{projectId:binding.projectId,indicator:merged.indicator});}catch{send({timing:{phase:'prompt-cache',status:'save-failed'}});}
@@ -178,7 +184,7 @@ async function releaseOpening(sessionId,opening){
   });return opening.releasing;
 }
 async function request(method, params) {
-  if(method==='health')return {protocol:2,bridgeVersion:'0.13.6',dependencyVersion,capabilities:['project-context','local-policy','local-hooks','media-cache','agent-context','job-recovery','native-fork','duplex-control','live-reverse-probe','duplex-tools','context-delta','local-mcp','account-usage'],adapterSha256:createHash('sha256').update(await readFile(modulePath)).digest('hex')};
+  if(method==='health')return {protocol:2,bridgeVersion,dependencyVersion,capabilities:['project-context','local-policy','local-hooks','media-cache','agent-context','job-recovery','native-fork','duplex-control','live-reverse-probe','duplex-tools','context-delta','local-mcp','account-usage'],adapterSha256};
   if(method==='account')return inspectAccount();
   if(method==='reverse-health'){
     const legacy=remoteConfig.legacy;if(!legacy?.enabled)return false;
@@ -210,8 +216,8 @@ async function request(method, params) {
       if(!sourceBinding||sourceBinding.projectId!==binding.projectId||sourceBinding.remoteCwd!==cwd)return fail('Fork source is not bound to this Windows project; cross-project fork is not supported');
       // Reading source history does not start a model or run any Windows lifecycle hook.
       const opened=await adapter.open({kind:'resume',nativeRef:input.sourceRef,cwd});if(!opened.ok)return opened;
-      try{const history=await snapshotWithPresentation(opened.value,sourceBinding,binding);if(!history.ok)return history;forkSource={binding:sourceBinding,turns:forkPrefix(history.value,input.sourceRef,input.checkpoint)};}finally{await opened.value.close();}
-      await inheritMedia(root,sourceBinding,forkSource.turns,binding.mediaKey);
+      checkForkSource(input.sourceRef,input.checkpoint);
+      try{const history=await snapshotWithPresentation(opened.value,sourceBinding,binding);if(!history.ok)return history;forkSource={binding:sourceBinding,turns:history.value.turns};}finally{await opened.value.close();}
     }
     const environment=await localControl(binding,'environment');
     if(binding.duplexTools)binding.toolEnvironment=toolBridge.register(binding);
@@ -234,11 +240,14 @@ async function request(method, params) {
       const saved=await readFile(binding.cacheFile,'utf8').then(JSON.parse,()=>null).catch(()=>null);
       if(saved?.projectId===binding.projectId)binding.promptCache=saved.indicator;
     }
-    const initialUsage=await cacheUsage(binding,s.initialUsage,{initial:true});
+    const initialUsage=await cacheUsage(binding,s.initialUsage);
     if(forkSource){
       try{
         const derived=await s.readSnapshot();if(!derived.ok)return derived;
-        for(const pair of pairForkTurns(forkSource.turns,derived.value.turns)){
+        const pairs=pairForkTurns(forkSource.turns,derived.value.turns);
+        // Grant only media referenced by the Turns the official fork actually kept.
+        await inheritMedia(root,forkSource.binding,pairs.map(pair=>pair.source),binding.mediaKey);
+        for(const pair of pairs){
           const sourceFile=presentationFile(forkSource.binding,pair.source.nativeTurnRef);
           const extra=await readFile(sourceFile,'utf8').then(JSON.parse,e=>{if(e.code==='ENOENT')return null;throw e;});
           if(extra)await saveJson(presentationFile(binding,pair.derived.nativeTurnRef),{...extra,source:undefined,pending:false,inheritedFrom:pair.source.nativeTurnRef});
@@ -291,8 +300,9 @@ async function request(method, params) {
   const s = sessions.get(params?.sessionId);
   // A lost SSH transport destroys its handles. Closing an already released
   // handle must remain idempotent so Host can resume the durable native chat.
-  if (!s) { if(method==='close')return {closed:true};throw new Error('Unknown session handle'); }
+  if (!s) { if(method==='close')return {closed:true};throw Object.assign(new Error('Unknown session handle'),{delivery:'not-sent'}); }
   switch (method) {
+    case 'background-status': return {busy:typeof s.hasBackgroundWork!=='function'||!!s.hasBackgroundWork()||!!bindings.get(params.sessionId)?.activeTurn};
     case 'commands-list': {
       const listed=await s.commands?.list();if(!listed?.ok)return listed??fail('Native commands unavailable');
       return {...listed,value:{...listed.value,commands:listed.value.commands.filter(c=>c.id==='claude.compact')}};
@@ -304,6 +314,9 @@ async function request(method, params) {
     }
     case 'execute': {
       const binding=bindings.get(params.sessionId);let command=params.command;
+      let submitted=false;
+      const executeNative=async value=>{submitted=true;return await s.execute(value);};
+      try{
       if(command.type==='turn.steer'){
         const reject=message=>({ok:false,error:{code:'invalidState',message,retryable:false}});
         if(binding.activeTurn!==command.turnId)return reject('追加指令目标不是当前活动轮次；未提交，也不会自动创建新轮次。');
@@ -316,7 +329,7 @@ async function request(method, params) {
         if(binding.activeTurn!==command.turnId)return reject('准备追加指令时原轮次已结束；未提交，请确认后发送新消息。');
         const context=[environment.text,'Current workspace permission mode: '+binding.permissionMode,...hooks.map(h=>h.hookSpecificOutput?.additionalContext??h.additionalContext??''),...media].filter(Boolean).join('\n\n');
         // Native adapter performs the final active-turn/race check; never retry as turn.start.
-        return s.execute({...command,input:[{type:'text',text:context},...command.input]});
+        return await executeNative({...command,input:[{type:'text',text:context},...command.input]});
       }
       if(command.type==='turn.start'){
         const prompt=command.input.filter(i=>i.type==='text').map(i=>i.text).join('\n');
@@ -337,17 +350,18 @@ async function request(method, params) {
       }
       if(command.type==='turn.cancel'){
         binding.cancelResult=localControl(binding,'cancel-jobs',{turnId:command.turnId}).then(jobs=>({ok:true,jobs}),error=>({ok:false,error:error.message}));
-        const results=await Promise.allSettled([s.execute(command),binding.cancelResult.then(r=>{if(!r.ok)throw new Error(r.error);return r.jobs;})]);
+        const results=await Promise.allSettled([executeNative(command),binding.cancelResult.then(r=>{if(!r.ok)throw new Error(r.error);return r.jobs;})]);
         for(const r of results)if(r.status==='rejected')throw r.reason;
         return results[0].value;
       }
       let result;
-      try{result=await s.execute(command);}
+      try{result=await executeNative(command);}
       catch(error){if(command.type==='turn.start'){binding.contextState=null;delete binding.pendingContext;delete binding.contextNotice;}throw error;}
       if(command.type==='turn.start'){binding.contextState=result.ok?binding.pendingContext:null;delete binding.pendingContext;}
       if(command.type==='turn.start'&&!result.ok)delete binding.contextNotice;
       if(command.type==='permissionMode.select'&&result.ok){binding.permissionMode=command.permissionModeId;await localControl(binding,'permission',{mode:command.permissionModeId});}
       return result;
+      }catch(error){if(!submitted)error.delivery='not-sent';throw error;}
     }
     case 'snapshot': return snapshotWithPresentation(s,bindings.get(params.sessionId));
     case 'capabilities': return limitedCapabilities(await (s.readCapabilities?.()??s.capabilities));
@@ -361,7 +375,7 @@ async function request(method, params) {
 }
 readJsonLines(process.stdin,frame=>{
   if(frame.controlId){send({controlAck:frame.controlId});const pending=localPending.get(frame.controlId);if(!pending)return;localPending.delete(frame.controlId);clearTimeout(pending.timer);if(frame.error)pending.reject(new Error(frame.error));else pending.resolve(frame.value);return;}
-  void request(frame.method, frame.params).then(value => send({ id: frame.id, value }), error => send({ id: frame.id, error: {code:error.code??'REMOTE_OPERATION_FAILED',message:String(error.message)} }));
+  void request(frame.method, frame.params).then(value => send({ id: frame.id, value }), error => send({ id: frame.id, error: {code:error.code??'REMOTE_OPERATION_FAILED',message:String(error.message),delivery:error.delivery??'unknown'} }));
 },{onError:error=>{process.stderr.write(error.code+'\n');void closeStream(2);},onEnd:()=>void closeStream(0)});
 async function closeStream(code){
   if(streamClosing)return;streamClosing=true;

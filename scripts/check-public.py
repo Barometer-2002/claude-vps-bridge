@@ -5,7 +5,7 @@ import argparse,re,subprocess,sys
 ROOT=Path(__file__).resolve().parents[1]
 FORBIDDEN_DIRS={'node_modules','transactions','runtime-context','state','run','__pycache__','.claude','.codex','.ssh'}
 FORBIDDEN_SUFFIXES={'.pem','.key','.pfx','.sqlite','.db','.log','.png','.jpg','.jpeg','.mp4','.zip','.exe'}
-PRIVATE_NAMES={'bridge-config.json','bridge-config.local.json','remote-config.json','adapter-selection.json','claude-path','node-path','.env','session.json'}
+PRIVATE_NAMES={'bridge-config.json','bridge-config.local.json','remote-config.json','adapter-selection.json','managed-files.json','claude-path','node-path','.env','session.json'}
 PATTERNS=[
  ('private-key',re.compile(r'-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----')),
  ('anthropic-token',re.compile(r'sk-ant-(?:api\d+|oat\d+)-[A-Za-z0-9_-]{20,}')),

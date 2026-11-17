@@ -4,12 +4,13 @@ import { stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { projectInfo, control, handle } from './runtime/workspace-runtime.mjs';
+import { projectInfo, control, handle, workspaceHasBackgroundWork } from './runtime/workspace-runtime.mjs';
 import {SshTransport} from './runtime/ssh-transport.mjs';
 import {referencedMedia} from './runtime/media-input.mjs';
 import {decodeHostInput} from './runtime/input-boundary.mjs';
 import {observeModel} from './runtime/model-observation.mjs';
-import {closeMcpSession} from './runtime/mcp-runtime.mjs';
+import {closeMcpSession,hasMcpSession} from './runtime/mcp-runtime.mjs';
+import {submissionFailure} from './runtime/delivery-outcome.mjs';
 
 import {getBridgeConfig} from './runtime/bridge-config.mjs';
 import {createBridgePreflight} from './runtime/bridge-preflight.mjs';
@@ -30,6 +31,7 @@ export function createHarnessAdapter(context) {
   const controlActions=new Set(['bind','turn','prepare-turn','prepare-steer','events','history-events','cancel-jobs','environment','permission','capability-context','attachments','lifecycle','preflight','media-export','mcp']);
   const toolActions=new Set(['status','info','capability','context','read','list','search','write','edit','artifact','run','job','jobs','agent','media-export','batch','isolation']);
   const timing=value=>{try{context.onBridgeTiming?.(value);}catch{}};
+  function invalidateBackground(binding){binding.backgroundCheckedAt=0;binding.backgroundRevision=(binding.backgroundRevision??0)+1;}
   // Link state is shown from this local plugin, so it reaches the desktop even
   // while SSH is down. Short reconnects stay silent; a reconnect still running
   // after outageNoticeMs is shown in active turns, and recovery is confirmed once.
@@ -40,9 +42,9 @@ export function createHarnessAdapter(context) {
     if(state.state==='connected'){clearTimeout(outageTimer);outageTimer=null;if(outageShown){outageShown=false;turnNotice('连接已恢复，继续当前任务。');}}
     if(state.state==='unavailable'){clearTimeout(outageTimer);outageTimer=null;outageShown=false;}
   }
-  // Contract: adapter and session methods settle with a result or fallback and
-  // never reject on transport loss. The Host does not await every call, and an
-  // unhandled rejection terminates the whole Host Runtime.
+  // Operational methods return results/fallbacks. close is different: awaiting
+  // callers must observe unconfirmed cleanup. Its returned promise has a rejection
+  // handler as well, so a fire-and-forget Host cannot crash on transport loss.
   function observeOutput(sessionId,output){
     const binding=localBindings.get(sessionId),event=output?.kind==='event'?output.event:null;
     if(!binding||!event)return;
@@ -59,6 +61,7 @@ export function createHarnessAdapter(context) {
   }
   async function localRequest(frame){
     const binding=localBindings.get(frame.sessionId);
+    if(binding){invalidateBackground(binding);binding.localOperations=(binding.localOperations??0)+1;}
     try{
       if(!binding)throw new Error('Unknown local session binding');
       const recovery=frame.lane==='tool'?['status','job','jobs'].includes(frame.request?.action):['cancel-jobs','events','history-events'].includes(frame.request?.action);
@@ -74,6 +77,7 @@ export function createHarnessAdapter(context) {
       timing({phase:'local-control',action:frame.request.action,ms:performance.now()-started});
       await transport.reply({controlId:frame.controlId,value});
     }catch(error){await transport.reply({controlId:frame.controlId,error:error.message}).catch(()=>{});}
+    finally{if(binding){invalidateBackground(binding);binding.localOperations--;}}
   }
   const errorResult = message => ({ok:false,error:{code:'unavailable',message,retryable:true}});
   function failed(message) {
@@ -83,16 +87,18 @@ export function createHarnessAdapter(context) {
     localBindings.clear();
   }
   const transport=new SshTransport({
+    canRecoverRead:()=>![...localBindings.values()].some(b=>b.activeTurn||b.submitting||b.closing||b.localOperations),
     onIdleReset(){if([...localBindings.values()].some(b=>b.activeTurn||b.submitting))return false;for(const b of localBindings.values()){b.needsRebind=true;b.requests.clear();}return true;},
     onFrame(frame){
       if(frame.controlId){void localRequest(frame);return;}
       if(frame.timing){timing(frame.timing);return;}
       if(frame.sessionId){
-        if(frame.closed){closeMcpSession(frame.sessionId);channels.get(frame.sessionId)?.end();channels.delete(frame.sessionId);localBindings.delete(frame.sessionId);return;}
+        if(frame.closed){const binding=localBindings.get(frame.sessionId);if(binding){binding.remoteClosed=true;binding.confirmClosed?.();}closeMcpSession(frame.sessionId);channels.get(frame.sessionId)?.end();channels.delete(frame.sessionId);localBindings.delete(frame.sessionId);return;}
         if(frame.closeError){timing({phase:'session-cleanup',status:'unconfirmed',message:frame.closeError});return;}
         const channel=channels.get(frame.sessionId),binding=localBindings.get(frame.sessionId);
         const output=remap(frame.output,'claude-code',ID);
         if(binding&&output?.kind==='event'){
+          invalidateBackground(binding);
           const event=output.event;
           if(event.type==='turn.started'){binding.activeTurn=event.turnId;binding.modelObservation=null;}
           if(event.type==='turn.completed')binding.activeTurn=null;
@@ -104,7 +110,7 @@ export function createHarnessAdapter(context) {
         if(frame.ended)channel?.end();
       }
     },
-    onState(state){if(['connecting','reconnecting','idle-restoring','unavailable'].includes(state.state))preflight.invalidate();timing({phase:'transport-state',...state});linkNotice(state);if(state.state==='unavailable')failed(state.message);}
+    onState(state){if(['connecting','reconnecting','idle-restoring','unavailable'].includes(state.state)){preflight.invalidate();for(const binding of localBindings.values())invalidateBackground(binding);}timing({phase:'transport-state',...state});linkNotice(state);if(state.state==='unavailable')failed(state.message);}
   });
   const config=getBridgeConfig();
   const preflight=createBridgePreflight({
@@ -117,7 +123,7 @@ export function createHarnessAdapter(context) {
     if(accountPending)return accountPending;
     if(!force&&Date.now()<accountRefreshAfter)return accountSnapshot;
     accountPending=(async()=>{
-      try{accountSnapshot=await rpc('account',{},11000);accountRefreshAfter=Date.now()+60000;return accountSnapshot;}
+      try{const value=await rpc('account',{},11000);if(value!==null&&typeof value==='object'){accountSnapshot=value;accountRefreshAfter=Date.now()+60000;return value;}accountRefreshAfter=Date.now()+15000;return null;}
       catch{accountRefreshAfter=Date.now()+15000;return null;}
       finally{accountPending=null;}
     })();
@@ -130,7 +136,7 @@ export function createHarnessAdapter(context) {
     async inspectAccount(){return readAccount(true);},
     // The composer ring reads these separate optional APIs synchronously.
     // Keep the last observed quota while refreshing, including across resets.
-    // Only a successful response replaces it; a successful empty response clears it.
+    // Only an account object replaces it. Null and failures preserve the snapshot.
     credits(){return accountSnapshot?.credits??null;},
     async refreshCredits(){await readAccount();return adapter.credits();},
     async inspect(input={}){try{return await rpc('inspect',{refresh:input.refresh});}catch(error){return {status:'unavailable',error:errorResult(error.message).error};}},
@@ -153,6 +159,43 @@ export function createHarnessAdapter(context) {
         if(!opened.ok){channel.end();channels.delete(sessionId);localBindings.delete(sessionId);return opened;}
         const metadata=opened.value;
         const binding=localBindings.get(sessionId);binding.nativeState??=metadata.initialState;
+        binding.closedSignal=new Promise(resolve=>{binding.confirmClosed=resolve;});
+        function hasBackgroundWork(){
+          if(binding.remoteClosed)return false;
+          if(binding.closing||binding.faulted||binding.activeTurn||binding.submitting||binding.localOperations||binding.needsRebind||hasMcpSession(sessionId))return true;
+          if(binding.backgroundCheckedAt&&performance.now()-binding.backgroundCheckedAt<5000)return binding.backgroundBusy!==false;
+          // Host's predicate is synchronous. Refresh only when it asks, never
+          // poll every idle chat in the background or let a Promise mean false.
+          if(!binding.backgroundCheck){
+            const epoch=transport.epoch,revision=binding.backgroundRevision;
+            binding.backgroundCheck=Promise.all([rpc('background-status',{sessionId},5000),workspaceHasBackgroundWork(workspace)])
+              .then(([remote,local])=>{binding.backgroundBusy=remote?.busy!==false||local!==false;if(epoch===transport.epoch&&revision===binding.backgroundRevision)binding.backgroundCheckedAt=performance.now();})
+              .catch(()=>{binding.backgroundBusy=true;binding.backgroundCheckedAt=performance.now();})
+              .finally(()=>{binding.backgroundCheck=null;});
+          }
+          return true;
+        }
+        function closeSession(){
+          if(binding.closePromise)return binding.closePromise;
+          binding.closing=true;
+          const task=(async()=>{
+            if(!binding.remoteClosed){
+              let response;
+              try{response=await rpc('close',{sessionId},15000);}
+              catch(error){if(!binding.remoteClosed)throw error;timing({phase:'session-cleanup',status:'closed-with-hook-error',message:error.message});}
+              if(response===null||response?.closed===true){binding.remoteClosed=true;binding.confirmClosed();}
+              if(!binding.remoteClosed){
+                if(response?.pending!==true)throw new Error('Remote session cleanup was not confirmed');
+                let timer;try{await Promise.race([binding.closedSignal,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Remote session cleanup is still pending')),15000);})]);}finally{clearTimeout(timer);}
+              }
+            }
+            closeMcpSession(sessionId);localBindings.delete(sessionId);channel.end();channels.delete(sessionId);
+          })();
+          binding.closePromise=task;
+          // Keep output/binding alive on failure for late confirmation and hooks.
+          task.catch(error=>{binding.closePromise=null;timing({phase:'session-cleanup',status:'unconfirmed',message:error.message});});
+          return task;
+        }
         async function ensureSession(){
           await transport.connect();if(!binding.needsRebind)return;
           if(!binding.rebinding)binding.rebinding=(async()=>{
@@ -173,15 +216,46 @@ export function createHarnessAdapter(context) {
           harnessId:ID, get capabilities(){return binding.capabilities??metadata.capabilities;}, initialState:metadata.initialState,
           nativeWriterRef:metadata.nativeWriterRef, initialUsage:metadata.initialUsage, outputs:channel,
           workspace:metadata.workspace,remoteCwd:metadata.remoteCwd,
+          hasBackgroundWork,
           commands:{
             async list(){try{await ensureSession();return await rpc('commands-list',{sessionId});}catch(e){return errorResult(e.message);}},
-            async execute(command){try{if(binding.faulted)throw new Error(binding.faulted);await ensureSession();return await rpc('commands-execute',{sessionId,command});}catch(e){return errorResult(e.message);}}
+            execute(command){
+              const task=(async()=>{
+                let submitted=false;
+                try{
+                  if(binding.faulted)throw new Error(binding.faulted);
+                  await ensureSession();submitted=true;
+                  return await rpc('commands-execute',{sessionId,command});
+                }catch(error){return submissionFailure(error,{submitted});}
+              })();
+              task.catch(()=>{});return task;
+            }
           },
           async readCapabilities(){try{await ensureSession();binding.capabilities=await rpc('capabilities',{sessionId});}catch(e){timing({phase:'capabilities',status:'unavailable',message:e.message});}return binding.capabilities??metadata.capabilities;},
-          async execute(command){let submitting=false;try{if(binding.faulted&&command.type!=='turn.cancel')throw new Error(binding.faulted);if(['turn.start','turn.steer'].includes(command.type)){command={...command,input:await decodeHostInput(command.input)};await preflight.health();}if(command.type==='turn.steer'&&binding.activeTurn!==command.turnId)throw Error('追加指令目标不是当前活动轮次；未提交。');await ensureSession();binding.submitting=(binding.submitting??0)+1;submitting=true;return await rpc('execute',{sessionId,command,...(['turn.start','turn.steer'].includes(command.type)?{attachments:referencedMedia(command.input)}:{})},['turn.start','turn.steer'].includes(command.type)?180000:60000);}catch(e){return {...errorResult(e.message),error:{...errorResult(e.message).error,retryable:false}};}finally{if(submitting)binding.submitting=Math.max(0,(binding.submitting??0)-1);}},
+          execute(command){
+            const task=(async()=>{
+              let submitting=false;
+              try{
+                if(binding.faulted&&command.type!=='turn.cancel')throw new Error(binding.faulted);
+                if(['turn.start','turn.steer'].includes(command.type)){
+                  command={...command,input:await decodeHostInput(command.input)};
+                  await preflight.health();
+                }
+                if(command.type==='turn.steer'&&binding.activeTurn!==command.turnId)throw Error('追加指令目标不是当前活动轮次；未提交。');
+                await ensureSession();
+                const attachments=['turn.start','turn.steer'].includes(command.type)?{attachments:referencedMedia(command.input)}:{};
+                binding.submitting=(binding.submitting??0)+1;submitting=true;
+                return await rpc('execute',{sessionId,command,...attachments},['turn.start','turn.steer'].includes(command.type)?180000:60000);
+              }catch(error){return submissionFailure(error,{submitted:submitting});}
+              finally{if(submitting)binding.submitting=Math.max(0,(binding.submitting??0)-1);}
+            })();
+            // Host may fire and forget cancellation. Awaiters still see unknown outcomes.
+            task.catch(()=>{});
+            return task;
+          },
           async readSnapshot(){try{await ensureSession();return await readSnapshot();}catch(e){if(e.code==='IDLE_RESTORE'){try{await ensureSession();return await readSnapshot();}catch(error){return errorResult(error.message);}}return errorResult(e.message);}},
           async refreshUsage(){try{await ensureSession();await rpc('usage',{sessionId});}catch(e){timing({phase:'usage',status:'unavailable',message:e.message});}},
-          async close(){binding.closing=true;try{const closed=await rpc('close',{sessionId},15000);if(closed===null||closed?.closed===true){closeMcpSession(sessionId);localBindings.delete(sessionId);}}catch(e){timing({phase:'session-cleanup',status:'unconfirmed',message:e.message});}finally{channel.end();channels.delete(sessionId);}},
+          close:closeSession,
         };
         return {ok:true,value:session};
       }catch(e){

@@ -4,7 +4,7 @@
 
 | 项目 | 用途 | 声明的许可证 / 来源 |
 |---|---|---|
-| CodexHost 0.16.1 | Host 插件接口、受管理的远端 Claude 适配器 | LGPL-3.0-only；[v0.16.1 源码](https://github.com/BytePioneer-AI/codex-host/tree/v0.16.1) |
+| CodexHost（0.20.0 及以上，安装时取最新正式版） | Host 插件接口、受管理的远端 Claude 适配器 | LGPL-3.0-only；[源码](https://github.com/BytePioneer-AI/codex-host) |
 | picomatch 4.0.3 | 路径匹配 | MIT |
 | yaml 2.8.1 | 本机规则与能力元数据 | ISC |
 | @playwright/mcp 0.0.80（可选） | 本机浏览器 MCP | Apache-2.0 |
