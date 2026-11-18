@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 cd -- "$(dirname -- "$0")"
-exec "$(cat node-path)" remote-server.mjs
+exec "$(cat node-path)" remote-server.mjs --ssh-ingress "$(python3 -B ssh_ingress.py)"

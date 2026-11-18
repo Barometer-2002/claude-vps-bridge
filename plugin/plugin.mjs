@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { projectInfo, control, handle, workspaceHasBackgroundWork } from './runtime/workspace-runtime.mjs';
 import {SshTransport} from './runtime/ssh-transport.mjs';
+import {recordRouteState} from './runtime/ssh-routes.mjs';
 import {referencedMedia} from './runtime/media-input.mjs';
 import {decodeHostInput} from './runtime/input-boundary.mjs';
 import {observeModel} from './runtime/model-observation.mjs';
@@ -15,6 +16,8 @@ import {submissionFailure} from './runtime/delivery-outcome.mjs';
 import {getBridgeConfig} from './runtime/bridge-config.mjs';
 import {createBridgePreflight} from './runtime/bridge-preflight.mjs';
 import {SessionChannel,SessionRequests} from './runtime/session-buffer.mjs';
+import {SessionReads} from './runtime/session-reads.mjs';
+const SHARED_READS=new Set(['inspect','snapshot','capabilities','commands-list','background-status']);
 const ID = 'claude-vps';
 const RUNTIME = path.join(path.dirname(fileURLToPath(import.meta.url)), 'runtime');
 const EXPORT = path.join(RUNTIME,'Export-CodexHostBridgeContext.ps1');
@@ -28,6 +31,7 @@ function remap(value, from, to) {
 export function createHarnessAdapter(context) {
   let accountSnapshot=null,accountPending=null,accountRefreshAfter=0;
   const channels=new Map(), localBindings=new Map();
+  const reads=new SessionReads((...args)=>transport.rpc(...args));
   const controlActions=new Set(['bind','turn','prepare-turn','prepare-steer','events','history-events','cancel-jobs','environment','permission','capability-context','attachments','lifecycle','preflight','media-export','mcp']);
   const toolActions=new Set(['status','info','capability','context','read','list','search','write','edit','artifact','run','job','jobs','agent','media-export','batch','isolation']);
   const timing=value=>{try{context.onBridgeTiming?.(value);}catch{}};
@@ -84,6 +88,8 @@ export function createHarnessAdapter(context) {
     const text='与 VPS 的连接中断，多次重连仍未成功（'+message+'）。网络恢复后重新打开此会话即可继续，VPS 上的对话记录不会丢失。';
     turnNotice(text);
     for(const channel of channels.values()){channel.push({kind:'event',event:{type:'session.faulted',error:errorResult(text).error}});channel.end();} channels.clear();
+    // The transport still owns pending failures, including relay replacement.
+    for(const sessionId of localBindings.keys())reads.forget(sessionId);
     localBindings.clear();
   }
   const transport=new SshTransport({
@@ -93,7 +99,7 @@ export function createHarnessAdapter(context) {
       if(frame.controlId){void localRequest(frame);return;}
       if(frame.timing){timing(frame.timing);return;}
       if(frame.sessionId){
-        if(frame.closed){const binding=localBindings.get(frame.sessionId);if(binding){binding.remoteClosed=true;binding.confirmClosed?.();}closeMcpSession(frame.sessionId);channels.get(frame.sessionId)?.end();channels.delete(frame.sessionId);localBindings.delete(frame.sessionId);return;}
+        if(frame.closed){const binding=localBindings.get(frame.sessionId);if(binding){binding.remoteClosed=true;binding.readLifetime.abort();binding.confirmClosed?.();}reads.close(frame.sessionId);closeMcpSession(frame.sessionId);channels.get(frame.sessionId)?.end();channels.delete(frame.sessionId);localBindings.delete(frame.sessionId);return;}
         if(frame.closeError){timing({phase:'session-cleanup',status:'unconfirmed',message:frame.closeError});return;}
         const channel=channels.get(frame.sessionId),binding=localBindings.get(frame.sessionId);
         const output=remap(frame.output,'claude-code',ID);
@@ -110,7 +116,8 @@ export function createHarnessAdapter(context) {
         if(frame.ended)channel?.end();
       }
     },
-    onState(state){if(['connecting','reconnecting','idle-restoring','unavailable'].includes(state.state)){preflight.invalidate();for(const binding of localBindings.values())invalidateBackground(binding);}timing({phase:'transport-state',...state});linkNotice(state);if(state.state==='unavailable')failed(state.message);}
+    onState(state){if(state.route)void recordRouteState(path.join(RUNTIME,'state'),state).catch(()=>{});
+      if(['connecting','reconnecting','idle-restoring','unavailable'].includes(state.state)){preflight.invalidate();for(const binding of localBindings.values())invalidateBackground(binding);}timing({phase:'transport-state',...state});linkNotice(state);if(state.state==='unavailable')failed(state.message);}
   });
   const config=getBridgeConfig();
   const preflight=createBridgePreflight({
@@ -118,7 +125,11 @@ export function createHarnessAdapter(context) {
     probe:()=>rpc('health',{},15000),timing,
     ...(config.legacy?.enabled&&config.legacy.tunnelScript?{recoverLegacy:()=>exec(config.pwshExecutable,['-NoLogo','-NoProfile','-File',config.legacy.tunnelScript],{windowsHide:true,timeout:90000})}:{})
   });
-  async function rpc(method,params,timeout=120000){return remap(await transport.rpc(method,remap(params,ID,'claude-code'),timeout),'claude-code',ID);}
+  async function rpc(method,params,timeout,signal){
+    const wire=remap(params,ID,'claude-code');
+    const result=SHARED_READS.has(method)?await reads.read(method,wire,timeout,signal):await transport.rpc(method,wire,timeout,signal);
+    return remap(result,'claude-code',ID);
+  }
   async function readAccount(force=false){
     if(accountPending)return accountPending;
     if(!force&&Date.now()<accountRefreshAfter)return accountSnapshot;
@@ -139,10 +150,11 @@ export function createHarnessAdapter(context) {
     // Only an account object replaces it. Null and failures preserve the snapshot.
     credits(){return accountSnapshot?.credits??null;},
     async refreshCredits(){await readAccount();return adapter.credits();},
-    async inspect(input={}){try{return await rpc('inspect',{refresh:input.refresh});}catch(error){return {status:'unavailable',error:errorResult(error.message).error};}},
-    async open(input){
+    async inspect(input={}){try{return await rpc('inspect',{refresh:input.refresh,purpose:input.purpose},undefined,input.signal);}catch(error){return {status:'unavailable',error:errorResult(error.message).error};}},
+    async open(input,options){
       let sessionId, channel;
       try{
+        (options?.signal??input.signal)?.throwIfAborted();
         if(!path.win32.isAbsolute(input.cwd)||!(await stat(input.cwd)).isDirectory())throw new Error('Select an existing local Windows project');
         const health=await preflight.health();
         if(input.kind==='fork'&&!health.capabilities.includes('native-fork'))throw new Error('Remote bridge has not loaded native fork support; reconnect after installing both sides.');
@@ -152,10 +164,10 @@ export function createHarnessAdapter(context) {
           await exec(getBridgeConfig().pwshExecutable,['-NoLogo','-NoProfile','-File',EXPORT],{env:{...env,CODEX_THREAD_ID:parent},windowsHide:true,timeout:15000});
         }
         sessionId=randomUUID();channel=new SessionChannel(reason=>faultSession(sessionId,reason)); channels.set(sessionId,channel);
-        const {environment,...safeInput}=input;
+        const {environment,signal,...safeInput}=input;
         const workspace=await projectInfo(input.cwd);
-        localBindings.set(sessionId,{cwd:workspace.cwd,projectId:workspace.projectId,parentThread:parent,requests:new SessionRequests()});
-        const opened=await rpc('open',{sessionId,input:safeInput,localCwd:input.cwd,parentThread:parent,workspace,localFeatures:['prepare-turn'],localControl:health.capabilities.includes('duplex-control'),localTools:health.capabilities.includes('duplex-tools')},input.kind==='fork'?180000:60000);
+        localBindings.set(sessionId,{cwd:workspace.cwd,projectId:workspace.projectId,parentThread:parent,requests:new SessionRequests(),readLifetime:new AbortController()});
+        const opened=await rpc('open',{sessionId,input:safeInput,localCwd:input.cwd,parentThread:parent,workspace,localFeatures:['prepare-turn'],localControl:health.capabilities.includes('duplex-control'),localTools:health.capabilities.includes('duplex-tools')},input.kind==='fork'?180000:60000,options?.signal??signal);
         if(!opened.ok){channel.end();channels.delete(sessionId);localBindings.delete(sessionId);return opened;}
         const metadata=opened.value;
         const binding=localBindings.get(sessionId);binding.nativeState??=metadata.initialState;
@@ -178,6 +190,8 @@ export function createHarnessAdapter(context) {
         function closeSession(){
           if(binding.closePromise)return binding.closePromise;
           binding.closing=true;
+          binding.readLifetime.abort();
+          reads.close(sessionId);
           const task=(async()=>{
             if(!binding.remoteClosed){
               let response;
@@ -193,7 +207,7 @@ export function createHarnessAdapter(context) {
           })();
           binding.closePromise=task;
           // Keep output/binding alive on failure for late confirmation and hooks.
-          task.catch(error=>{binding.closePromise=null;timing({phase:'session-cleanup',status:'unconfirmed',message:error.message});});
+          task.catch(error=>{binding.closePromise=null;if(!binding.remoteClosed)binding.readLifetime=new AbortController();timing({phase:'session-cleanup',status:'unconfirmed',message:error.message});});
           return task;
         }
         async function ensureSession(){
@@ -206,8 +220,15 @@ export function createHarnessAdapter(context) {
           })().finally(()=>{binding.rebinding=null;});
           return binding.rebinding;
         }
-        async function readSnapshot(){
-          const result=await rpc('snapshot',{sessionId});
+        async function sessionRead(method,signal){
+          const lifetime=binding.readLifetime.signal;
+          const until=signal?AbortSignal.any([signal,lifetime]):lifetime;
+          until.throwIfAborted();
+          await ensureSession();
+          return rpc(method,{sessionId},undefined,until);
+        }
+        async function readSnapshot(signal){
+          const result=await sessionRead('snapshot',signal);
           if(!result.ok||!result.value.state)return result;
           binding.nativeState=result.value.state;
           return result;
@@ -218,24 +239,26 @@ export function createHarnessAdapter(context) {
           workspace:metadata.workspace,remoteCwd:metadata.remoteCwd,
           hasBackgroundWork,
           commands:{
-            async list(){try{await ensureSession();return await rpc('commands-list',{sessionId});}catch(e){return errorResult(e.message);}},
-            execute(command){
+            async list(options){try{return await sessionRead('commands-list',options?.signal);}catch(e){return errorResult(e.message);}},
+            execute(command,options){
               const task=(async()=>{
                 let submitted=false;
                 try{
+                  options?.signal?.throwIfAborted();
                   if(binding.faulted)throw new Error(binding.faulted);
                   await ensureSession();submitted=true;
-                  return await rpc('commands-execute',{sessionId,command});
+                  return await rpc('commands-execute',{sessionId,command},undefined,options?.signal);
                 }catch(error){return submissionFailure(error,{submitted});}
               })();
               task.catch(()=>{});return task;
             }
           },
-          async readCapabilities(){try{await ensureSession();binding.capabilities=await rpc('capabilities',{sessionId});}catch(e){timing({phase:'capabilities',status:'unavailable',message:e.message});}return binding.capabilities??metadata.capabilities;},
-          execute(command){
+          async readCapabilities(options){try{binding.capabilities=await sessionRead('capabilities',options?.signal);}catch(e){timing({phase:'capabilities',status:'unavailable',message:e.message});}return binding.capabilities??metadata.capabilities;},
+          execute(command,options){
             const task=(async()=>{
               let submitting=false;
               try{
+                options?.signal?.throwIfAborted();
                 if(binding.faulted&&command.type!=='turn.cancel')throw new Error(binding.faulted);
                 if(['turn.start','turn.steer'].includes(command.type)){
                   command={...command,input:await decodeHostInput(command.input)};
@@ -245,7 +268,7 @@ export function createHarnessAdapter(context) {
                 await ensureSession();
                 const attachments=['turn.start','turn.steer'].includes(command.type)?{attachments:referencedMedia(command.input)}:{};
                 binding.submitting=(binding.submitting??0)+1;submitting=true;
-                return await rpc('execute',{sessionId,command,...attachments},['turn.start','turn.steer'].includes(command.type)?180000:60000);
+                return await rpc('execute',{sessionId,command,...attachments},['turn.start','turn.steer'].includes(command.type)?180000:60000,options?.signal);
               }catch(error){return submissionFailure(error,{submitted:submitting});}
               finally{if(submitting)binding.submitting=Math.max(0,(binding.submitting??0)-1);}
             })();
@@ -253,7 +276,7 @@ export function createHarnessAdapter(context) {
             task.catch(()=>{});
             return task;
           },
-          async readSnapshot(){try{await ensureSession();return await readSnapshot();}catch(e){if(e.code==='IDLE_RESTORE'){try{await ensureSession();return await readSnapshot();}catch(error){return errorResult(error.message);}}return errorResult(e.message);}},
+          async readSnapshot(options){try{return await readSnapshot(options?.signal);}catch(e){return errorResult(e.message);}},
           async refreshUsage(){try{await ensureSession();await rpc('usage',{sessionId});}catch(e){timing({phase:'usage',status:'unavailable',message:e.message});}},
           close:closeSession,
         };
@@ -271,7 +294,7 @@ export function createHarnessAdapter(context) {
         return {...errorResult(e.message),error:{...errorResult(e.message).error,retryable:false}};
       }
     },
-    async close(){for(const id of localBindings.keys())closeMcpSession(id);await transport.close();for(const c of channels.values())c.end();},
+    async close(){for(const [id,binding] of localBindings){binding.readLifetime.abort();closeMcpSession(id);}reads.close();await transport.close();for(const c of channels.values())c.end();},
   };
   return adapter;
 }

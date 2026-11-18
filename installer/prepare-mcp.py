@@ -1,7 +1,7 @@
 """Optional tools are configured explicitly, independently from bridge upgrades."""
 from pathlib import Path
-import argparse,json,subprocess,shlex,tomllib,inspect
-from bridge_config import load_config,ssh_args,INSTALLED
+import argparse,json,shlex,tomllib,inspect
+from bridge_config import load_config,remote_command,INSTALLED
 
 def changes_for(args,config):
     changes={}
@@ -47,7 +47,7 @@ if changed:
  tmp=p.with_name(p.name+'.tmp');tmp.write_text(json.dumps(result));tmp.chmod(0o600);os.replace(tmp,p)
 print(json.dumps({'changed':changed,'configured':sorted(result['mcpServers']),'mode':oct(p.stat().st_mode&0o777)}))
 """.replace('REMOTE_ROOT',repr(config['remoteRoot'])).replace('MERGE_FUNCTION',inspect.getsource(merge_tools))
-    r=subprocess.run(ssh_args(config,'python3 -c '+shlex.quote(code)),input=json.dumps(changes).encode(),capture_output=True,timeout=30)
+    r=remote_command(config,'python3 -c '+shlex.quote(code),json.dumps(changes),30)
     if r.returncode:raise RuntimeError('Optional MCP configuration failed; existing credentials were not printed. Check remote config JSON and directory permissions.')
     print(r.stdout.decode().strip())
 if __name__=='__main__':main()

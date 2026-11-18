@@ -5,8 +5,10 @@ import os from 'node:os';
 import {spawn,execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath,pathToFileURL} from 'node:url';
+import {BRIDGE_PROTOCOL} from './bridge-protocol.mjs';
 import {attachmentNotice} from './runtime/input-boundary.mjs';
 import {validateConfig,shellQuote} from './runtime/bridge-config.mjs';
+import {SshRoutes,routeObservation} from './runtime/ssh-routes.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const exec=promisify(execFile);
@@ -23,7 +25,9 @@ export async function probeSshVersion(config,{execute=exec}={}){
 export async function remoteExecutables(config,{execute=exec}={}){
   // python3 can diagnose a stale node-path even when check-health cannot start Node.
   const code=`import pathlib,os,json\np=pathlib.Path(${JSON.stringify(config.remoteRoot)})/'node-path'\nnode=p.read_text().strip() if p.is_file() else ''\nclaude=${JSON.stringify(config.remoteClaudeExecutable)}\nprint(json.dumps({k:bool(v and pathlib.Path(v).is_file() and os.access(v,os.X_OK)) for k,v in {'node':node,'claude':claude}.items()}))`;
-  const result=await execute(config.sshExecutable,['-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=12',config.sshHost,'python3 -c '+shellQuote(code)],{windowsHide:true,timeout:20000,maxBuffer:16384});
+  const routes=new SshRoutes(config);
+  const result=await routes.firstAvailable(route=>execute(config.sshExecutable,route.args('python3 -c '+shellQuote(code)),{windowsHide:true,timeout:20000,maxBuffer:16384}),
+    error=>error.killed||[255,'ROUTE_HELPER_UNAVAILABLE','ENOENT','EPIPE'].includes(error.code));
   const value=JSON.parse(result.stdout);
   if(typeof value.node!=='boolean'||typeof value.claude!=='boolean')throw Error('Invalid executable probe');
   return {node:value.node,claude:value.claude};
@@ -71,10 +75,17 @@ export async function stateSummary(state,{limit=10000,now=Date.now()}={}){
   return result;
 }
 
-export function remoteHealth(config,{spawnProcess=spawn,timeoutMs=20000}={}){
+export async function remoteHealth(config,{spawnProcess=spawn,timeoutMs=20000,onRoute}={}){
+  const routes=new SshRoutes(config);
+  const value=await routes.firstAvailable(route=>healthOnRoute(config,route,{spawnProcess,timeoutMs}),
+    error=>['ROUTE_HELPER_UNAVAILABLE','SSH_START_FAILED','SSH_INPUT_FAILED','SSH_CONNECTION_FAILED','REMOTE_HEALTH_TIMEOUT'].includes(error.code));
+  onRoute?.({route:routes.current.name,routeType:routes.current.proxy?.type??'direct',lastSwitchReason:routes.lastSwitchReason,ingress:value.ingress});
+  return value;
+}
+function healthOnRoute(config,route,{spawnProcess,timeoutMs}){
   return new Promise((resolve,reject)=>{
     const env={...process.env};for(const key of Object.keys(env))if(/ANTHROPIC|CLAUDE|CODEXHOST_RUNTIME|API_KEY|TOKEN|SECRET/i.test(key))delete env[key];
-    const child=spawnProcess(config.sshExecutable,['-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10',config.sshHost,shellQuote(config.remoteRoot+'/check-health')],{env,windowsHide:true,stdio:['pipe','pipe','pipe']});
+    const child=spawnProcess(config.sshExecutable,route.args(shellQuote(config.remoteRoot+'/check-health'),{connectTimeout:10}),{env,windowsHide:true,stdio:['pipe','pipe','pipe']});
     let buffer='',value,settled=false;
     const finish=(error)=>{if(settled)return;settled=true;clearTimeout(timer);if(error)reject(error);else resolve(value);};
     const timer=setTimeout(()=>{child.kill();finish(Object.assign(Error('Remote health timeout'),{code:'REMOTE_HEALTH_TIMEOUT'}));},timeoutMs);
@@ -91,7 +102,7 @@ export function remoteHealth(config,{spawnProcess=spawn,timeoutMs=20000}={}){
         }}catch{child.kill();finish(Object.assign(Error('Invalid health response'),{code:'REMOTE_HEALTH_INVALID'}));return;}
       }
     });
-    child.on('exit',code=>finish(code===0&&value?null:Object.assign(Error('Remote health did not complete'),{code:'REMOTE_HEALTH_FAILED'})));
+    child.on('close',code=>finish(code===0&&value?null:Object.assign(Error('Remote health did not complete'),{code:code===255?'SSH_CONNECTION_FAILED':'REMOTE_HEALTH_FAILED'})));
     child.stdin.write(JSON.stringify({id:'diagnostic-health',method:'health',params:{}})+'\n');
   });
 }
@@ -107,6 +118,7 @@ export async function diagnose({root=here,installedRoot=path.join(os.homedir(),'
   catch{add('configuration','unavailable',{reason:'missing-or-invalid',next:'Configure the bridge or set CLAUDE_VPS_CONFIG to your private configuration file.'},true);}
   const runtime=installed?'installed':'source'; // label only; never expose installation paths
   const target=installed?installedRoot:root,state=path.join(target,'runtime','state');
+  let diagnosticRoute;
   add('host-attachments','limited',{next:attachmentNotice});
   await Promise.all([
     (async()=>{try{add('actual-models','info',await modelSummary(state));}catch{add('actual-models','unavailable',{reason:'metadata-unreadable'});}})(),
@@ -137,10 +149,19 @@ export async function diagnose({root=here,installedRoot=path.join(os.homedir(),'
       catch{add('remote-executables','unavailable',{reason:'probe-failed',next:'检查 SSH 与远端 python3；尚未确认 Node/Claude 路径是否有效。'},true);}
     })(),
     (async()=>{if(!config||local){add('remote-bridge','not-checked',{reason:local?'local-only':'configuration-unavailable'});return;}
-      try{const health=await probeRemote(config),capabilities=Array.isArray(health?.capabilities)?health.capabilities:[];const core=health?.protocol===2&&['project-context','duplex-control','duplex-tools'].every(c=>capabilities.includes(c));add('remote-bridge',core?'ok':'unavailable',{protocol:Number.isInteger(health?.protocol)?health.protocol:null,bridgeVersion:version(health?.bridgeVersion),adapterVersion:version(health?.dependencyVersion),capabilities:['project-context','duplex-control','duplex-tools','native-fork','local-mcp','account-usage'].filter(c=>capabilities.includes(c)),scope:'fresh health process; no model, task or reverse tunnel'},true);}
+      try{const health=await probeRemote(config,{onRoute:row=>{diagnosticRoute=row;}}),capabilities=Array.isArray(health?.capabilities)?health.capabilities:[];const core=health?.protocol===BRIDGE_PROTOCOL&&['project-context','duplex-control','duplex-tools'].every(c=>capabilities.includes(c));add('remote-bridge',core?'ok':'unavailable',{protocol:Number.isInteger(health?.protocol)?health.protocol:null,bridgeVersion:version(health?.bridgeVersion),adapterVersion:version(health?.dependencyVersion),capabilities:['project-context','duplex-control','duplex-tools','native-fork','local-mcp','account-usage'].filter(c=>capabilities.includes(c)),scope:'fresh health process; no model, task or reverse tunnel'},true);}
       catch(error){add('remote-bridge','unavailable',{reason:['SSH_START_FAILED','SSH_INPUT_FAILED','REMOTE_HEALTH_TIMEOUT','REMOTE_HEALTH_INVALID'].includes(error.code)?error.code:'remote-health-failed',next:'Check the configured SSH connection and remote bridge installation.'},true);}
     })()
   ]);
+  if(config){
+    const stored=await json(path.join(state,'ssh-route.json')).catch(()=>null);
+    const observed=routeObservation(config,stored,runnerAlive);
+    add('ssh-route',observed?'observed':'not-observed',observed?{...observed,scope:'most recently observed adapter'}:{});
+    if(diagnosticRoute){
+      const probe=routeObservation(config,{...diagnosticRoute,state:'connected',pid:process.pid,observedAt:new Date().toISOString()},()=>true);
+      if(probe)add('diagnostic-route','observed',{...probe,scope:'fresh health probe'});
+    }
+  }
   add('quota-freshness','not-checked',{reason:'Current Host quota schema has no observation timestamp; no quota or credentials were queried.'});
   add('optional-mcp-configuration','not-checked',{reason:'Private MCP configuration is intentionally not read.'});
   return {schemaVersion:1,checkedAt:new Date().toISOString(),readOnly:true,modelSubmitted:false,overall:checks.some(c=>c.required&&c.status==='unavailable')?'attention':'ok',checks:checks.sort((a,b)=>a.stage.localeCompare(b.stage))};
@@ -150,5 +171,5 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const args=process.argv.slice(2);
   if(args.some(a=>!['--local','--json','--help'].includes(a))){console.error('Usage: node diagnose.mjs [--local] [--json]');process.exitCode=2;}
   else if(args.includes('--help'))console.log('node diagnose.mjs [--local] [--json]\nRead-only checks, no model turns. --local performs no network requests. Set CLAUDE_VPS_CONFIG for a specific private config.');
-  else {const report=await diagnose({local:args.includes('--local')});console.log(args.includes('--json')?JSON.stringify(report,null,2):report.checks.map(c=>c.stage+': '+c.status+(c.reason?' ('+c.reason+')':'')+(c.path?'\n  '+c.path+' '+(c.version??'版本未知'):'')+(c.sessions?'\n  '+JSON.stringify(c.sessions):'')+(c.next?'\n  '+c.next:'')).join('\n'));process.exitCode=report.overall==='ok'?0:1;}
+  else {const report=await diagnose({local:args.includes('--local')});console.log(args.includes('--json')?JSON.stringify(report,null,2):report.checks.map(c=>c.stage+': '+c.status+(c.reason?' ('+c.reason+')':'')+ (c.route?' '+c.route+' ('+c.state+'), VPS '+c.ingress.kind+(c.ingress.process?' / '+c.ingress.process:'')+', '+c.consistency+(c.lastSwitchReason?', '+c.lastSwitchReason:''):'')+(c.path?'\n  '+c.path+' '+(c.version??'版本未知'):'')+(c.sessions?'\n  '+JSON.stringify(c.sessions):'')+(c.next?'\n  '+c.next:'')).join('\n'));process.exitCode=report.overall==='ok'?0:1;}
 }

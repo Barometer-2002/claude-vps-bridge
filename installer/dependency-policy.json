@@ -4,5 +4,5 @@
   "track": "latest",
   "minimumVersion": "0.20.0",
   "pluginApiVersion": 1,
-  "bridgeProtocol": 2
+  "bridgeProtocol": 3
 }

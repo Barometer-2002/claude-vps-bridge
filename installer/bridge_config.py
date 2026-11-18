@@ -32,6 +32,9 @@ def validate(value):
         p=value.get(key)
         if not isinstance(p,str) or not p.startswith('/') or p=='/' or '..' in PurePosixPath(p).parts or any(c in p for c in '\r\n\0'):
             raise ValueError(key+' must be an absolute remote path without parent traversal')
+    if any(k in value for k in ('sshRoutes','transportChunkBytes','transportWindowBytes')):
+        result=_route_tool(value,{},validate_only=True)
+        if result.returncode:raise ValueError(result.stderr.decode(errors='replace').strip())
     return value
 
 def load_config():
@@ -41,12 +44,19 @@ def load_config():
         if file.is_file():return validate(json.loads(file.read_text(encoding='utf-8-sig')))
     raise RuntimeError('Bridge configuration missing. Run configure.py --ssh-host <alias> --host-root <CodexHost directory>.')
 
-def ssh_args(config,command):
-    return [config['sshExecutable'],'-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=12',config['sshHost'],command]
+def _route_tool(config,request,validate_only=False):
+    node=Path(config['hostRoot'])/'runtime/node.exe'
+    args=[str(node),str(INSTALLER/'route-command.mjs')]
+    if validate_only:args.append('--validate')
+    body=json.dumps({'config':config,**request},ensure_ascii=False).encode('utf-8')
+    return subprocess.run(args,input=body,capture_output=True)
+
+def remote_command(config,command,input,timeout):
+    return _route_tool(config,{'command':command,'input':input,'timeoutMs':timeout*1000})
 
 def remote_python(config,code,timeout=120):
     code=(INSTALLER/'remote_discovery.py').read_text(encoding='utf-8')+'\n'+(INSTALLER/'dependency.py').read_text(encoding='utf-8')+'\n'+code
-    result=subprocess.run(ssh_args(config,'python3 -'),input=code.encode(),capture_output=True,timeout=timeout)
+    result=remote_command(config,'python3 -',code,timeout)
     if result.returncode:raise RuntimeError(result.stderr.decode(errors='replace'))
     return result.stdout.decode()
 

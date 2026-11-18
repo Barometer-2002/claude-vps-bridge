@@ -1,4 +1,4 @@
-import {JsonWriter,readJsonLines} from './transport-streams.mjs';
+import {JsonWriter,readJsonLines,MAX_FRAME_BYTES} from './transport-streams.mjs';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -13,8 +13,12 @@ import {contextNotice,validNoticeState} from './context-notice.mjs';
 import {mergePromptCache} from './prompt-cache.mjs';
 const exec = promisify(execFile);
 
+import {BRIDGE_PROTOCOL} from './bridge-protocol.mjs';
 import {bridgeRoot,workspaceRoot,workspaceCommand,agentCommand,remoteConfig} from './remote-config.mjs';
 const root = workspaceRoot;
+const ingress = process.argv[2] === '--ssh-ingress'
+  ? JSON.parse(process.argv[3])
+  : {kind:'unknown',process:null};
 import {loadClaudeAdapter} from './adapter-loader.mjs';
 const {createHarnessAdapter,dependencyVersion,adapterSha256} = await loadClaudeAdapter();
 const {version:bridgeVersion}=JSON.parse(await readFile(path.join(bridgeRoot,'bridge-manifest.json'),'utf8'));
@@ -168,10 +172,55 @@ async function presentation(sessionId, output) {
     emitItems(sessionId,event.turnId,[{item:{type:'agentMessage',itemId:'windows-presentation-warning-'+event.turnId,phase:'commentary',text:'文件改动卡片未能同步：'+error.message+(file?'。重新打开会话后会补上。':'。')},outcome:{status:'succeeded'}}]);
   }
 }
-async function snapshotWithPresentation(s,binding,channelBinding=binding){
-  const result=await s.readSnapshot();if(!result.ok)return result;
-  for(const turn of result.value.turns){const ref=turn.nativeTurnRef;if(!ref)continue;try{const file=presentationFile(binding,ref),extra=JSON.parse(await readFile(file,'utf8'));if(extra.pending&&extra.source){if(extra.source.projectId!==binding.projectId)throw new Error('Presentation project mismatch');const records=channelBinding.duplexControl?await localControl(channelBinding,'history-events',{sourceSessionId:extra.source.sessionId,turnId:extra.source.turnId}):await localControl(extra.source,'events',{turnId:extra.source.turnId});extra.items=presentationItems(records,binding,extra.source.turnId,extra.displayedText??'');extra.pending=false;await saveJson(file,extra);}const ids=new Set(turn.items.map(x=>x.item.itemId));turn.items.push(...extra.items.filter(x=>!ids.has(x.item.itemId)));}catch(e){if(e.code!=='ENOENT')return fail('Native history exists, but Windows presentation could not be recovered: '+e.message);}}
+async function snapshotWithPresentation(s,binding,channelBinding=binding,signal){
+  signal?.throwIfAborted();
+  const result=await s.readSnapshot();
+  signal?.throwIfAborted();
+  if(!result.ok)return result;
+  for(const turn of result.value.turns){
+    const ref=turn.nativeTurnRef;
+    if(!ref)continue;
+    try{
+      const file=presentationFile(binding,ref);
+      const extra=JSON.parse(await readFile(file,{encoding:'utf8',signal}));
+      signal?.throwIfAborted();
+      if(extra.pending&&extra.source){
+        if(extra.source.projectId!==binding.projectId)throw new Error('Presentation project mismatch');
+        const records=channelBinding.duplexControl
+          ?await localControl(channelBinding,'history-events',{sourceSessionId:extra.source.sessionId,turnId:extra.source.turnId})
+          :await localControl(extra.source,'events',{turnId:extra.source.turnId});
+        signal?.throwIfAborted();
+        extra.items=presentationItems(records,binding,extra.source.turnId,extra.displayedText??'');
+        extra.pending=false;
+        await saveJson(file,extra);
+      }
+      const ids=new Set(turn.items.map(x=>x.item.itemId));
+      turn.items.push(...extra.items.filter(x=>!ids.has(x.item.itemId)));
+    }catch(e){
+      signal?.throwIfAborted();
+      if(e.code!=='ENOENT')return fail('Native history exists, but Windows presentation could not be recovered: '+e.message);
+    }
+  }
   return result;
+}
+
+const snapshotDigest=serialized=>createHash('sha256').update(serialized).digest('hex');
+function conditionalSnapshot(result,condition){
+  if(!condition||!result.ok||!Array.isArray(result.value?.turns))return result;
+  const serialized=JSON.stringify(result);
+  // The original RPC result can fit the 48 MiB worker pipe with no space
+  // left for an encoding/digest envelope. It also exceeds the client cache.
+  if(Buffer.byteLength(serialized)>MAX_FRAME_BYTES-512)return result;
+  const digest=snapshotDigest(serialized);
+  if(condition.digest===digest)return {snapshotEncoding:'unchanged',digest};
+  const turns=result.value.turns,count=condition.turnCount;
+  if(Number.isSafeInteger(count)&&count>0&&count<=turns.length&&
+     condition.turnsDigest===snapshotDigest(JSON.stringify(turns.slice(0,count)))){
+    // Preserve all current snapshot metadata, even when only the state changed.
+    return {snapshotEncoding:'append',base:condition.digest,digest,
+      result:{...result,value:{...result.value,turns:turns.slice(count)}}};
+  }
+  return {snapshotEncoding:'full',digest,result};
 }
 
 const openingSessions=new Map(),closingSessions=new Map();
@@ -183,15 +232,16 @@ async function releaseOpening(sessionId,opening){
     finally{opening.releasing=null;}
   });return opening.releasing;
 }
-async function request(method, params) {
-  if(method==='health')return {protocol:2,bridgeVersion,dependencyVersion,capabilities:['project-context','local-policy','local-hooks','media-cache','agent-context','job-recovery','native-fork','duplex-control','live-reverse-probe','duplex-tools','context-delta','local-mcp','account-usage'],adapterSha256};
+async function request(method, params, signal) {
+  if(method==='health')return {protocol:BRIDGE_PROTOCOL,ingress,bridgeVersion,dependencyVersion,capabilities:['project-context','local-policy','local-hooks','media-cache','agent-context','job-recovery','native-fork','duplex-control','live-reverse-probe','duplex-tools','context-delta','local-mcp','account-usage'],adapterSha256};
   if(method==='account')return inspectAccount();
   if(method==='reverse-health'){
     const legacy=remoteConfig.legacy;if(!legacy?.enabled)return false;
     try{const {stdout}=await exec('ssh',['-T','-p',String(legacy.port),'-i',legacy.identity,'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+legacy.knownHosts,'-o','ConnectTimeout=8',legacy.user+'@127.0.0.1','echo CODEXHOST_BRIDGE_READY'],{timeout:12000,maxBuffer:4096});return stdout.trim()==='CODEXHOST_BRIDGE_READY';}catch{return false;}
   }
   if (method === 'inspect') {
-    const result = await adapter.inspect({ refresh: params?.refresh });
+    const result = await adapter.inspect({ refresh: params?.refresh, purpose: params?.purpose });
+    signal?.throwIfAborted();
     if (result.capabilities) result.capabilities = limitedCapabilities(result.capabilities);
     return result;
   }
@@ -363,7 +413,12 @@ async function request(method, params) {
       return result;
       }catch(error){if(!submitted)error.delivery='not-sent';throw error;}
     }
-    case 'snapshot': return snapshotWithPresentation(s,bindings.get(params.sessionId));
+    case 'snapshot': {
+      const binding=bindings.get(params.sessionId);
+      const result=await snapshotWithPresentation(s,binding,binding,signal);
+      signal?.throwIfAborted();
+      return conditionalSnapshot(result,params.conditionalSnapshot);
+    }
     case 'capabilities': return limitedCapabilities(await (s.readCapabilities?.()??s.capabilities));
     case 'usage': await s.refreshUsage?.(); return null;
     case 'close': {
@@ -373,9 +428,26 @@ async function request(method, params) {
     default: throw new Error('Unsupported bridge operation');
   }
 }
+const activeRequests=new Map();
 readJsonLines(process.stdin,frame=>{
+  if(frame.cancelRequest!==undefined){
+    const active=activeRequests.get(frame.cancelRequest);
+    if(active){
+      activeRequests.delete(frame.cancelRequest);
+      active.abandoned=true;
+      active.controller?.abort();
+    }
+    return;
+  }
   if(frame.controlId){send({controlAck:frame.controlId});const pending=localPending.get(frame.controlId);if(!pending)return;localPending.delete(frame.controlId);clearTimeout(pending.timer);if(frame.error)pending.reject(new Error(frame.error));else pending.resolve(frame.value);return;}
-  void request(frame.method, frame.params).then(value => send({ id: frame.id, value }), error => send({ id: frame.id, error: {code:error.code??'REMOTE_OPERATION_FAILED',message:String(error.message),delivery:error.delivery??'unknown'} }));
+  const active={abandoned:false,controller:['inspect','snapshot'].includes(frame.method)?new AbortController():null};
+  activeRequests.set(frame.id,active);
+  // The relay owns the terminal cancellation reply. Writes keep running, but
+  // a caller that gave up no longer needs their potentially large result.
+  void request(frame.method,frame.params,active.controller?.signal).then(
+    value=>{if(!active.abandoned)send({id:frame.id,value});},
+    error=>{if(!active.abandoned)send({id:frame.id,error:{code:error.code??'REMOTE_OPERATION_FAILED',message:String(error.message),delivery:error.delivery??'unknown'}});}
+  ).finally(()=>activeRequests.delete(frame.id));
 },{onError:error=>{process.stderr.write(error.code+'\n');void closeStream(2);},onEnd:()=>void closeStream(0)});
 async function closeStream(code){
   if(streamClosing)return;streamClosing=true;

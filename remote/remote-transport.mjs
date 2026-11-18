@@ -7,7 +7,8 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {JsonWriter,readJsonLines} from './transport-streams.mjs';
-import {RelayLedger} from './relay-ledger.mjs';
+import {negotiateRelay} from './relay-channel.mjs';
+import {BRIDGE_PROTOCOL} from './bridge-protocol.mjs';
 const here=path.dirname(fileURLToPath(import.meta.url)),id=process.argv.at(-1);
 if(!/^[a-f0-9-]{36}$/.test(id??''))throw new Error('Invalid transport identity');
 const directory=path.join(here,'run'),socketPath=path.join(directory,id+'.sock');
@@ -44,17 +45,13 @@ if(process.argv[2]!=='--locked-serve'){
   if(!held.isFile()||held.dev!==named.dev||held.ino!==named.ino)throw new Error('Relay lock descriptor does not match this transport');
   delete process.env.CLAUDE_VPS_RELAY_LOCK_FD;
   await fs.unlink(socketPath).catch(error=>{if(error.code!=='ENOENT')throw error;});
-  const epoch=randomUUID(),accepted=new RelayLedger(),writers=new WeakMap(),sockets=new Set();let client=null,seq=0,acked=0,bytes=0,overflow=false,offlineSince=Date.now(),stopping=false;
-  let journal=[];
+  const epoch=randomUUID(),writers=new WeakMap(),sockets=new Set();
+  let client=null,channel,offlineSince=Date.now(),stopping=false;
   const worker=spawn(process.execPath,[path.join(here,'remote-server.mjs')],{stdio:['pipe','pipe','pipe']});
   let stderrTail='';worker.stderr.on('data',chunk=>{stderrTail=(stderrTail+chunk.toString()).slice(-8192);});
   const workerWriter=new JsonWriter(worker.stdin,{onError:()=>void stop()});
   const write=(s,value)=>{if(s&&!s.destroyed)try{writers.get(s).send(value);}catch{s.destroy();}};
-  const output=value=>{const frame={seq:++seq,payload:value},size=Buffer.byteLength(JSON.stringify(frame));journal.push({frame,size});bytes+=size;
-    while((bytes>32*1024*1024||journal.length>16384)&&journal.length){bytes-=journal.shift().size;overflow=true;}
-    if(value.id)accepted.responded(value.id,seq);write(client,frame);
-  };
-  const workerReader=readJsonLines(worker.stdout,output,{onError:()=>void stop()});
+  const workerReader=readJsonLines(worker.stdout,value=>channel.output(value),{onError:()=>void stop()});
   worker.stdin.on('error',()=>void stop());worker.on('error',()=>void stop());
   worker.on('exit',code=>{if(code&&!stopping)process.stderr.write('Remote worker exited ('+code+'). '+stderrTail+'\n');stderrTail='';void stop();});
   const server=net.createServer(socket=>{
@@ -62,22 +59,34 @@ if(process.argv[2]!=='--locked-serve'){
     let attached=false;socket.on('error',()=>{});sockets.add(socket);
     const writer=new JsonWriter(socket,{onError:()=>socket.destroy()});writers.set(socket,writer);
     socket.setTimeout(15000,()=>socket.destroy());
-    write(socket,{hello:{epoch,pid:process.pid}});
+    write(socket,{hello:{epoch,pid:process.pid,protocol:BRIDGE_PROTOCOL}});
+    function refuse(code,fatal){write(socket,{code,fatal});writer.end();}
     const reader=readJsonLines(socket,frame=>{
       if(!attached){
-        if(frame.attach!==id||(frame.epoch&&frame.epoch!==epoch)){write(socket,{code:'REMOTE_RELAY_REPLACED',fatal:'REMOTE_RELAY_REPLACED: pending outcomes are unknown; no request was replayed'});writer.end();return;}
-        if(!Number.isSafeInteger(frame.cursor)||frame.cursor<0||frame.cursor>seq||(overflow&&frame.cursor<(journal[0]?.frame.seq??seq+1)-1)){write(socket,{code:'REPLAY_GAP',fatal:'REPLAY_GAP: restore native history; no request was replayed'});writer.end();return;}
-        if(client&&client!==socket)client.destroy();client=socket;attached=true;offlineSince=null;socket.setTimeout(0);
-        for(const entry of journal)if(entry.frame.seq>frame.cursor)write(socket,entry.frame);
-        write(socket,{ready:{epoch}});return;
+        try{channel=negotiateRelay(frame,id,epoch,channel,value=>workerWriter.send(value));}
+        catch(e){refuse(e.code,e.message);return;}
+        if(client&&client!==socket)client.destroy();
+        client=socket;attached=true;offlineSince=null;socket.setTimeout(0);
+        write(socket,{ready:{epoch,protocol:BRIDGE_PROTOCOL,cursor:channel.input.cursor}});
+        channel.attach(frame.cursor,buffer=>{
+          try{writer.sendBuffer(buffer);}
+          catch{channel.out.detach();socket.destroy();}
+        });
+        return;
       }
       if(socket!==client)return;
-      if(frame.ack!==undefined){if(Number.isSafeInteger(frame.ack)&&frame.ack>acked&&frame.ack<=seq){acked=frame.ack;while(journal.length&&journal[0].frame.seq<=acked)bytes-=journal.shift().size;accepted.acknowledge(acked);}return;}
       if(frame.shutdown){void stop();return;}
-      if(frame.id){const decision=accepted.accept(frame);if(decision==='duplicate')return;if(decision!=='accepted'){output({id:frame.id,error:{code:decision,message:'Relay refused this request before execution: '+decision}});return;}}
-      try{workerWriter.send(frame);}catch(error){if(frame.id)output({id:frame.id,error:{code:error.code??'TRANSPORT_BACKPRESSURE',message:error.message}});else void stop();}
+      try{
+        if(frame.ack!==undefined)channel.ack(frame.ack);
+        else write(socket,{ack:channel.receive(frame)});
+      }catch(error){
+        // A failed sequence cannot be skipped. Retire this relay so neither
+        // side can re-execute a partially delivered message on a later attach.
+        refuse(error.code??'INVALID_FRAME','Transport state could not be recovered; outcomes unknown');
+        void stop();
+      }
     },{onError:()=>socket.destroy()});
-    socket.on('close',()=>{reader.dispose();writer.dispose();sockets.delete(socket);if(client===socket){client=null;offlineSince=Date.now();}});
+    socket.on('close',()=>{reader.dispose();writer.dispose();sockets.delete(socket);if(client===socket){channel?.out.detach();client=null;offlineSince=Date.now();}});
   });
   async function stop(){if(stopping)return;stopping=true;clearInterval(idle);for(const socket of sockets){writers.get(socket)?.dispose();socket.destroy();}server.close();workerReader.dispose();workerWriter.end();const timer=setTimeout(()=>worker.kill(),5000);timer.unref();await fs.unlink(socketPath).catch(()=>{});setTimeout(()=>process.exit(0),5500).unref();}
   const idle=setInterval(()=>{if(offlineSince&&Date.now()-offlineSince>15*60*1000)void stop();},30000);idle.unref();

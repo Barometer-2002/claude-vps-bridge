@@ -1,5 +1,6 @@
 """Bounded byte forwarding for SSH; relay owns sessions, framing and replay."""
 import errno
+import json
 import os
 from pathlib import Path
 import re
@@ -8,6 +9,7 @@ import socket
 import subprocess
 import sys
 import time
+from ssh_ingress import observe
 
 LIMIT = 128 * 1024
 CHUNK = 64 * 1024
@@ -124,6 +126,9 @@ def main():
         raise ValueError('Invalid transport identity')
     root = Path(__file__).resolve().parent
     with connect(root, sys.argv[1]) as client:
+        # This short-lived SSH channel owns the current tuple. A detached relay
+        # can outlive many SSH routes and cannot truthfully supply this metadata.
+        print(json.dumps({'ingress': observe()}), flush=True)
         forward(client)
 
 

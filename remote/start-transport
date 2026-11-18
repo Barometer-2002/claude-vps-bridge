@@ -3,5 +3,5 @@ set -eu
 cd -- "$(dirname -- "$0")"
 case "${1-}" in
   --serve|--locked-serve) exec "$(cat node-path)" remote-transport.mjs "$@" ;;
-  *) exec python3 transport-proxy.py "$@" ;;
+  *) exec python3 -B transport-proxy.py "$@" ;;
 esac

@@ -4,13 +4,14 @@ import argparse,json,shutil,os,subprocess
 from bridge_config import SOURCE,validate,remote_python
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--ssh-host',required=True);p.add_argument('--host-root');p.add_argument('--remote-root');p.add_argument('--remote-workspace-root');p.add_argument('--remote-claude');p.add_argument('--remote-node');p.add_argument('--ssh-executable');p.add_argument('--output',type=Path,default=SOURCE/'bridge-config.local.json');a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--ssh-host',required=True);p.add_argument('--host-root');p.add_argument('--remote-root');p.add_argument('--remote-workspace-root');p.add_argument('--remote-claude');p.add_argument('--remote-node');p.add_argument('--ssh-executable');p.add_argument('--ssh-routes',type=json.loads,default=argparse.SUPPRESS,help='Ordered SSH routes as a JSON array');p.add_argument('--output',type=Path,default=SOURCE/'bridge-config.local.json');a=p.parse_args()
     if a.output.exists():raise RuntimeError('Configuration already exists; edit it explicitly instead of overwriting it')
     cli=shutil.which('codexhost');host=Path(a.host_root or os.environ.get('CLAUDE_VPS_HOST_ROOT') or (str(Path(cli).parent.parent) if cli else ''))
     if not (host/'app/host-runtime.mjs').is_file() or not (host/'runtime/node.exe').is_file():raise RuntimeError('Provide --host-root pointing to the installed CodexHost directory')
     ssh=shutil.which(a.ssh_executable or 'ssh');pwsh=shutil.which('pwsh')
     if not ssh or not pwsh:raise RuntimeError('OpenSSH client and PowerShell 7 must be available on PATH')
     config={'schemaVersion':1,'sshHost':a.ssh_host,'hostRoot':str(host.resolve()),'sshExecutable':ssh,'pwshExecutable':pwsh,'remoteRoot':a.remote_root or '/pending','remoteWorkspaceRoot':a.remote_workspace_root or '/pending','remoteClaudeExecutable':a.remote_claude or '/pending','legacy':{'enabled':False}}
+    if hasattr(a,'ssh_routes'):config['sshRoutes']=a.ssh_routes
     validate(config)
     ssh_check=subprocess.run([ssh,'-V'],capture_output=True,text=True,check=True,timeout=10)
     probe=remote_python(config,"import pathlib,json\npaths=discover_remote("+repr({'claude':a.remote_claude,'node':a.remote_node})+")\nprint(json.dumps({'home':str(pathlib.Path.home()),**paths}))\n")

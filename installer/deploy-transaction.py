@@ -36,6 +36,9 @@ def main():
     tx=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ');stage=SOURCE/'transactions'/tx;stage.mkdir(parents=True)
     config=load_config();target=INSTALLED;hostRoot=Path(config['hostRoot']);node=hostRoot/'runtime/node.exe'
     pairs=[(PLUGIN/n,target/n) for n in ('plugin.mjs','manifest.json','icon.svg','transport-streams.mjs','diagnose.mjs','maintenance.mjs')]
+    # Deploy the same policy and loader side by side at both flat runtime roots.
+    protocol_files=('bridge-protocol.mjs','dependency-policy.json')
+    pairs.extend((INSTALLER/name,target/name) for name in protocol_files)
     pairs += [(p,target/'runtime'/p.relative_to(PLUGIN/'runtime')) for p in (PLUGIN/'runtime').rglob('*') if p.is_file() and (p.parent==PLUGIN/'runtime' and p.suffix in ('.mjs','.json','.ps1') or 'node_modules' in p.relative_to(PLUGIN/'runtime').parts)]
     data=[(dest,src.read_bytes()) for src,dest in pairs]+[(target/'bridge-config.json',json.dumps(config,indent=2).encode())]
     # Retired plugin code only; deletion has the same backup/conflict/rollback checks.
@@ -63,9 +66,10 @@ def main():
         rows.append({'path':str(dest),'key':key,'beforeHash':sha(before) if before is not None else None,'sha256':sha(content) if content is not None else None})
         if content is not None and dest.suffix=='.mjs':
             check=stage/(key+'.mjs');check.write_bytes(content);subprocess.run([str(node),'--check',str(check)],check=True,capture_output=True)
-    names=('remote-config.mjs','bridge_paths.py','windows-agent','remote-server.mjs','mcp-local.py','remote-transport.mjs','transport-proxy.py','relay-lock.py','transport-streams.mjs','relay-ledger.mjs','tool-bridge.mjs','context-delta.mjs','context-notice.mjs','prompt-cache.mjs','compact-context.py','workspace-request.py','workspace-map.mjs','fork-state.mjs','workspace-guard.py','workspace-settings.json','bridge-instructions.md','claude-windows','media-transfer.py','adapter-loader.mjs','start-transport','check-health','windows-workspace')
+    names=('remote-config.mjs','bridge_paths.py','windows-agent','remote-server.mjs','mcp-local.py','remote-transport.mjs','transport-proxy.py','ssh_ingress.py','relay-lock.py','transport-streams.mjs','relay-ledger.mjs','relay-channel.mjs','tool-bridge.mjs','context-delta.mjs','context-notice.mjs','prompt-cache.mjs','compact-context.py','workspace-request.py','workspace-map.mjs','fork-state.mjs','workspace-guard.py','workspace-settings.json','bridge-instructions.md','claude-windows','media-transfer.py','adapter-loader.mjs','start-transport','check-health','windows-workspace')
     payload={n:(REMOTE/n).read_text(encoding='utf8') for n in names}
     payload['bridge-manifest.json']=(PLUGIN/'manifest.json').read_text(encoding='utf-8')
+    payload.update({name:(INSTALLER/name).read_text(encoding='utf-8') for name in protocol_files})
     payload['workspace-request-schema.json']=(PLUGIN/'runtime/workspace-request-schema.json').read_text(encoding='utf-8')
     policy=load_policy((INSTALLER/'dependency-policy.json').read_text())
     # The version is whatever prepare-dependency.py validated on the VPS (latest, or the kept one).
@@ -90,7 +94,8 @@ def main():
         if args.fail_after_local:raise RuntimeError('Injected transaction failure')
         report={'connection':config,'installedAt':tx,'localBackup':str(stage),'localPlugin':str(target),'selfContained':True,'remote':{'backup':prepared['stage'],'hashes':prepared['hashes'],'adapter':prepared['adapter']},'files':rows,'hostVersion':journal['hostVersion'],'transaction':str(stage)}
         replace(reportPath,json.dumps(report,ensure_ascii=False,indent=2).encode())
-        subprocess.run([str(node),str(INSTALLER/'verify-upgrade.mjs')],check=True,timeout=100)
+        routes=len(config.get('sshRoutes',[None]))
+        subprocess.run([str(node),str(INSTALLER/'verify-upgrade.mjs')],check=True,timeout=100+50*(routes-1))
         journal['phase']='verified';(stage/'journal.json').write_text(json.dumps(journal,indent=2));print(json.dumps({'success':True,'transaction':str(stage),'restartRequired':True}))
     except Exception as error:
         problems=[]

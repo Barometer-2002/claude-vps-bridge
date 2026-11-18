@@ -1,8 +1,9 @@
+import {BRIDGE_PROTOCOL} from '../bridge-protocol.mjs';
 const fault=(code,message)=>Object.assign(new Error(message),{code});
 export function createBridgePreflight({connect,connectionKey,probe,recoverLegacy,timing=()=>{},now=Date.now,healthTtlMs=30000}){
   let healthCache,healthPending,generation=0;
   function validate(value){
-    if(value?.protocol!==2||!Array.isArray(value.capabilities)||!value.capabilities.includes('project-context'))throw fault('BRIDGE_PROTOCOL_INCOMPATIBLE','Bridge versions differ. Update both installed sides before starting a model turn.');
+    if(value?.protocol!==BRIDGE_PROTOCOL||!Array.isArray(value.capabilities)||!value.capabilities.includes('project-context'))throw fault('BRIDGE_PROTOCOL_INCOMPATIBLE','Bridge versions differ. Update both installed sides before starting a model turn.');
     return value;
   }
   async function health(){
