@@ -37,6 +37,17 @@ Claude 适配器能加载，结束时关闭临时进程；不启动反向隧道�
 `--local` 的成功不表示远端已通过检查。当前 Host 额度契约没有更新时间字段，
 诊断明确标注这项未检查，不从缓存倒计时推测额度或订阅到期。
 
+## 线路与入口
+
+`node .\plugin\diagnose.mjs` 输出两项与线路有关的检查：
+
+- `ssh-route`：聊天实际在用的连接。显示线路名、VPS 观测到的入口、两者是否一致和最近一次切换的原因。宿主重开后、聊天第一次连接前显示 `not-observed`。
+- `diagnostic-route`：诊断时新开一条连接实测的结果，用来判断首选线路现在能否用。
+
+入口分类：`direct` 表示从外部地址直连；`local-proxy` 表示经 VPS 本机进程转入，`process` 给出该进程名（例如 `cloudflared`、`sing-box`）。一致性：`match` 表示观测与配置吻合；`mismatch` 表示不吻合，例如配置为 cloudflared 却观测到 direct；`unknown` 表示无法判断，例如 SOCKS5 线路只能看到代理的最后一跳。
+
+切换原因：`connection-failed`、`handshake-timeout`、`read-stalled`、`route-helper-unavailable`（例如找不到 cloudflared）。备用线路正常时不会主动切回首选；正常重开宿主或新建连接时重新从第一条开始。
+
 ## 附件与热态检查
 
 插件只处理宿主公开接口传入的内容，不读取或修改 `host-runtime.mjs`。文字输入里的 Desktop 图片附件清单会被识别，登记其明确提供的本机路径并传输；没有可读路径时，可让 Claude 使用 `windows-workspace media` 读取已保存的项目文件。宿主若通过公开接口传入结构化附件，插件按实际类型处理，无法识别时拒绝提交。

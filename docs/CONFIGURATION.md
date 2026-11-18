@@ -17,6 +17,54 @@ pwsh -NoProfile -File .\install.ps1
 
 安装器把运行时配置写入插件目录、远端的 `remote-config.json` 与 `claude-path`，由同一代码事务备份和恢复。远端命令安装在桥接目录内，不覆盖 `/usr/local/bin`，不要求 root。主机、路径和代码更新不迁移已有项目映射、机器 ID 或原生历史；不要把更换远端工作区根目录当成自动数据迁移。
 
+## SSH 线路
+
+默认只有一条线路：按 `sshHost` 直连。直连 VPS 的线路不稳定时，可以在桥接配置里写一个有序的线路列表，桥接按顺序使用第一条可用的线路，出问题时自动换下一条。
+
+```json
+{
+  "sshRoutes": [
+    {"name": "cloudflared", "proxy": {"type": "cloudflared", "hostname": "ssh.example.com"}},
+    {"name": "local-socks", "proxy": {"type": "socks5", "host": "127.0.0.1", "port": 10808}},
+    {"name": "direct", "direct": true}
+  ]
+}
+```
+
+也可以在配置时传入：`python .\installer\configure.py ... --ssh-routes '<JSON 数组>'`。
+
+| 类型 | 说明 |
+|---|---|
+| `direct` | 按 `sshHost` 直连，不使用代理 |
+| `socks5` | 经本机 SOCKS5 代理连接。插件自带转发辅助，Windows 不需要另装 `nc` 或 `connect.exe` |
+| `cloudflared` | 用本机 `cloudflared access ssh --hostname` 连接。可用 `executable` 指定 `cloudflared.exe` 的绝对路径；省略时在 PATH、Program Files 和 WinGet 目录中查找，找不到时这条线路视为不可用 |
+
+所有线路仍使用 `sshHost` 对应的 SSH 配置、密钥和已确认的主机密钥；代理只改变到达 VPS 的路径，不改变身份校验。
+
+使用 cloudflared 线路前，VPS 的 cloudflared 隧道需要有一条 SSH 入口，并为它添加 DNS 记录，例如：
+
+```yaml
+ingress:
+  - hostname: ssh.example.com
+    service: ssh://localhost:22
+  # ... 其他规则，兜底的 http_status:404 放在最后
+```
+
+```bash
+cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+cloudflared tunnel route dns <隧道 ID> ssh.example.com
+systemctl restart cloudflared
+```
+
+切换规则：
+
+- 新连接从第一条线路开始。连接失败、握手超时、连接中断，或读取长时间没有进展且只有只读请求在途时，换到下一条线路。
+- 切换后仍接回原来的 VPS 中继，沿用原请求编号与进度，不会重新提交请求。
+- 正在使用的备用线路正常时不会定时切回；下次新建连接时重新从第一条开始。
+- 安装、诊断、升级校验和可选工具配置使用同一套线路。安装命令只在远端确认就绪后才放行；放行之后连接断开不会换线路重做。
+
+传输参数一般不需要改：`transportChunkBytes`（默认 32768，大消息的分块大小）和 `transportWindowBytes`（默认 65536，已发出但未确认的字节上限）。两端在连接时核对这两个值。
+
 ## 可选工具
 
 基础安装和升级不读取本机 Codex 的 MCP 凭据，也不创建或改写远端私有 MCP 配置。没有该配置时，Claude 会使用空的可选 MCP 列表。
