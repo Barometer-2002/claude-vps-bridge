@@ -1,6 +1,6 @@
 # 更新记录
 
-## 0.14.1（未发布）
+## 0.14.1 · 2026-11-18
 
 - 线路切换时记录归类后的失败原因与时间（例如 `dns-failed`、`cloudflared-error`、`connection-timeout`），`diagnose.mjs` 一并显示；原始 SSH/cloudflared 报错只在内存中归类，不写盘也不输出。
 
