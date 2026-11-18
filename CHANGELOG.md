@@ -1,5 +1,9 @@
 # 更新记录
 
+## 0.14.1（未发布）
+
+- 线路切换时记录归类后的失败原因与时间（例如 `dns-failed`、`cloudflared-error`、`connection-timeout`），`diagnose.mjs` 一并显示；原始 SSH/cloudflared 报错只在内存中归类，不写盘也不输出。
+
 ## 0.14.0 · 2026-11-18
 
 适配官方 CodexHost 0.20.0 及以上版本，两端跟随官方最新版（已验证 0.21.0）。插件不修改宿主文件。

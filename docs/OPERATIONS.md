@@ -55,7 +55,7 @@ Claude 适配器能加载，结束时关闭临时进程；不启动反向隧道�
 
 入口分类：`direct` 表示从外部地址直连；`local-proxy` 表示经 VPS 本机进程转入，`process` 给出该进程名（例如 `cloudflared`、`sing-box`）。一致性：`match` 表示观测与配置吻合；`mismatch` 表示不吻合，例如配置为 cloudflared 却观测到 direct；`unknown` 表示无法判断，例如 SOCKS5 线路只能看到代理的最后一跳。
 
-切换原因：`connection-failed`、`handshake-timeout`、`read-stalled`、`route-helper-unavailable`（例如找不到 cloudflared）。备用线路正常时不会主动切回首选；宿主重新启动或新建连接时重新从第一条开始。
+切换原因：`connection-failed`、`handshake-timeout`、`read-stalled`、`route-helper-unavailable`（例如找不到 cloudflared）。切换时还会记录 `lastSwitchDetail` 和 `lastSwitchAt`：前者是由 SSH 或 cloudflared 报错归类得到的原因（`dns-failed`、`connection-refused`、`connection-timeout`、`network-unreachable`、`host-key-mismatch`、`auth-failed`、`socks-failed`、`cloudflared-error`、`proxy-closed`、`closed-by-remote`、`unclassified`），后者是发生时间。原始报错只在内存中用于归类，不写盘也不输出，避免泄露地址。备用线路正常时不会主动切回首选；宿主重新启动或新建连接时重新从第一条开始。
 
 ## 附件与热态检查
 

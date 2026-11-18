@@ -9,6 +9,26 @@ import {replaceFile} from './atomic-file.mjs';
 const helper=fileURLToPath(new URL('socks-connect.mjs',import.meta.url));
 const label=/^[\p{L}][\p{L}\p{N}_-]{0,47}$/u;
 const reasons=new Set(['connection-failed','handshake-timeout','read-stalled','route-helper-unavailable']);
+// SSH/cloudflared stderr is reduced to a fixed category; the text itself (which
+// may contain addresses or hostnames) is never stored or reported.
+const failureKinds=[
+  ['dns-failed',/could not resolve hostname|no such host|name or service not known|temporary failure in name resolution|lookup .* (?:failed|no such)/i],
+  ['host-key-mismatch',/remote host identification has changed|host key verification failed/i],
+  ['auth-failed',/permission denied|too many authentication failures/i],
+  ['connection-refused',/connection refused/i],
+  ['network-unreachable',/network is unreachable|no route to host/i],
+  ['connection-timeout',/timed out|timeout/i],
+  ['socks-failed',/\bSOCKS_[A-Z_0-9]+\b/],
+  ['cloudflared-error',/\bERR\b|failed to connect to origin|websocket: bad handshake|access denied/i],
+  ['proxy-closed',/kex_exchange_identification|connection closed by unknown port 65535|ssh_exchange_identification/i],
+  ['closed-by-remote',/connection (?:closed|reset) by/i],
+];
+export const failureDetails=new Set([...failureKinds.map(([kind])=>kind),'unclassified']);
+export function classifySshFailure(stderr){
+  if(typeof stderr!=='string'||!stderr.trim())return null;
+  for(const [kind,pattern] of failureKinds)if(pattern.test(stderr))return kind;
+  return 'unclassified';
+}
 export function routeFailureReason(error){
   if(error.code==='ROUTE_HELPER_UNAVAILABLE')return 'route-helper-unavailable';
   if(['HANDSHAKE_TIMEOUT','SSH_HANDSHAKE_TIMEOUT','REMOTE_HEALTH_TIMEOUT'].includes(error.code))return 'handshake-timeout';
@@ -59,13 +79,14 @@ function findCloudflared(explicit){
   throw Object.assign(Error('cloudflared executable unavailable'),{code:'ROUTE_HELPER_UNAVAILABLE'});
 }
 export class SshRoutes{
-  constructor(config,{locateCloudflared=findCloudflared}={}){this.config=config;this.routes=validateRoutes(config.sshRoutes);this.locateCloudflared=locateCloudflared;this.index=0;this.lastSwitchReason=null;}
+  constructor(config,{locateCloudflared=findCloudflared}={}){this.config=config;this.routes=validateRoutes(config.sshRoutes);this.locateCloudflared=locateCloudflared;this.index=0;this.lastSwitchReason=null;this.lastSwitchDetail=null;this.lastSwitchAt=null;}
   get current(){return this.routes[this.index];}
   get length(){return this.routes.length;}
-  advance(reason){
+  advance(reason,detail=null){
     if(this.length===1)return false;
     this.index=(this.index+1)%this.length;
     this.lastSwitchReason=reasons.has(reason)?reason:'connection-failed';
+    this.lastSwitchDetail=failureDetails.has(detail)?detail:null;this.lastSwitchAt=new Date().toISOString();
     return true;
   }
   args(command,{connectTimeout=12,keepAlive=false}={}){
@@ -86,12 +107,13 @@ export class SshRoutes{
       try{return await attempt(this);}
       catch(error){
         if(i+1>=this.length||!mayRetry(error))throw error;
-        this.advance(routeFailureReason(error));
+        this.advance(routeFailureReason(error),error.sshFailure);
       }
     }
   }
 }
 
+const validTime=value=>typeof value==='string'&&Number.isFinite(Date.parse(value))?new Date(Date.parse(value)).toISOString():null;
 const states=new Set(['connecting','reconnecting','connected','unavailable','closed']);
 const routeTypes=new Set(['direct','cloudflared','socks5']);
 function safeIngress(value){
@@ -102,7 +124,7 @@ function safeIngress(value){
 let pendingObservation=Promise.resolve();
 export function recordRouteState(directory,state){
   if(typeof state.route!=='string'||!label.test(state.route)||!states.has(state.state))return Promise.resolve();
-  const row={route:state.route,routeType:routeTypes.has(state.routeType)?state.routeType:null,state:state.state,ingress:safeIngress(state.ingress),lastSwitchReason:reasons.has(state.lastSwitchReason)?state.lastSwitchReason:null,observedAt:new Date().toISOString(),pid:process.pid};
+  const row={route:state.route,routeType:routeTypes.has(state.routeType)?state.routeType:null,state:state.state,ingress:safeIngress(state.ingress),lastSwitchReason:reasons.has(state.lastSwitchReason)?state.lastSwitchReason:null,lastSwitchDetail:failureDetails.has(state.lastSwitchDetail)?state.lastSwitchDetail:null,lastSwitchAt:validTime(state.lastSwitchAt),observedAt:new Date().toISOString(),pid:process.pid};
   const file=path.join(directory,'ssh-route.json');
   // Preserve callback order even when mkdir/rename of an earlier state is slow.
   pendingObservation=pendingObservation.catch(()=>{}).then(async()=>{
@@ -132,5 +154,5 @@ export function routeObservation(config,row,isAlive){
       else if(ingress.process)consistency=ingress.process==='cloudflared'?'match':'mismatch';
     }
   }
-  return {route:row.route,routeType:type,state:isAlive(row.pid)===false?'stopped':row.state,ingress,consistency,lastSwitchReason:reasons.has(row.lastSwitchReason)?row.lastSwitchReason:null,observedAt:new Date(observed).toISOString()};
+  return {route:row.route,routeType:type,state:isAlive(row.pid)===false?'stopped':row.state,ingress,consistency,lastSwitchReason:reasons.has(row.lastSwitchReason)?row.lastSwitchReason:null,lastSwitchDetail:failureDetails.has(row.lastSwitchDetail)?row.lastSwitchDetail:null,lastSwitchAt:validTime(row.lastSwitchAt),observedAt:new Date(observed).toISOString()};
 }

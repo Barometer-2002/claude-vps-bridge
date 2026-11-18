@@ -1,7 +1,7 @@
 import {spawn} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {getBridgeConfig,shellQuote} from './bridge-config.mjs';
-import {SshRoutes,routeFailureReason} from './ssh-routes.mjs';
+import {SshRoutes,routeFailureReason,classifySshFailure} from './ssh-routes.mjs';
 import {BRIDGE_PROTOCOL} from '../bridge-protocol.mjs';
 import {deliveryError} from './delivery-outcome.mjs';
 import {FlowReceiver,FlowSender,flowLimits,JsonWriter,readJsonLines,jsonFrame,transportError,MAX_QUEUE_BYTES} from '../transport-streams.mjs';
@@ -20,7 +20,7 @@ export class SshTransport{
     this.pendingBytes=0;this.replyBytes=0;this.requestNo=0;this.cursor=0;this.closed=false;this.ready=false;
   }
   state(state,extra={}){
-    this.onState?.({state,route:this.routes?.current.name,routeType:this.routes?.current.proxy?.type??'direct',lastSwitchReason:this.routes?.lastSwitchReason,
+    this.onState?.({state,route:this.routes?.current.name,routeType:this.routes?.current.proxy?.type??'direct',lastSwitchReason:this.routes?.lastSwitchReason,lastSwitchDetail:this.routes?.lastSwitchDetail,lastSwitchAt:this.routes?.lastSwitchAt,
       ...(state==='connected'?{ingress:this.ingress}:{}),...extra});
   }
   forget(id){
@@ -77,7 +77,7 @@ export class SshTransport{
           if(probing.some(p=>p.probed.size===this.routes.length))break;
         }
         if(attempt+1<attempts){
-          this.routes.advance(routeFailureReason(e));
+          this.routes.advance(routeFailureReason(e),e.sshFailure);
           await new Promise(r=>setTimeout(r,250*(attempt+1)));
         }
       }
@@ -100,9 +100,11 @@ export class SshTransport{
     const proc=this.spawnProcess(config.sshExecutable,args,{env,stdio:['pipe','pipe','pipe'],windowsHide:true});
     this.proc=proc;this.ingress=unknownIngress();
     let established=false,settled=false,reader,peerProtocol,peerEpoch;
-    const rejectOnce=e=>{if(!settled){settled=true;clearTimeout(timer);reject(e);}};
+    // Bounded stderr tail, kept in memory only for classifying a failed attempt.
+    let stderrTail='';
+    const rejectOnce=e=>{if(!settled){settled=true;clearTimeout(timer);if(e&&typeof e==='object'&&e.sshFailure===undefined)e.sshFailure=classifySshFailure(stderrTail);reject(e);}};
     const timer=setTimeout(()=>{rejectOnce(transportError('HANDSHAKE_TIMEOUT','SSH handshake timed out'));proc.kill();},this.handshakeMs);
-    proc.stderr.on('data',()=>{}); // Drain without exposing private addresses in diagnostics.
+    proc.stderr.on('data',chunk=>{stderrTail=(stderrTail+chunk).slice(-4096);}); // Classified only; never stored or reported.
     const lost=error=>{
       if(this.proc!==proc)return;
       this.ready=false;this.proc=null;this.out?.detach();writer.dispose();reader?.dispose();this.wasDisconnected=true;
