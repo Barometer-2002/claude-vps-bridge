@@ -41,6 +41,8 @@ def main():
     pairs.extend((INSTALLER/name,target/name) for name in protocol_files)
     pairs += [(p,target/'runtime'/p.relative_to(PLUGIN/'runtime')) for p in (PLUGIN/'runtime').rglob('*') if p.is_file() and (p.parent==PLUGIN/'runtime' and p.suffix in ('.mjs','.json','.ps1') or 'node_modules' in p.relative_to(PLUGIN/'runtime').parts)]
     data=[(dest,src.read_bytes()) for src,dest in pairs]+[(target/'bridge-config.json',json.dumps(config,indent=2).encode())]
+    # The running Host records which stamp it loaded; diagnose compares the two.
+    data.append((target/'install-stamp.json',json.dumps({'transaction':tx,'installedAt':datetime.datetime.now(datetime.timezone.utc).isoformat()}).encode()))
     # Retired plugin code only; deletion has the same backup/conflict/rollback checks.
     data.append((target/'runtime'/'media-config.mjs',None))
     previous_manifest=SOURCE/'installation-workspace.json'
@@ -96,7 +98,7 @@ def main():
         replace(reportPath,json.dumps(report,ensure_ascii=False,indent=2).encode())
         routes=len(config.get('sshRoutes',[None]))
         subprocess.run([str(node),str(INSTALLER/'verify-upgrade.mjs')],check=True,timeout=100+50*(routes-1))
-        journal['phase']='verified';(stage/'journal.json').write_text(json.dumps(journal,indent=2));print(json.dumps({'success':True,'transaction':str(stage),'restartRequired':True}))
+        journal['phase']='verified';(stage/'journal.json').write_text(json.dumps(journal,indent=2));print(json.dumps({'success':True,'transaction':str(stage),'restartRequired':True,'activate':[str(hostRoot/'bin'/'codexhost.exe')+' stop',str(hostRoot/'bin'/'codexhost.exe')]},ensure_ascii=False))
     except Exception as error:
         problems=[]
         try:remote({'action':'rollback','id':tx},config)

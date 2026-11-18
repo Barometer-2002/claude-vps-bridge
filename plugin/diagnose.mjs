@@ -9,6 +9,7 @@ import {BRIDGE_PROTOCOL} from './bridge-protocol.mjs';
 import {attachmentNotice} from './runtime/input-boundary.mjs';
 import {validateConfig,shellQuote} from './runtime/bridge-config.mjs';
 import {SshRoutes,routeObservation} from './runtime/ssh-routes.mjs';
+import {activationStatus,readStamp} from './runtime/activation.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const exec=promisify(execFile);
@@ -161,6 +162,16 @@ export async function diagnose({root=here,installedRoot=path.join(os.homedir(),'
       const probe=routeObservation(config,{...diagnosticRoute,state:'connected',pid:process.pid,observedAt:new Date().toISOString()},()=>true);
       if(probe)add('diagnostic-route','observed',{...probe,scope:'fresh health probe'});
     }
+  }
+  {
+    // Installed is not active: the shared background Host keeps previously loaded code.
+    const activation=activationStatus(await readStamp(target),await json(path.join(state,'loaded-install.json')).catch(()=>null));
+    const host=config?path.join(config.hostRoot,'bin','codexhost.exe'):'codexhost';
+    const restart='先结束正在进行的任务，再执行 "'+host+'" stop，然后重新打开 CodexHost。只关闭桌面窗口不会重启加载插件的共享后台。';
+    const next={stale:'宿主仍在运行旧版插件。'+restart,
+      // Code loaded before this check existed writes no record, so a running Host can look unloaded.
+      'not-loaded':'没有找到运行中宿主的加载记录：宿主未运行，或仍在运行不会写记录的旧版本。若刚完成安装，'+restart}[activation.status];
+    add('plugin-activation',activation.status,{...activation,...(next?{next}:{})},activation.status==='stale');
   }
   add('quota-freshness','not-checked',{reason:'Current Host quota schema has no observation timestamp; no quota or credentials were queried.'});
   add('optional-mcp-configuration','not-checked',{reason:'Private MCP configuration is intentionally not read.'});

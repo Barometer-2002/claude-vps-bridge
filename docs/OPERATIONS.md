@@ -37,6 +37,15 @@ Claude 适配器能加载，结束时关闭临时进程；不启动反向隧道�
 `--local` 的成功不表示远端已通过检查。当前 Host 额度契约没有更新时间字段，
 诊断明确标注这项未检查，不从缓存倒计时推测额度或订阅到期。
 
+## 插件是否已生效
+
+插件由 CodexHost 的共享后台进程加载，关闭桌面窗口后它仍在运行，继续使用之前加载的代码。安装会在插件目录写入本次事务编号（`install-stamp.json`），宿主加载插件时记录自己加载的是哪一次安装。`node .\plugin\diagnose.mjs` 的 `plugin-activation` 显示：
+
+- `current`：宿主运行的就是已安装的版本。
+- `stale`：宿主仍在运行旧版本，输出中给出停止命令。
+- `not-loaded`：宿主没有运行，或还没有创建过插件实例。
+- `unknown`：插件目录没有安装标记（例如尚未用当前安装器安装）。
+
 ## 线路与入口
 
 `node .\plugin\diagnose.mjs` 输出两项与线路有关的检查：
@@ -46,7 +55,7 @@ Claude 适配器能加载，结束时关闭临时进程；不启动反向隧道�
 
 入口分类：`direct` 表示从外部地址直连；`local-proxy` 表示经 VPS 本机进程转入，`process` 给出该进程名（例如 `cloudflared`、`sing-box`）。一致性：`match` 表示观测与配置吻合；`mismatch` 表示不吻合，例如配置为 cloudflared 却观测到 direct；`unknown` 表示无法判断，例如 SOCKS5 线路只能看到代理的最后一跳。
 
-切换原因：`connection-failed`、`handshake-timeout`、`read-stalled`、`route-helper-unavailable`（例如找不到 cloudflared）。备用线路正常时不会主动切回首选；正常重开宿主或新建连接时重新从第一条开始。
+切换原因：`connection-failed`、`handshake-timeout`、`read-stalled`、`route-helper-unavailable`（例如找不到 cloudflared）。备用线路正常时不会主动切回首选；宿主重新启动或新建连接时重新从第一条开始。
 
 ## 附件与热态检查
 
@@ -89,7 +98,7 @@ node .\plugin\maintenance.mjs --apply --age-days 30 --max-bytes 268435456
 1. 保留自己的本地配置、远端私有 MCP 配置和安装事务目录。
 2. 查看版本说明。宿主使用官方最新版即可，插件支持的最低版本见 `installer/dependency-policy.json`。
 3. 执行 `pwsh -NoProfile -File .\install.ps1`。
-4. 安装校验通过后正常退出并重开 CodexHost。
+4. 安装校验通过后，先结束正在进行的任务，执行 `codexhost stop`（CodexHost 安装目录下的 `bin\codexhost.exe`）后重新打开 CodexHost。只关闭桌面窗口不会生效。
 5. 在原来的小测试项目中验证恢复、读取与写入。
 
 宿主自动更新后，重新运行安装脚本即可让 VPS 端跟上。安装会在 VPS 上查询官方 `@codexhost/cli` 的最新版，先装到临时目录，核对包版本、插件 API、适配器入口和适配器 SHA256，通过后再切换依赖选择；不通过就保留当前已选版本，原因写在输出的 `notes` 里。准备结果保存在本机 `installation-dependency.json`，部署和校验都以它为准；旧版本的依赖目录和选择保留，可随事务回滚。升级校验比对 health 返回的依赖版本、适配器哈希、插件版本和协议，任一不符即失败。校验通过只说明新文件就位，正常重开宿主后才会生效。

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { projectInfo, control, handle, workspaceHasBackgroundWork } from './runtime/workspace-runtime.mjs';
 import {SshTransport} from './runtime/ssh-transport.mjs';
 import {recordRouteState} from './runtime/ssh-routes.mjs';
+import {recordLoadedInstall} from './runtime/activation.mjs';
 import {referencedMedia} from './runtime/media-input.mjs';
 import {decodeHostInput} from './runtime/input-boundary.mjs';
 import {observeModel} from './runtime/model-observation.mjs';
@@ -29,6 +30,8 @@ function remap(value, from, to) {
   return Object.fromEntries(Object.entries(value).map(([k,v]) => [k, k === 'harnessId' && v === from ? to : remap(v, from, to)]));
 }
 export function createHarnessAdapter(context) {
+  // Lets diagnose tell whether this Host process runs the installed code.
+  void recordLoadedInstall(path.join(RUNTIME,'state')).catch(()=>{});
   let accountSnapshot=null,accountPending=null,accountRefreshAfter=0;
   const channels=new Map(), localBindings=new Map();
   const reads=new SessionReads((...args)=>transport.rpc(...args));

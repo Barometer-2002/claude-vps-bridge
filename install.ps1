@@ -18,3 +18,5 @@ if ($LASTEXITCODE -ne 0) { throw 'Pinned dependency preparation failed; active b
 # Optional MCP configuration is managed separately; upgrades never import credentials.
 & $bridgePython (Join-Path $PSScriptRoot 'installer\deploy-transaction.py')
 if ($LASTEXITCODE -ne 0) { throw 'Bridge transaction failed. Read its journal for rollback or recovery status.' }
+# Plugins run in the shared background Host; reopening the desktop window keeps the old code.
+Write-Host 'Installed. To activate: finish running tasks, run "codexhost stop" (bin\codexhost.exe under the Host root), then open CodexHost. Check with: node .\plugin\diagnose.mjs (plugin-activation: current).'

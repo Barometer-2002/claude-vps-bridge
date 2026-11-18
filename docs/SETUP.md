@@ -75,7 +75,7 @@ pwsh -NoProfile -File .\install.ps1
 
 ## 5. 试用
 
-正常退出并重开 CodexHost，选择本机一个无敏感数据的测试目录，再选择 **Claude VPS Bridge**（旧版入口显示为 **Claude Code · VPS**）。可以依次输入：
+执行 `codexhost stop`（CodexHost 安装目录下的 `bin\codexhost.exe`）后重新打开 CodexHost（只关闭桌面窗口不会重启加载插件的共享后台），选择本机一个无敏感数据的测试目录，再选择 **Claude VPS Bridge**（旧版入口显示为 **Claude Code · VPS**）。可以依次输入：
 
 ```text
 Report the current Windows project path. Do not modify any files.

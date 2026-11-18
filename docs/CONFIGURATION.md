@@ -13,7 +13,7 @@ pwsh -NoProfile -File .\install.ps1
 
 `configure.py` 查询远端用户主目录与 Claude 路径，创建 `bridge-config.local.json`，不覆盖已有文件。可显式提供 `--remote-root`、`--remote-workspace-root`、`--remote-claude`。配置文件只保存非敏感连接与路径参数，不保存账号凭据。自动发现的 Claude 路径仍需实际存在；安装健康检查与真实运行验收是独立步骤。
 
-安装器优先读取 `CLAUDE_VPS_CONFIG` 指定的文件，然后是源码目录的 `bridge-config.local.json`，最后是已安装插件的 `bridge-config.json`。运行中的插件读取其安装目录下的配置。修改配置后重新安装并正常重开宿主，使两端配置一致。
+安装器优先读取 `CLAUDE_VPS_CONFIG` 指定的文件，然后是源码目录的 `bridge-config.local.json`，最后是已安装插件的 `bridge-config.json`。运行中的插件读取其安装目录下的配置。修改配置后重新安装，再执行 `codexhost stop`（CodexHost 安装目录下的 `bin\codexhost.exe`）后重新打开 CodexHost，使两端配置一致。
 
 安装器把运行时配置写入插件目录、远端的 `remote-config.json` 与 `claude-path`，由同一代码事务备份和恢复。远端命令安装在桥接目录内，不覆盖 `/usr/local/bin`，不要求 root。主机、路径和代码更新不迁移已有项目映射、机器 ID 或原生历史；不要把更换远端工作区根目录当成自动数据迁移。
 

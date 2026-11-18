@@ -37,6 +37,8 @@ Claude VPS Bridge 是一个 [CodexHost](https://github.com/BytePioneer-AI/codex-
 
 本机无需安装或登录 Claude Code，也无需开启 Windows SSH 服务。
 
+> 只关闭再打开桌面窗口不会生效：插件由 CodexHost 的共享后台加载，它在窗口关闭后继续运行。安装或升级后请执行 `codexhost stop` 再打开 CodexHost，并用 `node .\plugin\diagnose.mjs` 确认 `plugin-activation` 为 `current`。
+
 ### 2. 安装插件
 
 从 [Releases](https://github.com/vv-get-ti/claude-vps-bridge/releases/latest) 下载 `claude-vps-bridge-<版本>.zip` 并解压，在包含 `install.ps1` 的目录打开 PowerShell 7，执行：
@@ -52,7 +54,7 @@ pwsh -NoProfile -File .\install.ps1
 
 ### 3. 开始使用
 
-正常退出并重开 CodexHost，选择一个本机项目，再选择 **Claude VPS Bridge**。可以先让它确认工作目录：
+先结束正在进行的任务，执行 `codexhost stop`（CodexHost 安装目录下的 `bin\codexhost.exe`）后重新打开 CodexHost，再选择一个本机项目，再选择 **Claude VPS Bridge**。可以先让它确认工作目录：
 
 ```text
 Report the current Windows project path. Do not modify any files.
