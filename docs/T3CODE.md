@@ -1,8 +1,28 @@
 # T3 Code 适配说明
 
-本仓库内置 **T3 Code Local ACP 适配器（`t3/`）**，支持在 Windows 端 [T3 Code](https://github.com/pingdotgg/t3code) 中直接调用 VPS 上的官方 Claude Code，并与 CodexHost 共用同一套本机与 VPS 桥接运行时；也支持**纯 T3 Code 独立安装（无需安装 CodexHost 桌面端）**。
+本仓库提供**两种可独立并存的 T3 Code 接入方式**，均与 CodexHost 共用同一套本机与 VPS 桥接基础设施，且支持**纯 T3 Code 独立安装（无需安装 CodexHost 桌面端）**：
 
-## 已适配的能力
+1. **官方 `claudeAgent` 原生 Shim（`t3-native/`，推荐完整原生体验）**：以独立的 `claude-vps`（显示名 **Claude VPS**）实例接入 T3 Code 官方 `claudeAgent` 驱动，通过 SSH 直通 VPS 官方 Claude Code 的标准 `stream-json` 协议——**解锁顶部 5h/7d 实时额度圆环、单套原生权限（Supervised / Auto-accept / Full-access）、原生 `textGeneration`（自动标题/Commit/PR）、`effort`/`ultracode`/`fastMode` 与 `beforeCacheExpires` 缓存自动压缩**；不修改默认 `claudeAgent` 与本机 `~/.claude`。
+2. **Local ACP 适配器（`t3/`，稳定通用模式）**：以 `claude-vps-bridge`（显示名 **Claude VPS Bridge**）接入 T3 Code 的 `acpRegistry`，兼容本地工具原生卡片渲染、T3 MCP 透传、Plan 面板、`/usage` & `/status`、图片与 Fork。
+
+### 安装独立原生 `Claude VPS`（`claudeAgent` Shim）
+
+完成两端 Bridge 部署后（或带 `-WithT3Native` 参数），运行：
+
+```powershell
+node .\t3-native\manage-native.mjs install
+node .\t3-native\manage-native.mjs status
+```
+
+卸载（不影响默认 `claudeAgent` 或 ACP 版 `claude-vps-bridge`）：
+
+```powershell
+node .\t3-native\manage-native.mjs uninstall
+```
+
+---
+
+## ACP 适配器已适配的能力
 
 | 能力 | 在 T3 Code 中的实现与体验 |
 |---|---|

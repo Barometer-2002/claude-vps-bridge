@@ -96,7 +96,7 @@ if __name__ == '__main__':
             print(json.dumps({'hookSpecificOutput':output}))
         elif isinstance(name,str) and name.startswith('mcp__t3-code__') and os.environ.get('WINDOWS_T3_MCP')=='1':
             print('{}')
-        elif name in ('AskUserQuestion', 'WebSearch', 'WebFetch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ExitPlanMode', 'EnterPlanMode'):
+        elif name in ('AskUserQuestion', 'WebSearch', 'WebFetch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ExitPlanMode', 'EnterPlanMode', 'ToolSearch'):
             print('{}')
         else:
             print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'This session operates a Windows project. Use windows-workspace with one single-quoted JSON argument, or the literal windows-agent CLI. Native VPS filesystem/shell operations are not this workspace. Use action info for project details.'}}))

@@ -3,7 +3,7 @@ from pathlib import Path
 import ast, json, re, shutil, subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN, REMOTE, INSTALLER, T3 = ROOT / 'plugin', ROOT / 'remote', ROOT / 'installer', ROOT / 't3'
+PLUGIN, REMOTE, INSTALLER, T3, T3_NATIVE = ROOT / 'plugin', ROOT / 'remote', ROOT / 'installer', ROOT / 't3', ROOT / 't3-native'
 node = shutil.which('node')
 if not node:
     raise SystemExit('Node.js 24 must be on PATH')
@@ -13,7 +13,7 @@ python_files += [REMOTE / 'windows-agent', REMOTE / 'windows-workspace']
 for file in python_files:
     if not file.name.startswith('test-'):
         ast.parse(file.read_text(encoding='utf-8-sig'), filename=str(file))
-for file in [*PLUGIN.glob('*.mjs'), *(PLUGIN / 'runtime').glob('*.mjs'), *REMOTE.glob('*.mjs'), *INSTALLER.glob('*.mjs'), *T3.glob('*.mjs')]:
+for file in [*PLUGIN.glob('*.mjs'), *(PLUGIN / 'runtime').glob('*.mjs'), *REMOTE.glob('*.mjs'), *INSTALLER.glob('*.mjs'), *T3.glob('*.mjs'), *T3_NATIVE.glob('*.mjs')]:
     if not file.name.startswith(('test-', 'benchmark-')):
         subprocess.run([node, '--check', str(file)], check=True, cwd=ROOT)
 
