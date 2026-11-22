@@ -84,7 +84,7 @@ export function createHarnessAdapter(context) {
         frame.lane==='tool'&&request.action!=='media-export'
           ? handle(request)
           : (request.action==='mcp'&&request.server==='t3-code'&&binding.t3Mcp===true&&typeof context.onMcpRequest==='function'
-              ? context.onMcpRequest({...request,...(binding.acpSessionId?{acpSessionId:binding.acpSessionId}:{})})
+              ? context.onMcpRequest({...request,acpSessionId:binding.acpSessionId})
               : control(request))
       );
       timing({phase:'local-control',action:frame.request.action,ms:performance.now()-started});

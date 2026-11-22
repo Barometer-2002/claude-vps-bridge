@@ -57,18 +57,13 @@ const clientCaps = {
 };
 
 function resolveSessionForMcp(request) {
-  if (typeof request?.acpSessionId === 'string') {
-    const exact = sessions.get(request.acpSessionId);
-    if (exact) return exact;
-  }
-  const cwd = request?.cwd;
-  for (const session of sessions.values()) {
-    if (session.t3Mcp?.enabled && (!cwd || session.cwd === cwd)) return session;
-  }
-  for (const session of sessions.values()) {
-    if (session.t3Mcp?.enabled) return session;
-  }
-  return null;
+  if (typeof request?.acpSessionId !== 'string' || !request.acpSessionId) return null;
+  return sessions.get(request.acpSessionId) ?? null;
+}
+
+function isMcpConnectionError(err) {
+  const msg = String(err?.message ?? '');
+  return /unknown mcp-over-acp connection|disconnected|stopped|http 404|http 400|socket|connection/i.test(msg);
 }
 
 async function ensureT3McpConnection(localConnId, request, session) {
@@ -132,20 +127,20 @@ async function handleT3McpRequest(request) {
     throw new Error('Invalid MCP JSON-RPC frame');
   }
   const session = resolveSessionForMcp(request);
-  if (session && !session.t3Mcp?.enabled) {
-    throw new Error('T3 MCP is not enabled for this session');
+  if (!session || !session.t3Mcp?.enabled) {
+    throw new Error('Unknown or unauthorized T3 MCP session');
   }
   const isNotification = frame.id === undefined || frame.id === null;
   if (frame.method === 'tools/call') {
     const toolName = frame.params?.name;
-    if (!isT3McpToolAllowed(toolName, mcpPolicy, { permissionModeId: session?.currentPermissionModeId, enforceMode: true })) {
+    if (!isT3McpToolAllowed(toolName, mcpPolicy, { permissionModeId: session.currentPermissionModeId, enforceMode: true })) {
       return {
         jsonrpc: '2.0',
         id: frame.id,
         error: {
           code: -32602,
-          message: session?.currentPermissionModeId === 'plan'
-            ? `T3 MCP tool "${String(toolName)}" is blocked in Plan mode. Switch mode before mutating or launching external work.`
+          message: session.currentPermissionModeId === 'plan'
+            ? `T3 MCP tool "${String(toolName)}" is not on the read-only Plan mode allowlist. Switch mode before mutating or launching external work.`
             : `T3 MCP tool "${String(toolName)}" is blocked by T3_MCP_ALLOW_TOOLS / T3_MCP_DENY_TOOLS policy.`,
         },
       };
@@ -166,19 +161,19 @@ async function handleT3McpRequest(request) {
     if (frame.method === 'tools/list' && Array.isArray(result?.tools)) {
       const filteredTools = result.tools.filter(tool => isT3McpToolAllowed(tool?.name, mcpPolicy));
       result = { ...result, tools: filteredTools };
-      if (session?.t3Mcp) {
-        session.t3Mcp.connected = true;
-        session.t3Mcp.toolCount = filteredTools.length;
-        session.t3Mcp.lastError = null;
-      }
-    } else if (session?.t3Mcp) {
+      session.t3Mcp.connected = true;
+      session.t3Mcp.toolCount = filteredTools.length;
+      session.t3Mcp.lastError = null;
+    } else {
       session.t3Mcp.lastError = null;
     }
     return { jsonrpc: '2.0', id: frame.id, result: result ?? {} };
   } catch (err) {
-    if (session?.t3Mcp) {
-      session.t3Mcp.lastError = err?.message ?? 'T3 MCP request failed';
+    if (isMcpConnectionError(err)) {
+      mcpConnections.delete(localConnId);
+      session.t3Mcp.connected = false;
     }
+    session.t3Mcp.lastError = err?.message ?? 'T3 MCP request failed';
     if (isNotification) return {};
     return {
       jsonrpc: '2.0',
@@ -547,7 +542,7 @@ function displayItem(session, turn, item, outcome) {
     }
   } else if (item.type === 'fileChange') {
     const status = outcome ? (outcome.status === 'succeeded' ? 'completed' : 'failed') : 'in_progress';
-    const { title, locations, content } = extractFileChangePresentation(item);
+    const { title, locations, content } = extractFileChangePresentation(item, session.cwd);
     update(session, {
       sessionUpdate: previous ? 'tool_call_update' : 'tool_call',
       toolCallId: item.itemId,
@@ -558,11 +553,11 @@ function displayItem(session, turn, item, outcome) {
       ...(content.length ? { content } : {}),
     });
   } else {
-    const planEntries = extractPlanEntries(item, turn.tasks, outcome);
+    const planEntries = extractPlanEntries(item, session.tasks, outcome);
     if (planEntries) {
       const planKey = JSON.stringify(planEntries);
-      if (planKey !== turn.lastPlanKey) {
-        turn.lastPlanKey = planKey;
+      if (planKey !== session.lastPlanKey) {
+        session.lastPlanKey = planKey;
         update(session, { sessionUpdate: 'plan', entries: planEntries });
       }
     }
@@ -625,7 +620,7 @@ async function respondToInteraction(session, turn, interaction) {
         toolCall: {
           toolCallId: item?.itemId ?? interaction.itemId ?? interactionId,
           title: approvalTitle,
-          ...(translated ? { kind: translated.kind } : (item ? { kind: toolKind(item) } : {})),
+          ...(translated ? { kind: translated.kind, rawInput: translated.rawInput } : (item ? { kind: toolKind(item) } : {})),
           ...(approvalLocations ? { locations: approvalLocations } : {}),
         },
         options,
@@ -872,6 +867,8 @@ async function openSession({ cwd, sessionId, forkFromSessionId, mcpServers }) {
       lastError: null,
     },
     localCapabilities: null,
+    tasks: new Map(),
+    lastPlanKey: null,
     initialized: false,
     closing: false,
   };
@@ -1147,8 +1144,6 @@ async function prompt({ sessionId, prompt }) {
     id: randomUUID(),
     items: new Map(),
     interactions: new Map(),
-    tasks: new Map(),
-    lastPlanKey: null,
     usage: null,
     resolve,
     reject,
@@ -1292,15 +1287,23 @@ const methods = {
       update(session, { sessionUpdate: 'session_info_update', title: session.title, updatedAt: new Date().toISOString() });
     }
     const history = unwrap(await session.native.readSnapshot());
+    let restoredPlan = null;
     for (const turn of history.turns ?? []) {
       for (const block of turn.input ?? []) {
         if (block.type === 'text') update(session, { sessionUpdate: 'user_message_chunk', content: text(block.text) });
       }
-      for (const { item } of turn.items ?? []) {
+      for (const { item, outcome } of turn.items ?? []) {
         if (item.type === 'agentMessage' && item.text && !isBridgeNoticeItem(item)) {
           update(session, { sessionUpdate: 'agent_message_chunk', content: text(item.text) });
+        } else {
+          const entries = extractPlanEntries(item, session.tasks, outcome);
+          if (entries) restoredPlan = entries;
         }
       }
+    }
+    if (restoredPlan?.length) {
+      session.lastPlanKey = JSON.stringify(restoredPlan);
+      update(session, { sessionUpdate: 'plan', entries: restoredPlan });
     }
     return { configOptions, models, ...(modes ? { modes } : {}) };
   },

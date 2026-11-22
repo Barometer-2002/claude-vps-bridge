@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const ADAPTER_VERSION = '1.3.0';
+export const ADAPTER_VERSION = '1.3.1';
 export const DEFAULT_MODEL_ID = 'default';
 export const DEFAULT_MODEL = { modelId: DEFAULT_MODEL_ID, name: 'Claude VPS default' };
 
@@ -88,7 +88,7 @@ function extractTextOutput(output) {
 function extractTaskIdFromOutput(output) {
   const raw = extractTextOutput(output);
   if (!raw) return null;
-  const hashMatch = raw.match(/\bTask\s+#?([A-Za-z0-9_-]+)\b/i);
+  const hashMatch = raw.match(/\bTask\s+#(\d+)\b/i);
   if (hashMatch) return hashMatch[1];
   const jsonMatch = raw.match(/"(?:taskId|id)"\s*:\s*"?([A-Za-z0-9_-]+)"?/i);
   if (jsonMatch) return jsonMatch[1];
@@ -125,13 +125,33 @@ export function extractPlanEntries(item, taskMap, outcome) {
         status: normalizePlanStatus(todo.status),
       });
     }
+    if (taskMap instanceof Map && entries.length) {
+      taskMap.clear();
+      args.todos.forEach((todo, index) => {
+        const content = String(todo?.content ?? todo?.activeForm ?? todo?.title ?? '').trim();
+        if (!content) return;
+        const key = todo?.id !== undefined ? String(todo.id) : String(index + 1);
+        taskMap.set(key, {
+          content,
+          priority: normalizePlanPriority(todo.priority),
+          status: normalizePlanStatus(todo.status),
+        });
+      });
+    }
     return entries.length ? entries : null;
   }
 
   if (toolName === 'TaskCreate' && taskMap instanceof Map) {
+    const pendingKey = item.itemId ? `__pending_${item.itemId}` : null;
+    if (outcome && outcome.status !== 'succeeded') {
+      if (pendingKey && taskMap.has(pendingKey)) {
+        taskMap.delete(pendingKey);
+        return [...taskMap.values()];
+      }
+      return null;
+    }
     const content = String(args.subject ?? args.description ?? args.activeForm ?? '').trim();
     if (!content) return null;
-    const pendingKey = item.itemId ? `__pending_${item.itemId}` : null;
     const resolvedId = outcome
       ? (extractTaskIdFromOutput(item.output) ?? args.taskId ?? args.id ?? null)
       : (args.taskId ?? args.id ?? null);
@@ -155,6 +175,7 @@ export function extractPlanEntries(item, taskMap, outcome) {
   }
 
   if (toolName === 'TaskUpdate' && taskMap instanceof Map) {
+    if (outcome && outcome.status !== 'succeeded') return null;
     const key = args.taskId !== undefined ? String(args.taskId) : null;
     if (!key) return null;
     const rawStatus = typeof args.status === 'string' ? args.status.trim().toLowerCase() : '';
@@ -180,32 +201,34 @@ export function extractPlanEntries(item, taskMap, outcome) {
   return null;
 }
 
-const PLAN_MODE_BLOCKED_T3_TOOLS = new Set([
-  'delegate_task',
-  't3_thread_launch',
-  'create_threads',
-  't3_thread_send',
-  't3_thread_send_attachments',
-  't3_thread_interrupt',
-  't3_thread_organize',
-  't3_thread_configure',
-  't3_thread_transfer',
-  'schedule_task',
-  'delete_scheduled_task',
-  'run_scheduled_task_now',
-  't3_project_create',
-  't3_project_update',
-  't3_project_delete',
-  't3_project_clone',
-  't3_environment_preferences_update',
-  't3_theme_set',
-  't3_worktree_handoff',
-  'create_issue',
-  'comment_on_issue',
-  'set_issue_state',
-  'preview_act',
-  'preview_evaluate',
-  'preview_dialog',
+// Fail-closed read-only allowlist for T3 MCP tools while in Plan mode.
+// Any mutating, launching, cancelling, or newly added T3 tool is blocked in Plan mode.
+const PLAN_MODE_ALLOWED_T3_TOOLS = new Set([
+  't3_environment_read',
+  'orchestrator_capabilities',
+  't3_thread_list',
+  't3_thread_read',
+  't3_thread_search',
+  't3_project_list',
+  't3_project_read',
+  't3_worktree_status',
+  't3_worktree_list',
+  'list_scheduled_tasks',
+  'list_thread_pull_requests',
+  'read_pull_request_guide',
+  'list_issues',
+  'read_issue',
+  'list_thread_issues',
+  'device_list',
+  'device_screenshot',
+  'preview_status',
+  'preview_snapshot',
+  't3_preview_list',
+  't3_theme_read',
+  'html_preview',
+  'html_render',
+  'send_to_user',
+  'task_status',
 ]);
 
 function parseCsvSet(value) {
@@ -226,7 +249,7 @@ export function isT3McpToolAllowed(toolName, policy, { permissionModeId, enforce
   const name = toolName.trim();
   if (policy?.deny?.has(name)) return false;
   if (policy?.allow && !policy.allow.has(name)) return false;
-  if (enforceMode && permissionModeId === 'plan' && PLAN_MODE_BLOCKED_T3_TOOLS.has(name)) {
+  if (enforceMode && permissionModeId === 'plan' && !PLAN_MODE_ALLOWED_T3_TOOLS.has(name)) {
     return false;
   }
   return true;
@@ -868,7 +891,7 @@ export function formatStatusReport({
   return lines.join('\n');
 }
 
-export function extractFileChangePresentation(item) {
+export function extractFileChangePresentation(item, sessionCwd) {
   const changes = Array.isArray(item?.changes) ? item.changes : [];
   if (!changes.length) return { title: 'Edit files', locations: undefined, content: [] };
 
@@ -879,15 +902,18 @@ export function extractFileChangePresentation(item) {
 
   for (const change of changes) {
     if (!change || typeof change !== 'object') continue;
-    const filePath = change.path ?? change.filePath ?? change.targetPath;
-    if (typeof filePath === 'string' && filePath.trim() && !seen.has(filePath)) {
-      seen.add(filePath);
-      locations.push({ path: filePath.trim() });
+    const rawPath = change.path ?? change.filePath ?? change.targetPath;
+    const trimmedPath = typeof rawPath === 'string' && rawPath.trim()
+      ? resolveWinPath(sessionCwd, rawPath.trim())
+      : null;
+    if (trimmedPath && !seen.has(trimmedPath.toLowerCase())) {
+      seen.add(trimmedPath.toLowerCase());
+      locations.push({ path: trimmedPath });
     }
-    if (typeof filePath === 'string' && typeof change.newText === 'string') {
+    if (trimmedPath && typeof change.newText === 'string') {
       content.push({
         type: 'diff',
-        path: filePath,
+        path: trimmedPath,
         ...(typeof change.oldText === 'string' ? { oldText: change.oldText } : {}),
         newText: change.newText,
       });
@@ -897,9 +923,9 @@ export function extractFileChangePresentation(item) {
       summaryLines.push(change.diff.trim());
     } else if (typeof change.patch === 'string' && change.patch.trim()) {
       summaryLines.push(change.patch.trim());
-    } else if (typeof filePath === 'string') {
+    } else if (trimmedPath) {
       const action = change.kind ?? change.type ?? 'updated';
-      summaryLines.push(`${action}: ${filePath}`);
+      summaryLines.push(`${action}: ${trimmedPath}`);
     }
   }
 
@@ -941,6 +967,16 @@ export function parseWorkspaceCommand(command) {
   if (action === 'status' || action === 'info' || action === 'jobs') return { action };
   const targetMatch = argsStr.match(/^'([^']+)'|^"([^"]+)"|^(\S+)/);
   const targetPath = targetMatch ? (targetMatch[1] ?? targetMatch[2] ?? targetMatch[3]) : '.';
+  if (action === 'read') {
+    const offsetMatch = argsStr.match(/--offset\s+(\d+)/);
+    const limitMatch = argsStr.match(/--limit\s+(\d+)/);
+    return {
+      action,
+      path: targetPath,
+      ...(offsetMatch ? { offset: Number(offsetMatch[1]) } : {}),
+      ...(limitMatch ? { limit: Number(limitMatch[1]) } : {}),
+    };
+  }
   if (action === 'search') {
     const patMatch = argsStr.match(/--pattern\s+(?:'([^']+)'|"([^"]+)"|(\S+))/);
     return { action, path: targetPath, ...(patMatch ? { pattern: patMatch[1] ?? patMatch[2] ?? patMatch[3] } : {}) };
@@ -980,14 +1016,31 @@ function parseWorkspaceEnvelope(output) {
   if (!raw || !raw.startsWith('{')) return null;
   try {
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && parsed.bridge === 'windows-workspace-v1') return parsed;
+    if (
+      parsed
+      && typeof parsed === 'object'
+      && typeof parsed.ok === 'boolean'
+      && (parsed.data !== undefined || parsed.error !== undefined || typeof parsed.cwd === 'string' || parsed.bridge === 'windows-workspace-v1')
+    ) {
+      return parsed;
+    }
   } catch {
     // Not a complete JSON envelope yet.
   }
   return null;
 }
 
-function formatWorkspaceEnvelopeContent(op, envelope, absPath) {
+function cleanRunStderr(stderr) {
+  if (typeof stderr !== 'string') return '';
+  const trimmed = stderr.trim();
+  if (!trimmed) return '';
+  if (/^#<\s*CLIXML\b/i.test(trimmed) && !/S="(?:Error|Warning)"/i.test(trimmed)) {
+    return '';
+  }
+  return stderr.trimEnd();
+}
+
+function formatWorkspaceEnvelopeContent(op, envelope, absPath, sessionCwd) {
   if (!envelope) return null;
   if (envelope.ok === false) {
     const msg = envelope.error?.message ?? 'Operation failed';
@@ -996,6 +1049,21 @@ function formatWorkspaceEnvelopeContent(op, envelope, absPath) {
   }
   const data = envelope.data;
   if (!data || typeof data !== 'object') return null;
+
+  if (op.action === 'batch' && Array.isArray(data)) {
+    const reqs = Array.isArray(op.requests) ? op.requests : [];
+    const sections = [];
+    for (let i = 0; i < data.length; i++) {
+      const subOp = reqs[i] ?? { action: 'unknown' };
+      const subEnv = data[i];
+      const subAbs = resolveWinPath(sessionCwd, subOp.path);
+      const subLabel = `${subOp.action ?? 'op'} ${subOp.path ?? ''}`.trim();
+      const formatted = formatWorkspaceEnvelopeContent(subOp, subEnv, subAbs, sessionCwd);
+      const textChunk = formatted?.find(b => b.type === 'content')?.content?.text;
+      sections.push(`### ${subLabel}\n${textChunk ?? '(ok)'}`);
+    }
+    return sections.length ? [{ type: 'content', content: { type: 'text', text: sections.join('\n\n') } }] : null;
+  }
 
   if (op.action === 'read' && typeof data.content === 'string') {
     const startLine = Number.isInteger(data.offset) ? data.offset + 1 : 1;
@@ -1012,6 +1080,11 @@ function formatWorkspaceEnvelopeContent(op, envelope, absPath) {
   }
 
   if (op.action === 'search') {
+    if (typeof data.output === 'string') {
+      const trimmed = data.output.trimEnd();
+      const suffix = data.hasMore ? '\n… (more results available)' : '';
+      return [{ type: 'content', content: { type: 'text', text: trimmed ? `${trimmed}${suffix}` : 'No matches found.' } }];
+    }
     const matches = Array.isArray(data.matches) ? data.matches : [];
     const lines = matches.map(m => {
       const loc = m.path ?? m.file ?? '';
@@ -1042,8 +1115,12 @@ function formatWorkspaceEnvelopeContent(op, envelope, absPath) {
   if (op.action === 'run' || op.action === 'job') {
     const parts = [];
     if (typeof data.stdout === 'string' && data.stdout.trim()) parts.push(data.stdout.trimEnd());
-    if (typeof data.stderr === 'string' && data.stderr.trim()) parts.push(`[stderr]\n${data.stderr.trimEnd()}`);
+    const cleanedStderr = cleanRunStderr(data.stderr);
+    if (cleanedStderr) parts.push(`[stderr]\n${cleanedStderr}`);
     if (typeof data.content === 'string' && data.content.trim()) parts.push(data.content.trimEnd());
+    if (data.output?.stdout?.truncated || data.output?.stderr?.truncated) {
+      parts.push('[output truncated — preview only]');
+    }
     const meta = [];
     if (data.status) meta.push(`status=${data.status}`);
     if (typeof data.exitCode === 'number') meta.push(`exitCode=${data.exitCode}`);
@@ -1174,7 +1251,7 @@ export function presentWorkspaceToolCall(item, sessionCwd, outcome) {
   }
 
   if (envelope) {
-    const formatted = formatWorkspaceEnvelopeContent(op, envelope, abs);
+    const formatted = formatWorkspaceEnvelopeContent(op, envelope, abs, sessionCwd);
     if (formatted) content = formatted;
   }
 
