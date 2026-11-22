@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -9,6 +9,7 @@ import { createToolBridge } from './tool-bridge.mjs';
 import { bridgeRoot, workspaceRoot, agentCommand } from './remote-config.mjs';
 
 const DEFAULT_TOOLS = 'Bash,Read,AskUserQuestion,WebSearch,WebFetch,TodoWrite,TaskCreate,TaskUpdate,TaskList,TaskGet,ExitPlanMode,EnterPlanMode,ToolSearch';
+const SERVER_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
 let closing = false;
 const writer = new JsonWriter(process.stdout, { onError: () => void shutdown(2) });
@@ -26,13 +27,48 @@ let toolBridge = null;
 let child = null;
 let childReady = false;
 let bridgeSystemPrompt = '';
+let allowedMcpFile = null;
+const initialMcpServers = new Set();
+const allowedMcpServers = new Set();
 const queuedStdinLines = [];
 
-function mergeInitializeSystemPrompt(line) {
-  if (!bridgeSystemPrompt) return line;
+async function writeAllowedMcpFile() {
+  if (!allowedMcpFile) return;
+  try {
+    const tmp = `${allowedMcpFile}.${randomUUID()}.tmp`;
+    await writeFile(tmp, JSON.stringify({ servers: [...allowedMcpServers] }), { mode: 0o600 });
+    await rename(tmp, allowedMcpFile);
+  } catch {
+    // Best-effort update; guard fails closed if file is missing.
+  }
+}
+
+function extractProxiedServersFromControl(msg) {
+  if (msg?.type !== 'control_request' || msg.request?.subtype !== 'mcp_set_servers') return null;
+  const servers = msg.request?.servers;
+  if (!servers || typeof servers !== 'object') return null;
+  const names = [];
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (!SERVER_NAME_RE.test(name) || !cfg || typeof cfg !== 'object') continue;
+    if (cfg.type === 'stdio' && Array.isArray(cfg.args) && cfg.args.some(a => typeof a === 'string' && a.endsWith('mcp-local.py'))) {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+async function prepareOutgoingStdinLine(line) {
+  let outLine = line;
   try {
     const msg = JSON.parse(line);
-    if (msg?.type === 'control_request' && msg.request?.subtype === 'initialize') {
+    const dynamicServers = extractProxiedServersFromControl(msg);
+    if (dynamicServers !== null) {
+      allowedMcpServers.clear();
+      for (const name of initialMcpServers) allowedMcpServers.add(name);
+      for (const name of dynamicServers) allowedMcpServers.add(name);
+      await writeAllowedMcpFile();
+    }
+    if (bridgeSystemPrompt && msg?.type === 'control_request' && msg.request?.subtype === 'initialize') {
       const existing = msg.request.appendSystemPrompt;
       let merged;
       if (Array.isArray(existing)) {
@@ -42,7 +78,7 @@ function mergeInitializeSystemPrompt(line) {
       } else {
         merged = bridgeSystemPrompt;
       }
-      return JSON.stringify({
+      outLine = JSON.stringify({
         ...msg,
         request: {
           ...msg.request,
@@ -53,12 +89,12 @@ function mergeInitializeSystemPrompt(line) {
   } catch {
     // Non-JSON line; forward verbatim.
   }
-  return line;
+  return outLine;
 }
 
 function duplexLocal(request, lane = 'control') {
   const controlId = randomUUID();
-  const timeoutMs = request?.action === 'mcp' && request?.server === 't3-code' ? 305000 : 115000;
+  const timeoutMs = request?.action === 'mcp' && request?.server !== 'playwright' ? 305000 : 115000;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pendingLocal.delete(controlId);
@@ -89,6 +125,8 @@ async function startClaude(params) {
     extraSettings = null,
     projectContext = '',
     t3Mcp = false,
+    localMcpServers = [],
+    addedDirs = [],
     probeOnly = false,
     zeroTools = false,
   } = params;
@@ -116,10 +154,28 @@ async function startClaude(params) {
     const binding = { sessionId, localCwd, projectId, remoteCwd: spawnCwd };
     const toolEnv = toolBridge.register(binding);
 
+    const runDir = path.join(bridgeRoot, 'run');
+    await mkdir(runDir, { recursive: true, mode: 0o700 });
+    allowedMcpFile = path.join(runDir, `mcp-allow-${randomUUID()}.json`);
+    const initialServers = new Set(
+      (Array.isArray(localMcpServers) ? localMcpServers : []).filter(n => typeof n === 'string' && SERVER_NAME_RE.test(n)),
+    );
+    if (t3Mcp) initialServers.add('t3-code');
+    for (const name of initialServers) {
+      initialMcpServers.add(name);
+      allowedMcpServers.add(name);
+    }
+    await writeAllowedMcpFile();
+
     const bridgeInstructions = await readFile(path.join(bridgeRoot, 'bridge-instructions.md'), 'utf8');
     const baseBridgeParts = [bridgeInstructions.trim()];
     if (typeof projectContext === 'string' && projectContext.trim()) {
       baseBridgeParts.push(projectContext.trim());
+    }
+    if (Array.isArray(addedDirs) && addedDirs.length > 0) {
+      baseBridgeParts.push(
+        `Additional directories requested by host (--add-dir): ${addedDirs.join(', ')}. Note: windows-workspace enforces the bound Windows project root (${localCwd}) as its filesystem boundary.`,
+      );
     }
     bridgeSystemPrompt = baseBridgeParts.join('\n\n');
 
@@ -130,11 +186,11 @@ async function startClaude(params) {
 
     const baseMcp = await readJsonSafe(path.join(bridgeRoot, 'mcp-config.private.json'), {});
     const mcpServers = { ...(baseMcp.mcpServers && typeof baseMcp.mcpServers === 'object' ? baseMcp.mcpServers : {}) };
-    if (t3Mcp) {
-      mcpServers['t3-code'] = {
+    for (const name of initialServers) {
+      mcpServers[name] = {
         type: 'stdio',
         command: 'python3',
-        args: [path.join(bridgeRoot, 'mcp-local.py'), '--server', 't3-code'],
+        args: [path.join(bridgeRoot, 'mcp-local.py'), '--server', name],
       };
     }
     const mergedMcpConfig = JSON.stringify({ ...baseMcp, mcpServers });
@@ -168,6 +224,7 @@ async function startClaude(params) {
       CODEXHOST_CLI_PATH: agentCommand,
       ...toolEnv,
       WINDOWS_T3_MCP: '1',
+      WINDOWS_ALLOWED_MCP_FILE: allowedMcpFile,
     };
   }
 
@@ -182,7 +239,8 @@ async function startClaude(params) {
 
   child.stdin.on('error', () => {});
   for (const line of queuedStdinLines.splice(0)) {
-    child.stdin.write(`${mergeInitializeSystemPrompt(line)}\n`);
+    const outLine = await prepareOutgoingStdinLine(line);
+    if (child?.stdin?.writable) child.stdin.write(`${outLine}\n`);
   }
 
   const outRl = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -228,6 +286,11 @@ async function shutdown(code = 0) {
   } catch {
     // Ignore socket cleanup error.
   }
+  try {
+    if (allowedMcpFile) await unlink(allowedMcpFile);
+  } catch {
+    // Ignore allow-file cleanup error.
+  }
   const timer = setTimeout(() => process.exit(code), 1500);
   timer.unref();
   try {
@@ -238,10 +301,12 @@ async function shutdown(code = 0) {
   process.exit(code);
 }
 
+let stdinWriteChain = Promise.resolve();
+
 readJsonLines(process.stdin, frame => {
   if (!frame || typeof frame !== 'object') return;
   if (frame.type === 'start') {
-    void startClaude(frame).catch(err => {
+    stdinWriteChain = stdinWriteChain.then(() => startClaude(frame)).catch(err => {
       send({ type: 'claude_err', text: `Claude VPS relay start error: ${err.message}\n` });
       send({ type: 'exit', code: 1, signal: null });
       void shutdown(1);
@@ -249,11 +314,14 @@ readJsonLines(process.stdin, frame => {
     return;
   }
   if (frame.type === 'claude_in' && typeof frame.line === 'string') {
-    if (childReady && child?.stdin?.writable) {
-      child.stdin.write(`${mergeInitializeSystemPrompt(frame.line)}\n`);
-    } else {
-      queuedStdinLines.push(frame.line);
-    }
+    stdinWriteChain = stdinWriteChain.then(async () => {
+      if (childReady && child?.stdin?.writable) {
+        const outLine = await prepareOutgoingStdinLine(frame.line);
+        if (child?.stdin?.writable) child.stdin.write(`${outLine}\n`);
+      } else {
+        queuedStdinLines.push(frame.line);
+      }
+    }).catch(() => {});
     return;
   }
   if (frame.type === 'local_reply' && typeof frame.controlId === 'string') {
@@ -266,20 +334,24 @@ readJsonLines(process.stdin, frame => {
     return;
   }
   if (frame.type === 'stop') {
-    try {
-      child?.stdin?.end();
-    } catch {
-      // Ignore stdin close error.
-    }
+    stdinWriteChain = stdinWriteChain.then(() => {
+      try {
+        child?.stdin?.end();
+      } catch {
+        // Ignore stdin close error.
+      }
+    });
   }
 }, {
   onError: () => void shutdown(2),
   onEnd: () => {
-    try {
-      child?.stdin?.end();
-    } catch {
-      // Ignore.
-    }
-    setTimeout(() => void shutdown(0), 3000).unref();
+    stdinWriteChain = stdinWriteChain.then(() => {
+      try {
+        child?.stdin?.end();
+      } catch {
+        // Ignore.
+      }
+      setTimeout(() => void shutdown(0), 3000).unref();
+    });
   },
 });

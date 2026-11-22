@@ -41,8 +41,9 @@
   - **单套原生权限**（T3 Supervised / Auto-accept / Full-access 直通 `can_use_tool`）。
   - **内置 `textGeneration`**（自动标题、Commit、PR 描述、PR Review Guide）。
   - 完整模型列表 + `effort` / `ultracode` / `fastMode` / `autoCompactWindow` / `beforeCacheExpires` 缓存过期前自动压缩。
-- **T3 HTTP MCP 凭据零出境**：在本机拦截 `--mcp-config` 与动态 `control_request: mcp_set_servers`，由本机 `http-mcp-client.mjs` 直连 T3 `127.0.0.1` HTTP 端点，将 URL 与 Bearer Token 严格留在 Windows 进程内存；VPS 侧通过 `mcp-local.py --server t3-code` 经既有 SSH 隧道回传调用，并放行 `ToolSearch` 支持延迟加载。
-- **系统规则自动合并**：`remote/claude-stream-relay.mjs` 将 `bridge-instructions.md` 与本机项目上下文合并注入 `initialize.appendSystemPrompt`，确保原生会话开箱即知 Windows 工作区规则。
+- **本机全量 MCP 代理（凭据零出境）**：`LocalMcpHub`（`t3-native/http-mcp-client.mjs`）统一拦截 `--mcp-config` 与动态 `control_request: mcp_set_servers`，将 `t3-code` HTTP 端点、用户自定义本机 HTTP MCP 及 Windows 本地 Stdio MCP 全部留在 Windows 侧运行，URL/Token/本机环境变量永不发往 VPS；VPS 端通过 `mcp-local.py --server <name>` 与会话私有白名单文件（`WINDOWS_ALLOWED_MCP_FILE`，0600 权限）安全转发，并放行 `ToolSearch` 延迟加载。
+- **多 SSH 线路自动选路与本机能力补齐**：启动阶段通过 `SshRoutes.firstAvailable()` 自动在 `cloudflared` / `socks5` / `direct` 线路间故障切换（自动缓冲早期 `initialize`/`mcp_set_servers` 帧不丢包）；发送用户消息时自动展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS` 且不劫持 Claude 内置斜杠命令）、执行 `UserPromptSubmit` 本机 Hooks，并自动授权 T3 附件目录中的图片/PDF 路径供 `windows-workspace media` 导出读取。
+- **系统规则自动合并与全场景真机验收**：`remote/claude-stream-relay.mjs` 将 `bridge-instructions.md` 与本机项目上下文合并注入 `initialize.appendSystemPrompt`；已完成 `textGeneration`、多 SSH 线路切换、自定义 HTTP+Stdio MCP、本地 Skill 展开、图片/媒体传输、`--resume`/`--fork-session`、`Supervised` 审批（拒绝+放行）及真实 T3 `claudeAgent` 会话的全链路真机验证。
 
 ### 2. 新增 T3 Code Local ACP v2 适配器（`t3/`，v1.1.0 → v1.3.1）
 

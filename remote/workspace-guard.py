@@ -51,6 +51,33 @@ def permitted(command):
     except ValueError:
         return False
 
+def allowed_dynamic_mcp(tool_name):
+    if not isinstance(tool_name, str) or not tool_name.startswith('mcp__'):
+        return False
+    parts = tool_name.split('__')
+    if len(parts) < 3 or not parts[1]:
+        return False
+    server = parts[1]
+    allow_file = os.environ.get('WINDOWS_ALLOWED_MCP_FILE', '')
+    if not allow_file:
+        return False
+    try:
+        target = Path(allow_file).resolve()
+        run_root = (ROOT / 'run').resolve()
+        if not target.is_relative_to(run_root) or not target.is_file():
+            return False
+        data = json.loads(target.read_text(encoding='utf-8'))
+        servers = data.get('servers', []) if isinstance(data, dict) else []
+        for item in servers:
+            if not isinstance(item, str) or not item:
+                continue
+            normalized = re.sub(r'[^A-Za-z0-9_-]', '_', item)
+            if server == item or server == normalized:
+                return True
+    except Exception:
+        return False
+    return False
+
 if __name__ == '__main__':
     try:
         request=json.load(sys.stdin)
@@ -94,7 +121,7 @@ if __name__ == '__main__':
                 output.update(permissionDecision=decision['decision'],permissionDecisionReason=decision['reason'])
             if decision.get('additionalContext'):output['additionalContext']=decision['additionalContext']
             print(json.dumps({'hookSpecificOutput':output}))
-        elif isinstance(name,str) and name.startswith('mcp__t3-code__') and os.environ.get('WINDOWS_T3_MCP')=='1':
+        elif (isinstance(name,str) and name.startswith('mcp__t3-code__') and os.environ.get('WINDOWS_T3_MCP')=='1') or allowed_dynamic_mcp(name):
             print('{}')
         elif name in ('AskUserQuestion', 'WebSearch', 'WebFetch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ExitPlanMode', 'EnterPlanMode', 'ToolSearch'):
             print('{}')

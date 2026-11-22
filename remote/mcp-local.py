@@ -1,10 +1,12 @@
 """Claude stdio MCP -> authenticated existing duplex channel -> Windows MCP."""
-import argparse,concurrent.futures,json,os,socket,sys,threading,uuid
+import argparse,concurrent.futures,json,os,re,socket,sys,threading,uuid
 
 parser=argparse.ArgumentParser(add_help=False)
-parser.add_argument('--server',default='playwright',choices=('playwright','t3-code'))
+parser.add_argument('--server',default='playwright')
 args,_=parser.parse_known_args()
 server_name=args.server
+if not re.fullmatch(r'[A-Za-z0-9._-]{1,64}',server_name or ''):
+    raise SystemExit('Invalid MCP server name')
 connection_id=str(uuid.uuid4())
 lock=threading.Lock()
 
@@ -14,7 +16,7 @@ def forward(frame=None,close=False):
     else:request['frame']=frame
     payload={'sessionId':os.environ['WINDOWS_BRIDGE_SESSION'],'token':os.environ['WINDOWS_TOOL_TOKEN'],'internal':True,'request':request}
     with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as sock:
-        sock.settimeout(300 if server_name=='t3-code' else 108);sock.connect(os.environ['WINDOWS_TOOL_SOCKET']);sock.sendall((json.dumps(payload)+'\n').encode())
+        sock.settimeout(108 if server_name=='playwright' else 300);sock.connect(os.environ['WINDOWS_TOOL_SOCKET']);sock.sendall((json.dumps(payload)+'\n').encode())
         data=b''
         while b'\n' not in data:
             chunk=sock.recv(65536)

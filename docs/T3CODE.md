@@ -17,11 +17,12 @@
 | **顶部 5h / 7d 实时额度圆环** | **原生支持并实时跳变**（直通 `get_usage` + `rate_limit_event`） | 不支持圆环（以零消耗 `/usage` + ≥90% `notice` 替代） |
 | **权限体系** | **单套原生权限**（T3 Supervised / Auto-accept / Full-access 直通 `can_use_tool`） | 两套叠加（T3 审批开关 + `Claude Mode` 下拉，可隐藏后者） |
 | **内置 `textGeneration`** | **原生解锁**（自动标题、Commit、PR 描述、PR Review Guide） | T3 对 `acpRegistry` 硬编码关闭 |
-| **模型与高级参数** | 完整 14 模型 + `effort` / `ultracode` / `fastMode` / `autoCompactWindow` / `beforeCacheExpires` | 完整模型目录 + 按模型过滤 `Thinking` 档位 |
-| **T3 原生 MCP 工具直通** | **支持**（拦截 `mcp_set_servers` / `--mcp-config`，本机 `LocalHttpMcpClient` 直连 `127.0.0.1`，支持 `ToolSearch` 延迟加载） | **支持**（MCP-over-ACP，按 `acpSessionId` 严格隔离，Plan 模式 Fail-Closed 只读白名单） |
-| **本机工具卡片展示** | 原生 `Bash`（`windows-workspace`）+ 完整 PreToolUse 守卫与本机 Hooks | 自动解包并翻译为原生 `Read` / `List` / `Grep` / `Edit`(红绿 Diff) / `PowerShell` / `Batch` 卡片与可读审批弹窗 |
+| **模型与高级参数** | 完整 14 模型 + `effort` / `ultracode` / `fastMode` / `autoCompactWindow` / `beforeCacheExpires` + `--resume` / `--fork-session` | 完整模型目录 + 按模型过滤 `Thinking` 档位 |
+| **T3 与本机自定义 MCP 直通** | **支持全部本机 MCP**（`LocalMcpHub` 统一拦截 `--mcp-config` / `mcp_set_servers`，将 `t3-code` 及用户自定义本机 HTTP & Stdio MCP 全部留在 Windows 代理执行，支持 `ToolSearch` 延迟加载） | **支持 `t3-code`**（MCP-over-ACP，按 `acpSessionId` 严格隔离，Plan 模式 Fail-Closed 只读白名单） |
+| **本机工具卡片展示** | 原生 `Bash`（`windows-workspace`）+ 完整 PreToolUse 守卫、本机 Hooks 与 `windows-workspace media` 图片/PDF 传输 | 自动解包并翻译为原生 `Read` / `List` / `Grep` / `Edit`(红绿 Diff) / `PowerShell` / `Batch` 卡片与可读审批弹窗 |
 | **Plan 任务面板与审批** | 原生 `TaskCreate` / `TaskUpdate` / `TodoWrite` / `ExitPlanMode` | 全量同步至 ACP `plan` 面板（跨轮持久 + `session/load` 重建）与 `elicitation/create` |
-| **本机 Skills / Commands** | 随本机项目上下文注入，支持 `windows-workspace capability` | 自动扫描 `~/.claude` 与 `.claude/{skills,commands}` 注入 T3 补全菜单，每轮自动热刷新，点击 `$skill` / `/command` 真执行 |
+| **本机 Skills / Commands** | 发送 `/skill`、`$skill` 或 `/command` 时自动识别并展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS`，不劫持内置命令） | 自动扫描 `~/.claude` 与 `.claude/{skills,commands}` 注入 T3 补全菜单，每轮自动热刷新，点击 `$skill` / `/command` 真执行 |
+| **SSH 多线路与恢复** | 启动时支持 `sshRoutes` 多线路自动故障切换（`cloudflared` / `socks5` / `direct`）；单次会话中 SSH 断线需重发本轮 | 复用桥接协议 3 多线路自动切换与断线按游标恢复 |
 | **适合场景** | 日常主力（追求顶部实时额度、单套权限、自动 Commit/PR 等完整官方体验） | 偏爱原生 `Read`/`Edit` Diff 工具卡片、`/usage` & `/status` 诊断或作为稳定后备 |
 
 ---
