@@ -1,7 +1,7 @@
 """Prepare locked local dependencies without requiring the optional browser."""
 from pathlib import Path
 import argparse,json,shutil,subprocess,tempfile,os
-from bridge_config import PLUGIN,load_config
+from bridge_config import PLUGIN,load_config,node_executable
 
 def prepare(directory,config,with_playwright=False):
     lock=json.loads((directory/'package-lock.json').read_text())
@@ -20,7 +20,7 @@ def prepare(directory,config,with_playwright=False):
     if not npm_cli:raise RuntimeError('Install Node.js with npm on Windows to prepare local dependencies')
     stage=Path(tempfile.mkdtemp(prefix='claude-vps-dependencies-'))
     for name in ['package.json','package-lock.json']:shutil.copyfile(directory/name,stage/name)
-    node=Path(config['hostRoot'])/'runtime/node.exe'
+    node=node_executable(config)
     args=[str(node),str(npm_cli),'ci','--ignore-scripts','--no-audit','--no-fund']+([] if with_playwright else ['--omit=optional'])
     env={**os.environ,'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD':'1'}
     env['PATH']=str(node.parent)+os.pathsep+env.get('PATH','')

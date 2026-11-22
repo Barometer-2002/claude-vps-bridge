@@ -141,9 +141,9 @@ export async function diagnose({root=here,installedRoot=path.join(os.homedir(),'
     })(),
     (async()=>{const present=await exists(path.join(target,'runtime','node_modules','@playwright','mcp','cli.js'));add('optional-playwright',present?'ok':'not-installed',{execution:'windows',scope:'dependency-only'});})(),
     (async()=>{if(!config)return;
-      const [ssh,pwsh,hostVersion]=await Promise.all([exists(config.sshExecutable),exists(config.pwshExecutable),json(path.join(config.hostRoot,'app','codexhost-distribution.json')).catch(()=>null)]);
+      const [ssh,pwsh,hostVersion]=await Promise.all([exists(config.sshExecutable),exists(config.pwshExecutable),config.hostRoot?json(path.join(config.hostRoot,'app','codexhost-distribution.json')).catch(()=>null):Promise.resolve(null)]);
       let sshVersion=null;try{if(ssh)sshVersion=await probeSsh(config);}catch{}
-      add('ssh-executable',ssh&&sshVersion?'ok':'unavailable',{path:config.sshExecutable,version:sshVersion},true);add('powershell-executable',pwsh?'ok':'unavailable',{},true);add('host-version','info',{version:version(hostVersion?.version)});
+      add('ssh-executable',ssh&&sshVersion?'ok':'unavailable',{path:config.sshExecutable,version:sshVersion},true);add('powershell-executable',pwsh?'ok':'unavailable',{},true);add('host-version','info',{mode:config.hostRoot?'codexhost':'t3-only',version:version(hostVersion?.version)});
     })(),
     (async()=>{if(!config||local){add('remote-executables','not-checked');return;}
       try{const paths=await probeExecutables(config);add('remote-executables',paths.node&&paths.claude?'ok':'unavailable',{nodePathExecutable:paths.node,remoteClaudeExecutable:paths.claude,...(!paths.node||!paths.claude?{next:'远端 node-path 或 remoteClaudeExecutable 已失效。核对实际路径，必要时修改 --remote-node / --remote-claude 对应配置后重新安装插件。'}:{})},true);}
@@ -166,8 +166,10 @@ export async function diagnose({root=here,installedRoot=path.join(os.homedir(),'
   {
     // Installed is not active: the shared background Host keeps previously loaded code.
     const activation=activationStatus(await readStamp(target),await json(path.join(state,'loaded-install.json')).catch(()=>null));
-    const host=config?path.join(config.hostRoot,'bin','codexhost.exe'):'codexhost';
-    const restart='先结束正在进行的任务，再执行 "'+host+'" stop，然后重新打开 CodexHost。只关闭桌面窗口不会重启加载插件的共享后台。';
+    const host=config?.hostRoot?path.join(config.hostRoot,'bin','codexhost.exe'):'codexhost';
+    const restart=config?.hostRoot
+      ?'先结束正在进行的任务，再执行 "'+host+'" stop，然后重新打开 CodexHost。只关闭桌面窗口不会重启加载插件的共享后台。'
+      :'当前配置为独立 T3 Code 模式（未配置 CodexHost 宿主目录），在 T3 Code 刷新 Provider 或重启后生效。';
     const next={stale:'宿主仍在运行旧版插件。'+restart,
       // Code loaded before this check existed writes no record, so a running Host can look unloaded.
       'not-loaded':'没有找到运行中宿主的加载记录：宿主未运行，或仍在运行不会写记录的旧版本。若刚完成安装，'+restart}[activation.status];

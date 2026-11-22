@@ -13,7 +13,9 @@
   <a href="docs/FAQ.md">常见问题</a>
 </p>
 
-Claude VPS Bridge 是一个 [CodexHost](https://github.com/BytePioneer-AI/codex-host) 插件。Claude Code 在 VPS 上运行并保存登录凭据，你在 Windows 本机选择项目、发送消息，使用本机文件和开发工具完成任务。
+Claude VPS Bridge 同时支持 [CodexHost](https://github.com/BytePioneer-AI/codex-host) 与 [T3 Code](https://github.com/pingdotgg/t3code)（通过 Local ACP 适配器）。Claude Code 在 VPS 上运行并保存登录凭据，你在 Windows 本机选择项目、发送消息，使用本机文件和开发工具完成任务。
+
+> **使用 T3 Code？** 支持模型切换、按模型推理深度（Thinking）、权限/Plan 模式、上下文用量、`/usage` 账号 5h/7d 额度查询、`/compact` 压缩、交互式提问与计划审批、图片附件与原生 Fork，且支持**无需安装 CodexHost 桌面端的独立安装模式**。详见 [T3 Code 适配说明](docs/T3CODE.md)。
 
 ## 功能
 
@@ -82,6 +84,7 @@ Report the current Windows project path. Do not modify any files.
 
 | 想做什么 | 查看文档 |
 |---|---|
+| 在 T3 Code 中接入与使用（含独立安装） | [T3 Code 适配说明](docs/T3CODE.md) |
 | 配置 SSH、登录 Claude、完成安装 | [安装指南](docs/SETUP.md) |
 | 使用项目规则、Skills、权限与可选 MCP | [配置说明](docs/CONFIGURATION.md) |
 | 使用图片和 PDF | [附件支持](docs/ATTACHMENTS.md) |
@@ -109,10 +112,11 @@ Report the current Windows project path. Do not modify any files.
 ## 项目结构
 
 ```text
-plugin/        Windows 本机插件，安装到 CodexHost 插件目录
+plugin/        Windows 本机插件，安装到桥接插件目录
+t3/            T3 Code Local ACP 适配器与安装管理工具
 remote/        VPS 端桥接，安装到远端用户目录
 installer/     配置、安装、升级与停用脚本
-docs/          安装、配置、架构与维护文档
+docs/          安装、配置、T3 Code、架构与维护文档
 examples/      配置示例
 scripts/       源码与公开内容检查
 ```

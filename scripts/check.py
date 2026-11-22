@@ -3,7 +3,7 @@ from pathlib import Path
 import ast, json, re, shutil, subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN, REMOTE, INSTALLER = ROOT / 'plugin', ROOT / 'remote', ROOT / 'installer'
+PLUGIN, REMOTE, INSTALLER, T3 = ROOT / 'plugin', ROOT / 'remote', ROOT / 'installer', ROOT / 't3'
 node = shutil.which('node')
 if not node:
     raise SystemExit('Node.js 24 must be on PATH')
@@ -13,9 +13,17 @@ python_files += [REMOTE / 'windows-agent', REMOTE / 'windows-workspace']
 for file in python_files:
     if not file.name.startswith('test-'):
         ast.parse(file.read_text(encoding='utf-8-sig'), filename=str(file))
-for file in [*PLUGIN.glob('*.mjs'), *(PLUGIN / 'runtime').glob('*.mjs'), *REMOTE.glob('*.mjs'), *INSTALLER.glob('*.mjs')]:
+for file in [*PLUGIN.glob('*.mjs'), *(PLUGIN / 'runtime').glob('*.mjs'), *REMOTE.glob('*.mjs'), *INSTALLER.glob('*.mjs'), *T3.glob('*.mjs')]:
     if not file.name.startswith(('test-', 'benchmark-')):
         subprocess.run([node, '--check', str(file)], check=True, cwd=ROOT)
+
+t3_manage = (T3 / 'manage.mjs').read_text(encoding='utf-8')
+t3_assets = re.search(r"const assets = \[([^\]]*)\]", t3_manage)
+if not t3_assets:
+    raise SystemExit('Missing assets list in t3/manage.mjs')
+for name in re.findall(r"'([^']+)'", t3_assets.group(1)):
+    if not (T3 / name).is_file():
+        raise SystemExit('T3 installer copies a missing file: t3/' + name)
 
 manifest = json.loads((PLUGIN / 'manifest.json').read_text(encoding='utf-8'))
 for field in ('entry', 'icon'):

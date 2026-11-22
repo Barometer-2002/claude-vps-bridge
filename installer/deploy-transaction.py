@@ -1,7 +1,7 @@
 """Prepare both ends first; compensate code changes on failure, retaining state."""
 from pathlib import Path
 import os,json,subprocess,datetime,hashlib,argparse
-from bridge_config import load_config,remote_python,custom_codexhost_roots,INSTALLED,INSTALLER,PLUGIN,REMOTE,SOURCE
+from bridge_config import load_config,node_executable,remote_python,custom_codexhost_roots,INSTALLED,INSTALLER,PLUGIN,REMOTE,SOURCE
 from dependency import load_policy,supported
 def sha(data):return hashlib.sha256(data).hexdigest()
 def replace(dest,data):
@@ -34,7 +34,7 @@ def main():
         if previous.exists():replace(SOURCE/'installation-workspace.json',previous.read_bytes())
         journal['phase']='rolled-back';(stage/'journal.json').write_text(json.dumps(journal,indent=2));print(json.dumps({'rolledBack':True,'restartRequired':True}));return
     tx=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ');stage=SOURCE/'transactions'/tx;stage.mkdir(parents=True)
-    config=load_config();target=INSTALLED;hostRoot=Path(config['hostRoot']);node=hostRoot/'runtime/node.exe'
+    config=load_config();target=INSTALLED;hostRoot=Path(config['hostRoot']) if config.get('hostRoot') else None;node=node_executable(config)
     pairs=[(PLUGIN/n,target/n) for n in ('plugin.mjs','manifest.json','icon.svg','transport-streams.mjs','diagnose.mjs','maintenance.mjs')]
     # Deploy the same policy and loader side by side at both flat runtime roots.
     protocol_files=('bridge-protocol.mjs','dependency-policy.json')
@@ -80,7 +80,9 @@ def main():
     version=json.loads(prepared_dependency.read_text(encoding='utf-8'))['version']
     if not supported(version,policy):raise RuntimeError('Prepared dependency is below the supported minimum')
     prepared=remote({'action':'prepare','id':tx,'files':payload,'remoteNodeExecutable':config.get('remoteNodeExecutable'),'adapterVersion':version,'pluginApiVersion':policy['pluginApiVersion'],'adapterPath':config['remoteRoot']+'/dependencies/codexhost-'+version+'/node_modules/@codexhost/cli-linux-x64/app/plugins/claude-code/plugin.mjs','remoteConfig':{'workspaceRoot':config['remoteWorkspaceRoot'],'claudeExecutable':config['remoteClaudeExecutable'],'legacy':config.get('legacy',{})}},config)
-    journal={'id':tx,'connection':config,'phase':'prepared','files':rows,'remote':prepared,'hostVersion':json.loads((hostRoot/'app/codexhost-distribution.json').read_text())['version']};(stage/'journal.json').write_text(json.dumps(journal,indent=2))
+    dist_file=(hostRoot/'app/codexhost-distribution.json') if hostRoot else None
+    host_version=json.loads(dist_file.read_text())['version'] if dist_file and dist_file.is_file() else None
+    journal={'id':tx,'connection':config,'phase':'prepared','files':rows,'remote':prepared,'hostVersion':host_version};(stage/'journal.json').write_text(json.dumps(journal,indent=2))
     # Only code/enablement participate. runtime/state and runtime-context are never replaced.
     reportPath=SOURCE/'installation-workspace.json';oldReport=reportPath.read_bytes() if reportPath.exists() else None
     if oldReport:(stage/'installation-workspace.previous.json').write_bytes(oldReport)
@@ -98,7 +100,8 @@ def main():
         replace(reportPath,json.dumps(report,ensure_ascii=False,indent=2).encode())
         routes=len(config.get('sshRoutes',[None]))
         subprocess.run([str(node),str(INSTALLER/'verify-upgrade.mjs')],check=True,timeout=100+50*(routes-1))
-        journal['phase']='verified';(stage/'journal.json').write_text(json.dumps(journal,indent=2));print(json.dumps({'success':True,'transaction':str(stage),'restartRequired':True,'activate':[str(hostRoot/'bin'/'codexhost.exe')+' stop',str(hostRoot/'bin'/'codexhost.exe')]},ensure_ascii=False))
+        activate=[str(hostRoot/'bin'/'codexhost.exe')+' stop',str(hostRoot/'bin'/'codexhost.exe')] if hostRoot else ['node .\\t3\\manage.mjs install']
+        journal['phase']='verified';(stage/'journal.json').write_text(json.dumps(journal,indent=2));print(json.dumps({'success':True,'transaction':str(stage),'restartRequired':bool(hostRoot),'activate':activate},ensure_ascii=False))
     except Exception as error:
         problems=[]
         try:remote({'action':'rollback','id':tx},config)

@@ -1,0 +1,1025 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { registerHooks } from 'node:module';
+import path from 'node:path';
+import { createInterface } from 'node:readline';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { inspectBridge } from './bridge-installation.mjs';
+import {
+  ADAPTER_VERSION,
+  AVAILABLE_COMMANDS,
+  DEFAULT_MODEL_ID,
+  accumulateTurnUsage,
+  buildQuestionElicitation,
+  buildSessionConfiguration,
+  buildUsageUpdate,
+  convertPromptBlocks,
+  extractFileChangePresentation,
+  extractSlashCommand,
+  findCatalogModel,
+  formatPercent,
+  formatPromptResponseUsage,
+  formatStatusReport,
+  formatUsageReport,
+  mapElicitationAnswers,
+  pickValidThinkingId,
+  resolveThinkingOptionsForModel,
+} from './acp-helpers.mjs';
+
+const stateDir = fileURLToPath(new URL('./sessions/', import.meta.url));
+const UUID_RE = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
+const BRIDGE_NOTICE_PREFIXES = [
+  'bridge-link-',
+  'windows-context-',
+  'windows-cancel-',
+  'windows-stop-hook-',
+  'windows-presentation-warning-',
+];
+
+async function loadBridge() {
+  const info = await inspectBridge();
+  const { root, entry } = info;
+  // The installation stamp belongs to the CodexHost background process.
+  const activation = pathToFileURL(path.join(root, 'runtime', 'activation.mjs')).href;
+  const hook = registerHooks({
+    load(url, context, nextLoad) {
+      if (url === activation) {
+        return { format: 'module', shortCircuit: true, source: 'export async function recordLoadedInstall() {}' };
+      }
+      return nextLoad(url, context);
+    },
+  });
+  try {
+    const { createHarnessAdapter } = await import(pathToFileURL(entry));
+    return { adapter: createHarnessAdapter({}), info };
+  } finally {
+    hook.deregister();
+  }
+}
+
+const { adapter: bridge, info: bridgeInfo } = await loadBridge();
+const sessions = new Map();
+const pendingRequests = new Map();
+const clientCaps = {
+  elicitationForm: false,
+  compaction: false,
+  notices: false,
+  clientName: '',
+};
+
+const text = value => ({ type: 'text', text: value });
+const send = value => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`);
+const error = (code, message) => Object.assign(new Error(message), { rpcCode: code });
+const unwrap = result => {
+  if (!result?.ok) throw new Error(result?.error?.message ?? 'Claude VPS Bridge request failed');
+  return result.value;
+};
+
+function update(session, value) {
+  send({ method: 'session/update', params: { sessionId: session.id, update: value } });
+}
+
+function askClient(method, params, signal) {
+  signal.throwIfAborted();
+  const id = `bridge-${randomUUID()}`;
+  const { promise, resolve, reject } = Promise.withResolvers();
+  const abort = () => reject(signal.reason);
+  signal.addEventListener('abort', abort, { once: true });
+  pendingRequests.set(id, { resolve, reject });
+  send({ id, method, params });
+  return promise.finally(() => {
+    pendingRequests.delete(id);
+    signal.removeEventListener('abort', abort);
+  });
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Operation timed out')), ms);
+      timer.unref?.();
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function sessionFile(id) {
+  if (typeof id !== 'string' || !UUID_RE.test(id)) {
+    throw error(-32602, 'Invalid Claude VPS session ID');
+  }
+  return path.join(stateDir, `${id}.json`);
+}
+
+function isProbeClient() {
+  return clientCaps.clientName === 't3-code-provider-test';
+}
+
+async function renameWithRetry(src, dest) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      await rename(src, dest);
+      return;
+    } catch (err) {
+      if ((err.code === 'EPERM' || err.code === 'EBUSY') && attempt < 3) {
+        await new Promise(r => setTimeout(r, 20 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+function persistSession(session) {
+  if (!session.nativeRef || isProbeClient() || session.closing) return Promise.resolve();
+  const task = (session.persistQueue ?? Promise.resolve()).then(async () => {
+    if (!session.nativeRef || isProbeClient() || session.closing) return;
+    const record = {
+      sessionId: session.id,
+      cwd: session.cwd,
+      nativeRef: session.nativeRef,
+      ...(session.currentModelId ? { modelId: session.currentModelId } : {}),
+      ...(session.currentThinkingId ? { thinkingOptionId: session.currentThinkingId } : {}),
+      ...(session.currentPermissionModeId ? { permissionModeId: session.currentPermissionModeId } : {}),
+      ...(session.lastCheckpoint ? { lastCheckpoint: session.lastCheckpoint } : {}),
+      ...(session.title ? { title: session.title } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    const signature = JSON.stringify({
+      cwd: record.cwd,
+      nativeRef: record.nativeRef,
+      modelId: record.modelId,
+      thinkingOptionId: record.thinkingOptionId,
+      permissionModeId: record.permissionModeId,
+      lastCheckpoint: record.lastCheckpoint,
+      title: record.title,
+    });
+    if (signature === session.savedSignature) return;
+    const target = sessionFile(session.id);
+    const temp = `${target}.${randomUUID()}.tmp`;
+    await mkdir(stateDir, { recursive: true });
+    try {
+      await writeFile(temp, JSON.stringify(record), { flag: 'wx' });
+      await renameWithRetry(temp, target);
+      session.savedSignature = signature;
+    } finally {
+      await rm(temp, { force: true });
+    }
+  });
+  session.persistQueue = task.catch(() => {});
+  return task;
+}
+
+async function readSavedSession(id) {
+  const file = sessionFile(id);
+  let raw;
+  try {
+    raw = await readFile(file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') throw error(-32602, `Saved Claude VPS session not found: ${id}`);
+    throw err;
+  }
+  return JSON.parse(raw);
+}
+
+function getSession(id) {
+  const session = sessions.get(id);
+  if (!session?.native) throw error(-32602, 'Claude VPS session is not open');
+  return session;
+}
+
+let inspectionPromise;
+function getInspection(refresh = false) {
+  if (refresh || !inspectionPromise) {
+    inspectionPromise = bridge.inspect({ refresh }).then(result => {
+      if (result?.status === 'unavailable') {
+        inspectionPromise = null;
+      }
+      return result ?? {};
+    }).catch(err => {
+      inspectionPromise = null;
+      throw err;
+    });
+  }
+  return inspectionPromise;
+}
+
+function emitUsageIfChanged(session, usage) {
+  const payload = buildUsageUpdate(usage);
+  if (!payload) return;
+  const key = JSON.stringify(payload);
+  if (key === session.lastUsageKey) return;
+  session.lastUsageKey = key;
+  update(session, payload);
+}
+
+function maybeEmitQuotaNotice(session, usage) {
+  if (!clientCaps.notices || !usage || typeof usage !== 'object') return;
+  const warnings = [];
+  if (typeof usage.planFiveHourUsedPercent === 'number' && usage.planFiveHourUsedPercent >= 90 && !session.warnedFiveHour) {
+    session.warnedFiveHour = true;
+    warnings.push(`5 小时窗口额度已达 ${formatPercent(usage.planFiveHourUsedPercent)}`);
+  }
+  if (typeof usage.planSevenDayUsedPercent === 'number' && usage.planSevenDayUsedPercent >= 90 && !session.warnedSevenDay) {
+    session.warnedSevenDay = true;
+    warnings.push(`7 天窗口额度已达 ${formatPercent(usage.planSevenDayUsedPercent)}`);
+  }
+  if (warnings.length) {
+    update(session, {
+      sessionUpdate: 'notice',
+      severity: 'warning',
+      title: 'Claude 额度提醒',
+      description: `${warnings.join('；')}。可输入 /usage 查看详细重置时间。`,
+    });
+  }
+}
+
+async function syncSessionState(session, state) {
+  if (!state || typeof state !== 'object') return;
+  const inspection = await getInspection().catch(() => ({}));
+  let configChanged = false;
+  let modeChanged = false;
+
+  if (state.nativeRef) {
+    session.nativeRef = state.nativeRef;
+  }
+  if (typeof state.effectiveModel?.id === 'string' && state.effectiveModel.id !== session.currentModelId) {
+    session.currentModelId = state.effectiveModel.id;
+    const catalogModel = findCatalogModel(inspection, session.currentModelId);
+    session.availableThinkingOptions = resolveThinkingOptionsForModel(catalogModel, inspection, state.availableThinkingOptions);
+    configChanged = true;
+  }
+  if (typeof state.resolvedModelLabel === 'string' && state.resolvedModelLabel !== session.resolvedModelLabel) {
+    session.resolvedModelLabel = state.resolvedModelLabel;
+  }
+  if (Array.isArray(state.availableThinkingOptions) && state.availableThinkingOptions.length > 0) {
+    const catalogModel = findCatalogModel(inspection, session.currentModelId);
+    const nextThinkingOptions = resolveThinkingOptionsForModel(catalogModel, inspection, state.availableThinkingOptions);
+    if (JSON.stringify(nextThinkingOptions) !== JSON.stringify(session.availableThinkingOptions)) {
+      session.availableThinkingOptions = nextThinkingOptions;
+      configChanged = true;
+    }
+  }
+  if (typeof state.effectiveThinkingOptionId === 'string' && state.effectiveThinkingOptionId !== session.currentThinkingId) {
+    session.currentThinkingId = state.effectiveThinkingOptionId;
+    configChanged = true;
+  }
+  if (typeof state.effectivePermissionModeId === 'string' && state.effectivePermissionModeId !== session.currentPermissionModeId) {
+    session.currentPermissionModeId = state.effectivePermissionModeId;
+    configChanged = true;
+    modeChanged = true;
+  }
+
+  await persistSession(session);
+
+  if (session.initialized) {
+    if (configChanged) {
+      const { configOptions } = buildSessionConfiguration(session, inspection);
+      update(session, { sessionUpdate: 'config_option_update', configOptions });
+    }
+    if (modeChanged && session.currentPermissionModeId) {
+      update(session, { sessionUpdate: 'current_mode_update', currentModeId: session.currentPermissionModeId });
+    }
+  }
+}
+
+function toolTitle(item) {
+  return item.command ?? item.toolName ?? item.tool ?? item.type;
+}
+
+function toolKind(item) {
+  const name = String(toolTitle(item)).toLowerCase();
+  if (item.type === 'commandExecution' || /(?:^|_)run$/.test(name)) return 'execute';
+  if (item.type === 'fileChange' || /(?:^|_)(?:edit|write)$/.test(name)) return 'edit';
+  if (item.type === 'contextCompaction') return 'think';
+  if (item.type === 'webSearch' || /(?:^|_)(?:search|glob|grep|web)/.test(name)) return 'search';
+  if (/(?:^|_)read$/.test(name)) return 'read';
+  return 'other';
+}
+
+function toolLocations(item) {
+  const args = item?.arguments;
+  if (!args || typeof args !== 'object') return undefined;
+  const candidate = args.path ?? args.filePath ?? args.file_path;
+  if (typeof candidate === 'string' && candidate.trim()) {
+    return [{ path: candidate.trim() }];
+  }
+  return undefined;
+}
+
+function toolContent(item) {
+  const output = typeof item.output === 'string'
+    ? [text(item.output)]
+    : (item.output?.content ?? []).filter(block => block.type === 'text');
+  return output.filter(block => block.text).map(content => ({ type: 'content', content }));
+}
+
+function isBridgeNoticeItem(item) {
+  return item.type === 'agentMessage'
+    && item.phase === 'commentary'
+    && typeof item.itemId === 'string'
+    && BRIDGE_NOTICE_PREFIXES.some(prefix => item.itemId.startsWith(prefix));
+}
+
+function displayItem(session, turn, item, outcome) {
+  const previous = turn.items.get(item.itemId);
+
+  if (item.type === 'contextCompaction') {
+    if (clientCaps.compaction) {
+      const status = outcome
+        ? (outcome.status === 'succeeded' ? 'completed' : outcome.status === 'cancelled' ? 'cancelled' : 'failed')
+        : 'in_progress';
+      update(session, {
+        sessionUpdate: 'compaction_update',
+        compactionId: item.itemId,
+        status,
+        ...(outcome?.error?.message ? { error: outcome.error.message } : {}),
+      });
+    } else {
+      const status = outcome ? (outcome.status === 'succeeded' ? 'completed' : 'failed') : 'in_progress';
+      update(session, {
+        sessionUpdate: previous ? 'tool_call_update' : 'tool_call',
+        toolCallId: item.itemId,
+        title: 'Compact context',
+        kind: 'think',
+        status,
+      });
+    }
+    turn.items.set(item.itemId, { ...item, finished: Boolean(outcome) });
+    return;
+  }
+
+  if (isBridgeNoticeItem(item) && clientCaps.notices) {
+    if (outcome && item.text?.trim()) {
+      const isWarning = item.itemId.startsWith('bridge-link-') || item.itemId.includes('warning') || item.itemId.includes('hook');
+      update(session, {
+        sessionUpdate: 'notice',
+        severity: isWarning ? 'warning' : 'info',
+        title: 'Claude VPS Bridge',
+        description: item.text.trim(),
+      });
+    }
+    turn.items.set(item.itemId, { ...item, finished: Boolean(outcome) });
+    return;
+  }
+
+  if (item.type === 'agentMessage' || item.type === 'reasoning') {
+    const shown = previous?.text ?? '';
+    const suffix = item.text?.startsWith(shown) ? item.text.slice(shown.length) : (!shown && item.text ? item.text : '');
+    if (suffix) {
+      const sessionUpdate = item.type === 'reasoning' ? 'agent_thought_chunk' : 'agent_message_chunk';
+      update(session, { sessionUpdate, content: text(suffix) });
+    }
+  } else if (item.type === 'fileChange') {
+    const status = outcome ? (outcome.status === 'succeeded' ? 'completed' : 'failed') : 'in_progress';
+    const { title, locations, content } = extractFileChangePresentation(item);
+    update(session, {
+      sessionUpdate: previous ? 'tool_call_update' : 'tool_call',
+      toolCallId: item.itemId,
+      title,
+      kind: 'edit',
+      status,
+      ...(locations ? { locations } : {}),
+      ...(content.length ? { content } : {}),
+    });
+  } else {
+    const content = toolContent(item);
+    const locations = toolLocations(item);
+    const status = outcome ? (outcome.status === 'succeeded' ? 'completed' : 'failed') : 'in_progress';
+    update(session, {
+      sessionUpdate: previous ? 'tool_call_update' : 'tool_call',
+      toolCallId: item.itemId,
+      title: toolTitle(item),
+      kind: toolKind(item),
+      status,
+      ...(item.arguments === undefined ? {} : { rawInput: item.arguments }),
+      ...(locations ? { locations } : {}),
+      ...(content.length ? { content } : {}),
+    });
+  }
+  turn.items.set(item.itemId, { ...item, finished: Boolean(outcome) });
+}
+
+const permissionKinds = {
+  allowOnce: 'allow_once',
+  allowForSession: 'allow_always',
+  allowAlways: 'allow_always',
+  deny: 'reject_once',
+};
+
+async function respondToInteraction(session, turn, interaction) {
+  if (interaction.turnId !== turn.id) return;
+  const { interactionId } = interaction;
+  const controller = new AbortController();
+  turn.interactions.set(interactionId, controller);
+  try {
+    let response;
+    if (interaction.type === 'approval') {
+      const deny = interaction.actions.find(action => action.effect === 'deny');
+      const commands = [...turn.items.values()].filter(item => !item.finished && item.type === 'commandExecution');
+      const item = turn.items.get(interaction.itemId) ??
+        (interaction.title === 'Bash' && commands.length === 1 ? commands[0] : undefined);
+      const options = interaction.actions
+        .filter(action => Object.hasOwn(permissionKinds, action.effect))
+        .map(action => ({ optionId: action.id, name: action.label, kind: permissionKinds[action.effect] }));
+      const reply = await askClient('session/request_permission', {
+        sessionId: session.id,
+        toolCall: {
+          toolCallId: item?.itemId ?? interaction.itemId ?? interactionId,
+          title: [interaction.title, interaction.description, item?.command].filter(Boolean).join('\n'),
+          ...(item ? { kind: toolKind(item) } : {}),
+          ...(item && toolLocations(item) ? { locations: toolLocations(item) } : {}),
+        },
+        options,
+      }, controller.signal).catch(() => null);
+      const selected = reply?.outcome?.outcome === 'selected' &&
+        options.find(option => option.optionId === reply.outcome.optionId);
+      const actionId = selected ? selected.optionId : deny?.id;
+      if (actionId === undefined) return await cancel(session);
+      response = { type: 'approval', actionId };
+    } else if (interaction.type === 'question') {
+      const form = clientCaps.elicitationForm ? buildQuestionElicitation(interaction) : null;
+      if (!form) {
+        response = { type: 'question', answers: {}, cancelled: true };
+      } else {
+        const reply = await askClient('elicitation/create', {
+          sessionId: session.id,
+          mode: 'form',
+          message: form.message,
+          requestedSchema: form.requestedSchema,
+        }, controller.signal).catch(() => null);
+        if (reply?.action === 'accept' && reply.content && typeof reply.content === 'object') {
+          response = {
+            type: 'question',
+            answers: mapElicitationAnswers(interaction, reply.content),
+          };
+        } else {
+          response = { type: 'question', answers: {}, cancelled: true };
+        }
+      }
+    } else {
+      response = { type: 'question', answers: {}, cancelled: true };
+    }
+    if (session.turn === turn && !controller.signal.aborted) {
+      unwrap(await session.native.execute({ type: 'interaction.respond', interactionId, response }));
+    }
+  } finally {
+    turn.interactions.delete(interactionId);
+  }
+}
+
+async function consume(session) {
+  try {
+    for await (const output of session.native.outputs) {
+      const turn = session.turn;
+      if (output.kind === 'interaction') {
+        if (turn) void respondToInteraction(session, turn, output.interaction).catch(turn.reject);
+        continue;
+      }
+      const event = output.event;
+      if (event.type === 'session.state.changed') {
+        await syncSessionState(session, event.state);
+      } else if (event.type === 'session.usage.changed') {
+        if (event.usage && typeof event.usage === 'object') {
+          session.latestUsage = event.usage;
+          emitUsageIfChanged(session, event.usage);
+          maybeEmitQuotaNotice(session, event.usage);
+        }
+      } else if (event.type === 'usage.request') {
+        const req = event.request;
+        if (req && !req.historical) {
+          if (typeof req.model === 'string' && req.model.trim() && req.model !== '<synthetic>') {
+            session.observedModels ??= [];
+            if (!session.observedModels.includes(req.model)) {
+              session.observedModels.push(req.model);
+              if (session.observedModels.length > 16) session.observedModels.shift();
+            }
+          }
+          if (turn) {
+            turn.usage = accumulateTurnUsage(turn.usage, req);
+          }
+        }
+      } else if (event.type === 'session.faulted') {
+        throw new Error(event.error.message);
+      } else if (turn && event.turnId === turn.id) {
+        if (event.type === 'item.started') displayItem(session, turn, event.item);
+        if (event.type === 'item.updated') {
+          const item = turn.items.get(event.itemId);
+          if (item && event.update?.type === 'text.append') {
+            displayItem(session, turn, { ...item, text: (item.text ?? '') + event.update.text });
+          } else if (item && event.update?.type === 'output.append' && typeof event.update.text === 'string') {
+            const nextOutput = typeof item.output === 'string' ? item.output + event.update.text : event.update.text;
+            displayItem(session, turn, { ...item, output: nextOutput });
+          }
+        }
+        if (event.type === 'item.completed') displayItem(session, turn, event.snapshot.item, event.snapshot.outcome);
+        if (event.type === 'interaction.closed') turn.interactions.get(event.interactionId)?.abort();
+        if (event.type === 'turn.completed') {
+          if (event.nativeTurnRef?.nativeSessionId && event.nativeTurnRef?.nativeTurnKey) {
+            session.lastCheckpoint = {
+              harnessId: event.nativeTurnRef.harnessId ?? session.nativeRef?.harnessId ?? 'claude-vps',
+              nativeSessionId: event.nativeTurnRef.nativeSessionId,
+              checkpointId: event.nativeTurnRef.nativeTurnKey,
+              formatVersion: 1,
+            };
+            void persistSession(session).catch(() => {});
+          }
+          turn.resolve(event.outcome);
+        }
+      }
+    }
+    throw new Error('Claude VPS Bridge closed its event stream');
+  } catch (failure) {
+    if (!session.closing) {
+      session.failure = failure;
+      session.turn?.reject(failure);
+    }
+  }
+}
+
+function schedulePostOpenNotifications(session) {
+  setImmediate(() => {
+    if (!sessions.has(session.id) || session.closing) return;
+    session.initialized = true;
+    update(session, {
+      sessionUpdate: 'available_commands_update',
+      availableCommands: AVAILABLE_COMMANDS,
+    });
+    if (session.latestUsage) {
+      emitUsageIfChanged(session, session.latestUsage);
+    }
+  });
+}
+
+function checkpointFromSnapshot(snapshot, sourceRef) {
+  const turns = snapshot?.turns ?? [];
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    if (turn?.checkpoint?.checkpointId) return turn.checkpoint;
+    if (turn?.nativeTurnRef?.nativeSessionId && turn?.nativeTurnRef?.nativeTurnKey) {
+      return {
+        harnessId: turn.nativeTurnRef.harnessId ?? sourceRef.harnessId,
+        nativeSessionId: turn.nativeTurnRef.nativeSessionId,
+        checkpointId: turn.nativeTurnRef.nativeTurnKey,
+        formatVersion: 1,
+      };
+    }
+  }
+  return null;
+}
+
+async function resolveForkCheckpoint(source, sourceSaved, localCwd) {
+  if (source?.native) {
+    const snap = await source.native.readSnapshot().catch(() => null);
+    if (snap?.ok) {
+      const cp = checkpointFromSnapshot(snap.value, sourceSaved.nativeRef);
+      if (cp) return cp;
+    }
+  }
+  if (sourceSaved.lastCheckpoint?.checkpointId) return sourceSaved.lastCheckpoint;
+  const tempOpened = await bridge.open({ kind: 'resume', cwd: localCwd, nativeRef: sourceSaved.nativeRef }).catch(() => null);
+  if (!tempOpened?.ok) return null;
+  try {
+    const snap = await tempOpened.value.readSnapshot().catch(() => null);
+    return snap?.ok ? checkpointFromSnapshot(snap.value, sourceSaved.nativeRef) : null;
+  } finally {
+    await tempOpened.value.close().catch(() => {});
+  }
+}
+
+async function openSession({ cwd, sessionId, forkFromSessionId }) {
+  if (typeof cwd !== 'string' || !path.win32.isAbsolute(cwd)) {
+    throw error(-32602, 'Select a local Windows project in T3 Code');
+  }
+  const localCwd = await realpath(cwd);
+  const id = forkFromSessionId ? randomUUID() : (sessionId ?? randomUUID());
+  if (!forkFromSessionId && sessions.has(id)) return sessions.get(id).opening;
+
+  const session = {
+    id,
+    cwd: localCwd,
+    observedModels: [],
+    latestUsage: null,
+    initialized: false,
+    closing: false,
+  };
+
+  const opening = (async () => {
+    let saved = null;
+    let openInput = { kind: 'create', cwd: localCwd };
+
+    if (forkFromSessionId) {
+      const source = sessions.get(forkFromSessionId);
+      const sourceSaved = source?.nativeRef
+        ? {
+            cwd: source.cwd,
+            nativeRef: source.nativeRef,
+            lastCheckpoint: source.lastCheckpoint,
+            modelId: source.currentModelId,
+            thinkingOptionId: source.currentThinkingId,
+            permissionModeId: source.currentPermissionModeId,
+          }
+        : await readSavedSession(forkFromSessionId);
+      if (sourceSaved.cwd !== localCwd || !sourceSaved.nativeRef) {
+        throw error(-32602, 'Fork source session belongs to a different Windows project or has no native session reference');
+      }
+      const checkpoint = await resolveForkCheckpoint(source, sourceSaved, localCwd);
+      if (!checkpoint) {
+        throw error(-32602, 'Fork source session has no completed turns to branch from yet');
+      }
+      saved = sourceSaved;
+      openInput = {
+        kind: 'fork',
+        cwd: localCwd,
+        sourceRef: sourceSaved.nativeRef,
+        checkpoint,
+      };
+    } else if (sessionId) {
+      saved = await readSavedSession(sessionId);
+      if (saved.cwd !== localCwd || !saved.nativeRef) {
+        throw error(-32602, 'Saved Claude VPS session belongs to a different Windows project');
+      }
+      session.nativeRef = saved.nativeRef;
+      session.lastCheckpoint = saved.lastCheckpoint;
+      session.title = saved.title;
+      openInput = {
+        kind: 'resume',
+        cwd: localCwd,
+        nativeRef: saved.nativeRef,
+        ...(saved.modelId && saved.modelId !== DEFAULT_MODEL_ID ? { model: { id: saved.modelId } } : {}),
+        ...(saved.thinkingOptionId ? { thinkingOptionId: saved.thinkingOptionId } : {}),
+        ...(saved.permissionModeId ? { permissionModeId: saved.permissionModeId } : {}),
+      };
+    }
+
+    const [inspection, openedNative] = await Promise.all([
+      getInspection(),
+      bridge.open(openInput).then(unwrap),
+    ]);
+
+    session.native = openedNative;
+    session.nativeRef = openedNative.initialState?.nativeRef ?? openedNative.nativeWriterRef ?? session.nativeRef;
+    session.latestUsage = openedNative.initialUsage ?? null;
+
+    const catalog = inspection.catalog ?? {};
+    const defaultModelId = catalog.defaultModel?.id ?? catalog.models?.[0]?.ref?.id ?? DEFAULT_MODEL_ID;
+    const defaultThinkingId = catalog.defaultThinkingOptionId ?? 'auto';
+    const defaultModeId = inspection.permissionModes?.defaultModeId ?? 'default';
+
+    session.currentModelId = openedNative.initialState?.effectiveModel?.id ?? saved?.modelId ?? defaultModelId;
+    const catalogModel = findCatalogModel(inspection, session.currentModelId);
+    session.resolvedModelLabel = openedNative.initialState?.resolvedModelLabel ?? catalogModel?.resolvedModelLabel ?? null;
+    session.availableThinkingOptions = resolveThinkingOptionsForModel(
+      catalogModel,
+      inspection,
+      openedNative.initialState?.availableThinkingOptions,
+    );
+    session.currentThinkingId = pickValidThinkingId(
+      openedNative.initialState?.effectiveThinkingOptionId ?? saved?.thinkingOptionId,
+      session.availableThinkingOptions,
+      defaultThinkingId,
+    );
+    session.currentPermissionModeId = openedNative.initialState?.effectivePermissionModeId
+      ?? saved?.permissionModeId
+      ?? defaultModeId;
+
+    await persistSession(session);
+    void consume(session);
+    schedulePostOpenNotifications(session);
+
+    const configuration = buildSessionConfiguration(session, inspection);
+    return {
+      sessionId: id,
+      ...configuration,
+    };
+  })();
+
+  session.opening = opening;
+  sessions.set(id, session);
+  try {
+    return await opening;
+  } catch (failure) {
+    sessions.delete(id);
+    session.closing = true;
+    await session.native?.close().catch(() => {});
+    throw failure;
+  }
+}
+
+async function setModel(session, modelId, inspection) {
+  if (typeof modelId !== 'string' || !modelId.trim()) {
+    throw error(-32602, 'Invalid Claude VPS model ID');
+  }
+  const catalogModels = inspection.catalog?.models ?? [];
+  const known = catalogModels.some(m => m?.ref?.id === modelId) || modelId === DEFAULT_MODEL_ID || modelId === session.currentModelId;
+  if (!known && catalogModels.length > 0) {
+    throw error(-32602, `Unknown Claude VPS model: ${modelId}`);
+  }
+  if (modelId !== session.currentModelId && modelId !== DEFAULT_MODEL_ID) {
+    unwrap(await session.native.execute({ type: 'model.select', model: { id: modelId } }));
+    session.currentModelId = modelId;
+    const catalogModel = findCatalogModel(inspection, modelId);
+    session.resolvedModelLabel = catalogModel?.resolvedModelLabel ?? null;
+    session.availableThinkingOptions = resolveThinkingOptionsForModel(catalogModel, inspection);
+    const nextThinking = pickValidThinkingId(
+      session.currentThinkingId,
+      session.availableThinkingOptions,
+      inspection.catalog?.defaultThinkingOptionId ?? 'auto',
+    );
+    if (nextThinking && nextThinking !== session.currentThinkingId) {
+      await session.native.execute({ type: 'thinking.select', thinkingOptionId: nextThinking }).catch(() => {});
+      session.currentThinkingId = nextThinking;
+    }
+    await persistSession(session);
+  }
+}
+
+async function setThinking(session, thinkingOptionId, inspection) {
+  if (typeof thinkingOptionId !== 'string' || !thinkingOptionId.trim()) {
+    throw error(-32602, 'Invalid Claude VPS thinking option');
+  }
+  const allowed = session.availableThinkingOptions?.length
+    ? session.availableThinkingOptions
+    : (inspection.catalog?.thinkingOptions ?? []);
+  if (allowed.length > 0 && !allowed.some(opt => opt.id === thinkingOptionId)) {
+    throw error(-32602, `Unsupported thinking level "${thinkingOptionId}" for current model`);
+  }
+  if (thinkingOptionId !== session.currentThinkingId) {
+    unwrap(await session.native.execute({ type: 'thinking.select', thinkingOptionId }));
+    session.currentThinkingId = thinkingOptionId;
+    await persistSession(session);
+  }
+}
+
+async function setPermissionMode(session, modeId, inspection) {
+  if (typeof modeId !== 'string' || !modeId.trim()) {
+    throw error(-32602, 'Invalid Claude VPS permission mode');
+  }
+  const modes = inspection.permissionModes?.modes ?? [];
+  if (modes.length > 0 && !modes.some(m => m.id === modeId)) {
+    throw error(-32602, `Unknown Claude VPS permission mode: ${modeId}`);
+  }
+  if (modeId !== session.currentPermissionModeId) {
+    unwrap(await session.native.execute({ type: 'permissionMode.select', permissionModeId: modeId }));
+    session.currentPermissionModeId = modeId;
+    await persistSession(session);
+  }
+}
+
+async function setConfigOption({ sessionId, configId, value }) {
+  const session = getSession(sessionId);
+  const inspection = await getInspection();
+  if (configId === 'model') {
+    await setModel(session, value, inspection);
+  } else if (configId === 'thinking') {
+    await setThinking(session, value, inspection);
+  } else if (configId === 'mode') {
+    await setPermissionMode(session, value, inspection);
+  } else {
+    throw error(-32602, `Unknown Claude VPS config option: ${String(configId)}`);
+  }
+  const { configOptions } = buildSessionConfiguration(session, inspection);
+  return { configOptions };
+}
+
+async function selectModel({ sessionId, modelId }) {
+  const session = getSession(sessionId);
+  const inspection = await getInspection();
+  await setModel(session, modelId, inspection);
+  return {};
+}
+
+async function selectMode({ sessionId, modeId }) {
+  const session = getSession(sessionId);
+  const inspection = await getInspection();
+  await setPermissionMode(session, modeId, inspection);
+  return {};
+}
+
+async function handleLocalSlashCommand(session, command) {
+  const inspection = await getInspection().catch(() => ({}));
+  const [accountRes] = await Promise.allSettled([
+    withTimeout(bridge.inspectAccount(), 8000),
+    session.native.refreshUsage ? withTimeout(session.native.refreshUsage(), 4000) : Promise.resolve(),
+  ]);
+  const account = accountRes.status === 'fulfilled' ? accountRes.value : null;
+  const credits = bridge.credits?.() ?? null;
+
+  if (session.latestUsage) {
+    emitUsageIfChanged(session, session.latestUsage);
+  }
+
+  const report = command.name === 'status'
+    ? formatStatusReport({ session, inspection, account, credits, bridgeVersion: bridgeInfo.version })
+    : formatUsageReport({ session, inspection, account, credits, bridgeVersion: bridgeInfo.version });
+
+  update(session, { sessionUpdate: 'agent_message_chunk', content: text(report) });
+  return { stopReason: 'end_turn' };
+}
+
+async function prompt({ sessionId, prompt }) {
+  const session = getSession(sessionId);
+  if (session.failure) throw session.failure;
+  if (session.turn) throw error(-32600, 'Claude VPS session already has an active turn');
+
+  const slash = extractSlashCommand(prompt);
+  if (slash && (slash.name === 'usage' || slash.name === 'account' || slash.name === 'status')) {
+    return handleLocalSlashCommand(session, slash);
+  }
+
+  const bridgeInput = slash?.name === 'compact' ? null : convertPromptBlocks(prompt);
+
+  if (!session.title) {
+    const firstText = (prompt ?? []).find(b => b?.type === 'text' && b.text?.trim())?.text?.trim();
+    if (firstText && !firstText.startsWith('/')) {
+      session.title = firstText.replace(/\s+/g, ' ').slice(0, 80);
+      void persistSession(session).catch(() => {});
+    }
+  }
+
+  const { promise, resolve, reject } = Promise.withResolvers();
+  void promise.catch(() => {});
+  const turn = { id: randomUUID(), items: new Map(), interactions: new Map(), usage: null, resolve, reject };
+  session.turn = turn;
+
+  if (slash?.name === 'compact') {
+    turn.admission = session.native.commands.execute({
+      turnId: turn.id,
+      commandId: 'claude.compact',
+      ...(slash.arg ? { arguments: { text: slash.arg } } : {}),
+    }).then(unwrap);
+  } else {
+    turn.admission = session.native.execute({
+      type: 'turn.start',
+      turnId: turn.id,
+      input: bridgeInput,
+    }).then(unwrap);
+  }
+
+  try {
+    await turn.admission;
+    const outcome = await promise;
+    if (outcome.status === 'failed') throw new Error(outcome.error?.message ?? 'Claude VPS turn failed');
+    const usage = formatPromptResponseUsage(turn.usage);
+    return {
+      stopReason: outcome.status === 'cancelled' ? 'cancelled' : 'end_turn',
+      ...(usage ? { usage } : {}),
+    };
+  } finally {
+    session.turn = null;
+    for (const controller of turn.interactions.values()) controller.abort();
+  }
+}
+
+async function cancel(session) {
+  const turn = session.turn;
+  if (!turn) return;
+  turn.cancellation ??= (async () => {
+    await turn.admission;
+    if (session.turn === turn) unwrap(await session.native.execute({ type: 'turn.cancel', turnId: turn.id }));
+  })();
+  return turn.cancellation;
+}
+
+async function closeSession({ sessionId }) {
+  const session = sessions.get(sessionId);
+  if (!session) return {};
+  session.closing = true;
+  sessions.delete(sessionId);
+  await session.native?.close().catch(() => {});
+  return {};
+}
+
+async function listSessions({ cwd }) {
+  let targetCwd = null;
+  if (typeof cwd === 'string' && cwd.trim()) {
+    targetCwd = await realpath(cwd).catch(() => path.resolve(cwd));
+  }
+  let entries = [];
+  try {
+    entries = await readdir(stateDir, { withFileTypes: true });
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  const results = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const id = entry.name.slice(0, -5);
+    if (!UUID_RE.test(id)) continue;
+    try {
+      const saved = JSON.parse(await readFile(path.join(stateDir, entry.name), 'utf8'));
+      if (typeof saved?.cwd !== 'string' || !saved.nativeRef) continue;
+      if (targetCwd && saved.cwd.toLowerCase() !== targetCwd.toLowerCase()) continue;
+      results.push({
+        sessionId: id,
+        cwd: saved.cwd,
+        title: typeof saved.title === 'string' ? saved.title : null,
+        updatedAt: typeof saved.updatedAt === 'string' ? saved.updatedAt : null,
+      });
+    } catch {
+      // Ignore corrupt session index entries.
+    }
+  }
+  results.sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')));
+  return { sessions: results, nextCursor: null };
+}
+
+async function deleteSession({ sessionId }) {
+  await closeSession({ sessionId });
+  if (typeof sessionId === 'string' && UUID_RE.test(sessionId)) {
+    await rm(sessionFile(sessionId), { force: true });
+  }
+  return {};
+}
+
+const methods = {
+  initialize: params => {
+    clientCaps.elicitationForm = Boolean(params?.clientCapabilities?.elicitation?.form);
+    clientCaps.compaction = Boolean(params?.clientCapabilities?.session?.compaction);
+    clientCaps.notices = Boolean(params?.clientCapabilities?.session?.notices);
+    clientCaps.clientName = typeof params?.clientInfo?.name === 'string' ? params.clientInfo.name : '';
+    return {
+      protocolVersion: 1,
+      agentInfo: { name: 'claude-vps-bridge', version: ADAPTER_VERSION, title: 'Claude VPS Bridge' },
+      agentCapabilities: {
+        loadSession: true,
+        promptCapabilities: {
+          image: true,
+          audio: false,
+          embeddedContext: true,
+        },
+        sessionCapabilities: {
+          resume: {},
+          fork: {},
+          close: {},
+          list: {},
+          delete: {},
+        },
+      },
+      authMethods: [],
+    };
+  },
+  'session/new': params => openSession({ cwd: params.cwd }),
+  'session/resume': async params => {
+    const { configOptions, models, modes } = await openSession(params);
+    return { configOptions, models, ...(modes ? { modes } : {}) };
+  },
+  'session/fork': params => openSession({ cwd: params.cwd, forkFromSessionId: params.sessionId }),
+  'session/load': async params => {
+    const { configOptions, models, modes } = await openSession(params);
+    const session = getSession(params.sessionId);
+    const history = unwrap(await session.native.readSnapshot());
+    for (const turn of history.turns ?? []) {
+      for (const block of turn.input ?? []) {
+        if (block.type === 'text') update(session, { sessionUpdate: 'user_message_chunk', content: text(block.text) });
+      }
+      for (const { item } of turn.items ?? []) {
+        if (item.type === 'agentMessage' && item.text && !isBridgeNoticeItem(item)) {
+          update(session, { sessionUpdate: 'agent_message_chunk', content: text(item.text) });
+        }
+      }
+    }
+    return { configOptions, models, ...(modes ? { modes } : {}) };
+  },
+  'session/close': closeSession,
+  'session/list': listSessions,
+  'session/delete': deleteSession,
+  'session/set_config_option': setConfigOption,
+  'session/set_model': selectModel,
+  'session/set_mode': selectMode,
+  'session/prompt': prompt,
+  'session/cancel': params => cancel(getSession(params.sessionId)),
+};
+
+async function receive(line) {
+  let message;
+  try {
+    message = JSON.parse(line);
+    if (!message.method) {
+      const request = pendingRequests.get(message.id);
+      if (message.error) request?.reject(new Error(message.error.message));
+      else request?.resolve(message.result);
+      return;
+    }
+    if (!Object.hasOwn(methods, message.method)) throw error(-32601, `Unsupported ACP method ${message.method}`);
+    const result = await methods[message.method](message.params ?? {});
+    if (message.id !== undefined) send({ id: message.id, result: result ?? {} });
+  } catch (failure) {
+    if (message?.id !== undefined) {
+      send({ id: message.id, error: { code: failure.rpcCode ?? -32603, message: failure.message } });
+    } else if (!message) {
+      send({ id: null, error: { code: -32700, message: 'Invalid JSON' } });
+    } else {
+      console.error(failure.message);
+    }
+  }
+}
+
+const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+lines.on('line', line => { if (line.trim()) void receive(line); });
+lines.on('close', async () => {
+  for (const request of pendingRequests.values()) request.reject(new Error('ACP client disconnected'));
+  for (const session of sessions.values()) session.closing = true;
+  await Promise.allSettled([...sessions.values()].map(session => session.native?.close()));
+  await bridge.close();
+});

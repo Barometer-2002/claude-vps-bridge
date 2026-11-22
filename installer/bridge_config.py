@@ -20,12 +20,21 @@ def custom_codexhost_roots():
     same=lambda a,b:os.path.normcase(os.path.abspath(a))==os.path.normcase(os.path.abspath(b))
     return [name for name,default in defaults.items() if os.environ.get(name) and not same(os.environ[name],default)]
 
+def node_executable(config):
+    if config.get('hostRoot'):
+        return Path(config['hostRoot'])/'runtime/node.exe'
+    if config.get('nodeExecutable'):
+        return Path(config['nodeExecutable'])
+    raise ValueError('Bridge configuration requires either hostRoot or nodeExecutable')
+
 def validate(value):
     if value.get('schemaVersion') != 1:
         raise ValueError('Unsupported bridge configuration version')
     if not isinstance(value.get('sshHost'), str) or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.@:-]*', value['sshHost']):
         raise ValueError('sshHost must be an SSH alias or user@host, not command options')
-    for key in ('hostRoot', 'sshExecutable', 'pwshExecutable'):
+    if not value.get('hostRoot') and not value.get('nodeExecutable'):
+        raise ValueError('Either hostRoot or nodeExecutable must be set to an absolute local path')
+    for key in ('sshExecutable', 'pwshExecutable', *(['hostRoot'] if 'hostRoot' in value else []), *(['nodeExecutable'] if 'nodeExecutable' in value else [])):
         if not isinstance(value.get(key), str) or not Path(value[key]).is_absolute() or any(c in value[key] for c in '\r\n\0'):
             raise ValueError(key+' must be an absolute local path')
     for key in ('remoteRoot', 'remoteWorkspaceRoot', 'remoteClaudeExecutable', *(['remoteNodeExecutable'] if 'remoteNodeExecutable' in value else [])):
@@ -42,10 +51,10 @@ def load_config():
     candidates=[Path(explicit)] if explicit else [SOURCE/'bridge-config.local.json',INSTALLED/'bridge-config.json']
     for file in candidates:
         if file.is_file():return validate(json.loads(file.read_text(encoding='utf-8-sig')))
-    raise RuntimeError('Bridge configuration missing. Run configure.py --ssh-host <alias> --host-root <CodexHost directory>.')
+    raise RuntimeError('Bridge configuration missing. Run configure.py --ssh-host <alias> [--host-root <CodexHost directory> | --t3-only].')
 
 def _route_tool(config,request,validate_only=False):
-    node=Path(config['hostRoot'])/'runtime/node.exe'
+    node=node_executable(config)
     args=[str(node),str(INSTALLER/'route-command.mjs')]
     if validate_only:args.append('--validate')
     body=json.dumps({'config':config,**request},ensure_ascii=False).encode('utf-8')

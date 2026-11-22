@@ -97,7 +97,7 @@ export class SshRoutes{
       args.push('-o','ProxyCommand='+commandPath(this.locateCloudflared(executable))+' access ssh --hostname '+hostname);
     }else if(this.current.proxy){
       const {host,port}=this.current.proxy;
-      const node=path.win32.join(this.config.hostRoot,'runtime','node.exe');
+      const node=this.config.hostRoot?path.win32.join(this.config.hostRoot,'runtime','node.exe'):(this.config.nodeExecutable??process.execPath);
       args.push('-o','ProxyCommand='+[commandPath(node),commandPath(helper),host,port,'"%h"','%p'].join(' '));
     }else if(this.config.sshRoutes)args.push('-o','ProxyCommand=none');
     return [...args,this.config.sshHost,command];
