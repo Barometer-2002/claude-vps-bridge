@@ -7,8 +7,6 @@
     [string]$T3Home
 )
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'installer\select-python.ps1')
-$bridgePython = Resolve-BridgePython
 $manageT3Native = Join-Path $PSScriptRoot 't3-native\manage-native.mjs'
 $t3Args = @()
 if ($T3Home) { $t3Args += @('--t3-home', $T3Home) }
@@ -21,6 +19,14 @@ function Invoke-T3NativeManage([string]$Action) {
     if ($LASTEXITCODE -ne 0) { throw "T3 Code native shim $Action failed." }
 }
 
+if ($T3Only -and ($Disable -or $Uninstall)) {
+    Invoke-T3NativeManage 'uninstall'
+    return
+}
+
+. (Join-Path $PSScriptRoot 'installer\select-python.ps1')
+$bridgePython = Resolve-BridgePython
+
 # Host-started shells inherit the default CODEXHOST_DATA_DIR; only other locations stop here.
 & $bridgePython (Join-Path $PSScriptRoot 'installer\bridge_config.py') --check-roots
 if ($LASTEXITCODE -ne 0) { throw 'A custom CodexHost plugin/data location is set; inspect the active runtime before installing.' }
@@ -28,10 +34,8 @@ if ($Disable -or $Uninstall) {
     if ($includeT3) {
         Invoke-T3NativeManage 'uninstall'
     }
-    if (-not $T3Only) {
-        & $bridgePython (Join-Path $PSScriptRoot 'installer\disable.py')
-        if ($LASTEXITCODE -ne 0) { throw '停用未完成，请查看错误信息；用户数据已保留。' }
-    }
+    & $bridgePython (Join-Path $PSScriptRoot 'installer\disable.py')
+    if ($LASTEXITCODE -ne 0) { throw '停用未完成，请查看错误信息；用户数据已保留。' }
     return
 }
 # Both sides are prepared and checked before switching code. State is excluded.

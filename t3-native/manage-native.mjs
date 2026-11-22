@@ -13,6 +13,8 @@ const nativeDir = path.dirname(fileURLToPath(import.meta.url));
 const INSTANCE_ID = 'claude-vps';
 const DISPLAY_NAME = 'Claude VPS';
 const VERSION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const SHIM_NAME = 'claude-vps-shim.exe';
+const VERSION_CACHE_NAME = 'vps-version-cache.json';
 
 const SCRIPT_ASSETS = [
   { name: 'bridge-installation.mjs', src: path.join(nativeDir, 'bridge-installation.mjs') },
@@ -80,6 +82,30 @@ async function writeAtomic(file, payload, expected) {
   }
 }
 
+async function removeExpectedFile(file, expected) {
+  const current = await readOptional(file);
+  if (current === null) return false;
+  if (!current.equals(expected)) throw new Error(`文件已被另一进程修改，请重试。${file}`);
+  await rm(file);
+  return true;
+}
+
+async function rollbackFiles(changes, error) {
+  const failures = [];
+  for (const { file, before, after } of changes.reverse()) {
+    try {
+      if (before !== null) await writeAtomic(file, before, after);
+      else await removeExpectedFile(file, after);
+    } catch (rollbackError) {
+      failures.push(rollbackError.message);
+    }
+  }
+  if (failures.length) {
+    throw new Error(`${error.message}\n文件回滚未完成：\n${failures.join('\n')}`);
+  }
+  throw error;
+}
+
 function findCsc() {
   const override = process.env.CLAUDE_VPS_CSC;
   if (override) {
@@ -96,11 +122,27 @@ function findCsc() {
   throw new Error('Windows .NET csc.exe not found; cannot build claude-vps-shim.exe');
 }
 
-function ownsProvider(provider, exePath) {
-  return provider?.driver === 'claudeAgent'
-    && typeof provider?.config?.binaryPath === 'string'
+function usesShim(provider, exePath) {
+  return typeof provider?.config?.binaryPath === 'string'
     && path.isAbsolute(provider.config.binaryPath)
     && normalizePath(provider.config.binaryPath) === normalizePath(exePath);
+}
+
+function ownsProvider(provider, exePath) {
+  return provider?.driver === 'claudeAgent' && usesShim(provider, exePath);
+}
+
+function checkProviderOwnership(providers, exePath) {
+  const provider = providers[INSTANCE_ID];
+  if (Object.hasOwn(providers, INSTANCE_ID) && !ownsProvider(provider, exePath)) {
+    throw new Error(`T3 Provider ID ${INSTANCE_ID} 已被其他配置使用。`);
+  }
+  for (const [id, entry] of Object.entries(providers)) {
+    if (id !== INSTANCE_ID && usesShim(entry, exePath)) {
+      throw new Error(`T3 Provider ${id} 也使用此 Shim，请先核对其配置。`);
+    }
+  }
+  return provider;
 }
 
 async function readSettings(home) {
@@ -123,7 +165,7 @@ async function readSettings(home) {
 
 async function assertSettingsUnchanged({ file, requested, original }) {
   if ((await realpath(requested)) !== file || !(await readOptional(file))?.equals(original)) {
-    throw new Error('T3 设置在安装期间发生变化，请重试。');
+    throw new Error('T3 设置在操作期间发生变化，请重试。');
   }
 }
 
@@ -137,7 +179,7 @@ async function saveSettings(settings) {
 }
 
 async function readCachedVersion(installDir) {
-  const cacheFile = path.join(installDir, 'vps-version-cache.json');
+  const cacheFile = path.join(installDir, VERSION_CACHE_NAME);
   const raw = await readOptional(cacheFile);
   if (!raw) return null;
   try {
@@ -182,15 +224,12 @@ async function install(t3Home, { offline = false } = {}) {
   const bridge = await inspectBridge();
   const installDir = path.join(t3Home, 'integrations', 'claude-vps-native');
   const homeDir = path.join(installDir, 'claude-home');
-  const exePath = path.join(installDir, 'claude-vps-shim.exe');
+  const exePath = path.join(installDir, SHIM_NAME);
   const settings = await readSettings(t3Home);
 
   settings.data.providerInstances ??= {};
   const providers = settings.data.providerInstances;
-  const prior = providers[INSTANCE_ID];
-  if (Object.hasOwn(providers, INSTANCE_ID) && !ownsProvider(prior, exePath)) {
-    throw new Error(`T3 Provider ID ${INSTANCE_ID} 已被其他配置使用。`);
-  }
+  const prior = checkProviderOwnership(providers, exePath);
 
   await mkdir(homeDir, { recursive: true });
   await cleanupRetiredFiles(installDir);
@@ -201,20 +240,20 @@ async function install(t3Home, { offline = false } = {}) {
   try {
     // 1. Stage all assets and compile shim executable inside isolated staging directory first.
     await mkdir(stagingDir, { recursive: true });
-    const stagedFiles = [];
+    const scriptFiles = [];
     for (const asset of SCRIPT_ASSETS) {
       const payload = await readFile(asset.src);
       const stagedPath = path.join(stagingDir, asset.name);
       await writeFile(stagedPath, payload);
-      stagedFiles.push({ name: asset.name, target: path.join(installDir, asset.name), payload });
+      scriptFiles.push({ target: path.join(installDir, asset.name), payload });
     }
 
     const csc = findCsc();
     const csSource = path.join(nativeDir, 'claude-vps-shim.cs');
-    const stagedExe = path.join(stagingDir, 'claude-vps-shim.exe');
+    const stagedExe = path.join(stagingDir, SHIM_NAME);
     await execFileAsync(csc, ['/nologo', '/optimize+', '/target:exe', `/out:${stagedExe}`, csSource], { windowsHide: true });
-    const exePayload = await readFile(stagedExe);
-    stagedFiles.push({ name: 'claude-vps-shim.exe', target: exePath, payload: exePayload });
+    const executable = { target: exePath, payload: await readFile(stagedExe) };
+    const stagedFiles = [...scriptFiles, executable];
 
     // 2. Self-test the staged installed layout BEFORE touching any live file or settings.json.
     const selfTest = await runExeSelfTest(stagedExe);
@@ -229,14 +268,23 @@ async function install(t3Home, { offline = false } = {}) {
       liveVersionOut = liveProbe.version;
     }
 
-    // Check for unexpected unmanaged files only on first-time install.
-    for (const item of stagedFiles) {
-      item.before = await readOptional(item.target);
-      if (item.before && !prior && !item.before.equals(item.payload)) {
-        throw new Error(`安装目录已有同名文件，请先核对其来源。${item.target}`);
+    for (const item of stagedFiles) item.before = await readOptional(item.target);
+    await assertSettingsUnchanged(settings);
+
+    if (!prior) {
+      const conflict = scriptFiles.find(item => item.before && !item.before.equals(item.payload));
+      if (conflict) throw new Error(`安装目录已有同名文件，请先核对其来源。${conflict.target}`);
+      if (executable.before && !executable.before.equals(executable.payload)) {
+        // Framework csc changes PE metadata on each build. Recover an unregistered
+        // layout only when all package scripts match, and preserve the previous EXE.
+        if (!scriptFiles.every(item => item.before?.equals(item.payload))) {
+          throw new Error(`安装目录已有同名文件，请先核对其来源。${exePath}`);
+        }
+        const backup = `${exePath}.before-reinstall-${randomUUID()}`;
+        await writeFile(backup, executable.before, { flag: 'wx' });
+        console.log(`已保留旧 Shim：${backup}`);
       }
     }
-    await assertSettingsUnchanged(settings);
 
     // 3. Atomically switch staged files into installDir with rollback tracking.
     for (const item of stagedFiles) {
@@ -267,24 +315,12 @@ async function install(t3Home, { offline = false } = {}) {
     } else await assertSettingsUnchanged(settings);
 
     // Refresh cache file cleanly after successful switch.
-    const stagedCache = await readOptional(path.join(stagingDir, 'vps-version-cache.json'));
+    const stagedCache = await readOptional(path.join(stagingDir, VERSION_CACHE_NAME));
     if (stagedCache) {
-      await writeFile(path.join(installDir, 'vps-version-cache.json'), stagedCache).catch(() => {});
+      await writeFile(path.join(installDir, VERSION_CACHE_NAME), stagedCache).catch(() => {});
     }
   } catch (error) {
-    const failures = [];
-    for (const { file, before, after } of changes.reverse()) {
-      try {
-        if (before) await writeAtomic(file, before, after);
-        else if ((await readOptional(file))?.equals(after)) await rm(file, { force: true });
-      } catch (rollbackError) {
-        failures.push(rollbackError.message);
-      }
-    }
-    if (failures.length) {
-      throw new Error(`${error.message}\n文件回滚未完成：\n${failures.join('\n')}`);
-    }
-    throw error;
+    await rollbackFiles(changes, error);
   } finally {
     await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -302,7 +338,7 @@ async function install(t3Home, { offline = false } = {}) {
 
 async function status(t3Home, { offline = false } = {}) {
   const installDir = path.join(t3Home, 'integrations', 'claude-vps-native');
-  const exePath = path.join(installDir, 'claude-vps-shim.exe');
+  const exePath = path.join(installDir, SHIM_NAME);
   const settings = await readSettings(t3Home);
   const entry = settings.data.providerInstances?.[INSTANCE_ID];
   const owns = ownsProvider(entry, exePath);
@@ -350,19 +386,29 @@ async function status(t3Home, { offline = false } = {}) {
 
 async function uninstall(t3Home) {
   const installDir = path.join(t3Home, 'integrations', 'claude-vps-native');
-  const exePath = path.join(installDir, 'claude-vps-shim.exe');
+  const exePath = path.join(installDir, SHIM_NAME);
   const settings = await readSettings(t3Home);
-  const providers = settings.data.providerInstances;
-  const registered = providers?.[INSTANCE_ID];
-  if (Object.hasOwn(providers ?? {}, INSTANCE_ID) && !ownsProvider(registered, exePath)) {
-    throw new Error(`T3 Provider ID ${INSTANCE_ID} 已被其他配置使用。`);
+  const providers = settings.data.providerInstances ?? {};
+  if (!checkProviderOwnership(providers, exePath)) {
+    console.log(`T3 实例 "${INSTANCE_ID}" 未注册。`);
+    return;
   }
-  if (registered) {
+
+  const files = [SHIM_NAME, ...SCRIPT_ASSETS.map(asset => asset.name), VERSION_CACHE_NAME];
+  const changes = [];
+  try {
+    await assertSettingsUnchanged(settings);
+    for (const name of files) {
+      const file = path.join(installDir, name);
+      const before = await readOptional(file);
+      if (before !== null && await removeExpectedFile(file, before)) {
+        changes.push({ file, before, after: null });
+      }
+    }
     delete providers[INSTANCE_ID];
     await saveSettings(settings);
-  }
-  for (const name of [...SCRIPT_ASSETS.map(a => a.name), 'claude-vps-shim.exe', 'vps-version-cache.json']) {
-    await rm(path.join(installDir, name), { force: true }).catch(() => {});
+  } catch (error) {
+    await rollbackFiles(changes, error);
   }
   await cleanupRetiredFiles(installDir);
   console.log(`已移除独立原生 Claude 实例 "${INSTANCE_ID}"（保留 claude-home，未影响其他 Provider）。`);

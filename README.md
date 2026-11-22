@@ -73,7 +73,17 @@ pwsh -NoProfile -File .\install.ps1 -T3Only
 ```
 
 > [!TIP]
-> 部署完成后也可通过 `node .\t3-native\manage-native.mjs install | status | uninstall` 单独管理 T3 原生接入（支持原子热升级，卸载默认保留历史数据）。
+> 部署完成后，可运行 `node .\t3-native\manage-native.mjs install` 单独重装 T3 接入，或将 `install` 改为 `status` 查看状态。
+
+### 卸载 T3 Code 接入
+
+结束正在运行的 Claude VPS 会话后，在仓库根目录执行：
+
+```powershell
+pwsh -NoProfile -File .\uninstall.ps1
+```
+
+脚本移除 T3 的 `Claude VPS` 实例、shim 和版本缓存，保留 `claude-home`、历史数据和共享桥接。自定义 T3 数据目录可用 `-T3Home` 指定。卸载后可在 **Settings → Providers** 刷新列表。
 
 ### 3. 在 T3 Code 中使用
 
