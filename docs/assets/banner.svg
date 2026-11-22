@@ -1,88 +1,156 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" fill="none" role="img" aria-labelledby="title desc">
   <title id="title">T3 Claude VPS (t3-claude-vps)</title>
-  <desc id="desc">让 Linux VPS 上的官方 Claude Code 原生接入 Windows 端 T3 Code：零反代、零逆向、凭据留 VPS、代码与 T3 Token 留本机。</desc>
+  <desc id="desc">让 Linux VPS 上的官方 Claude Code 原生接入 Windows 端 T3 Code：零反代、零逆向、凭据留 VPS、代码与 Token 留本机。</desc>
   <defs>
-    <linearGradient id="canvas" x1="0" y1="0" x2="1200" y2="300" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#0E1B22"/>
-      <stop offset="55%" stop-color="#142933"/>
-      <stop offset="100%" stop-color="#192A30"/>
+    <linearGradient id="canvasL" x1="0" y1="0" x2="1200" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FCFBF8"/>
+      <stop offset="60%" stop-color="#F7F5EE"/>
+      <stop offset="100%" stop-color="#F2EEE5"/>
     </linearGradient>
-    <radialGradient id="glowWarm" cx="0.16" cy="0.5" r="0.34">
-      <stop offset="0%" stop-color="#E07B59" stop-opacity="0.22"/>
-      <stop offset="100%" stop-color="#E07B59" stop-opacity="0"/>
+    <radialGradient id="warmWashL" cx="930" cy="148" r="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#D97757" stop-opacity="0.12"/>
+      <stop offset="60%" stop-color="#D97757" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#D97757" stop-opacity="0"/>
     </radialGradient>
-    <radialGradient id="glowTeal" cx="0.86" cy="0.35" r="0.38">
-      <stop offset="0%" stop-color="#2DD4BF" stop-opacity="0.18"/>
-      <stop offset="100%" stop-color="#2DD4BF" stop-opacity="0"/>
-    </radialGradient>
-    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
-      <circle cx="2" cy="2" r="1" fill="#8FB3C0" fill-opacity="0.12"/>
-    </pattern>
-    <linearGradient id="iconBg" x1="0" y1="0" x2="120" y2="120" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#1A323D"/>
-      <stop offset="100%" stop-color="#0E1C23"/>
+    <linearGradient id="iconBgL" x1="10" y1="0" x2="54" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#24221F"/>
+      <stop offset="100%" stop-color="#11100F"/>
     </linearGradient>
-    <linearGradient id="clawdFill" x1="12" y1="4" x2="12" y2="21" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#F09270"/>
-      <stop offset="100%" stop-color="#D96D4B"/>
+    <linearGradient id="vpsTileL" x1="24" y1="9" x2="54" y2="40" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F19877"/>
+      <stop offset="52%" stop-color="#D97757"/>
+      <stop offset="100%" stop-color="#BD5736"/>
     </linearGradient>
-    <linearGradient id="bridgeLine" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#2DD4BF"/>
-      <stop offset="100%" stop-color="#38BDF8"/>
+    <linearGradient id="localTileL" x1="10" y1="24" x2="40" y2="55" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2E2C28"/>
+      <stop offset="100%" stop-color="#181715"/>
     </linearGradient>
+    <linearGradient id="railWarmL" x1="866" y1="128" x2="956" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#D97757" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#C85F3E"/>
+    </linearGradient>
+    <linearGradient id="railSageL" x1="958" y1="172" x2="868" y2="172" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1F7A5A" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#1F7A5A"/>
+    </linearGradient>
+    <clipPath id="iconVpsClipL">
+      <rect x="24" y="9.5" width="30" height="30" rx="8.5"/>
+    </clipPath>
+    <marker id="arrTerraL" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0.5 0.8L6.2 3.5L0.5 6.2Z" fill="#C85F3E"/>
+    </marker>
+    <marker id="arrSageL" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0.5 0.8L6.2 3.5L0.5 6.2Z" fill="#1F7A5A"/>
+    </marker>
   </defs>
 
-  <rect width="1200" height="300" rx="22" fill="url(#canvas)"/>
-  <rect width="1200" height="300" rx="22" fill="url(#dots)"/>
-  <rect width="1200" height="300" rx="22" fill="url(#glowWarm)"/>
-  <rect width="1200" height="300" rx="22" fill="url(#glowTeal)"/>
-  <rect x="1" y="1" width="1198" height="298" rx="21" fill="none" stroke="#2A4A57" stroke-width="1.5"/>
+  <!-- Canvas -->
+  <rect x="0.75" y="0.75" width="1198.5" height="298.5" rx="18" fill="url(#canvasL)" stroke="#E4DFD4" stroke-width="1.5"/>
+  <rect x="1" y="1" width="1198" height="298" rx="18" fill="url(#warmWashL)"/>
 
-  <!-- Left Emblem -->
-  <g transform="translate(64 78)">
-    <rect width="144" height="144" rx="30" fill="url(#iconBg)" stroke="#2E5463" stroke-width="1.8"/>
-    <rect x="4" y="4" width="136" height="136" rx="26" fill="none" stroke="#FFFFFF" stroke-opacity="0.06"/>
-    <g transform="translate(21.5 6) scale(4.2)">
-      <path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z" fill="url(#clawdFill)" fill-rule="evenodd"/>
-    </g>
-    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
-      <rect x="19" y="102" width="31" height="24" rx="5" fill="#17303B" stroke="#7FA4B0" stroke-width="2.4"/>
-      <path d="m26 109.5 5 4.5-5 4.5m9 0h7.5" stroke="#E8F6FA" stroke-width="2.4"/>
-      <path d="M56 109.8h31l-5-4.8M88 118.2H57l5 4.8" stroke="url(#bridgeLine)" stroke-width="2.8"/>
-      <rect x="94" y="101" width="31" height="26" rx="5" fill="#17303B" stroke="#7FA4B0" stroke-width="2.4"/>
-      <path d="M94 114h31" stroke="#7FA4B0" stroke-width="2.2"/>
-      <circle cx="102.5" cy="107.5" r="2.1" fill="#2DD4BF"/>
-      <circle cx="102.5" cy="120.5" r="2.1" fill="#38BDF8"/>
-      <path d="M109.5 107.5h8.5M109.5 120.5h8.5" stroke="#B6D2DC" stroke-width="2.2"/>
-    </g>
+  <!-- Subtle Swiss Architectural Guide Hairlines -->
+  <g stroke="#E6E1D6" stroke-width="1" opacity="0.85">
+    <line x1="664" y1="24" x2="664" y2="276"/>
+    <line x1="680" y1="150" x2="1172" y2="150" stroke-dasharray="3 5" opacity="0.6"/>
   </g>
 
-  <!-- Title & Copy -->
-  <g font-family="Segoe UI, Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif">
-    <text x="246" y="114" font-size="48" font-weight="800" fill="#F4FAFC" letter-spacing="-0.5">T3 Claude VPS</text>
-    <rect x="596" y="80" width="166" height="36" rx="18" fill="#1D3A46" stroke="#2F5B6C" stroke-width="1.2"/>
-    <text x="679" y="103" text-anchor="middle" font-family="Consolas, JetBrains Mono, monospace" font-size="16" font-weight="600" fill="#5EEAD4">t3-claude-vps</text>
+  <!-- LEFT COLUMN: Brand Lockup & Editorial Typography -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif">
+    <!-- Kicker -->
+    <rect x="52" y="54" width="7" height="7" rx="2" fill="#D97757"/>
+    <text x="68" y="62" font-family="ui-monospace, 'SFMono-Regular', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace" font-size="11.5" font-weight="600" letter-spacing="1.6" fill="#7D786E">T3 CODE  ×  CLAUDE CODE  ·  SSH BRIDGE</text>
 
-    <text x="248" y="158" font-size="20" fill="#B9D3DC">让 Linux VPS 上的官方 Claude Code 原生接入 Windows 端 T3 Code</text>
-    <text x="248" y="188" font-size="16" fill="#82A4B1">零反代 · 零逆向 · Anthropic 登录态留 VPS · 代码、工具与 T3 Token 严格留 Windows</text>
-
-    <!-- Feature Pills (symmetrical breathing room) -->
-    <g transform="translate(248 214)">
-      <rect width="250" height="36" rx="10" fill="#16313C" stroke="#2B5768"/>
-      <circle cx="18" cy="18" r="4.5" fill="#2DD4BF"/>
-      <text x="32" y="23" font-size="14" font-weight="600" fill="#DCF4F2">原生 claudeAgent · 5h/7d 圆环</text>
-
-      <rect x="262" width="218" height="36" rx="10" fill="#16313C" stroke="#2B5768"/>
-      <circle cx="280" cy="18" r="4.5" fill="#38BDF8"/>
-      <text x="294" y="23" font-size="14" font-weight="600" fill="#DBEFFE">Local ACP · 红绿 Diff 卡片</text>
-
-      <rect x="492" width="232" height="36" rx="10" fill="#16313C" stroke="#2B5768"/>
-      <circle cx="510" cy="18" r="4.5" fill="#E98A68"/>
-      <text x="524" y="23" font-size="14" font-weight="600" fill="#FCE7DE">全量本机 MCP · Plan 硬拦截</text>
-
-      <rect x="736" width="160" height="36" rx="10" fill="#16313C" stroke="#2B5768"/>
-      <circle cx="754" cy="18" r="4.5" fill="#A78BFA"/>
-      <text x="768" y="23" font-size="14" font-weight="600" fill="#EDE9FE">CodexHost 兼容</text>
+    <!-- Brand Mark (54x54) -->
+    <g transform="translate(52 86) scale(0.84375)">
+      <rect x="1" y="1" width="62" height="62" rx="15" fill="url(#iconBgL)"/>
+      <rect x="1.5" y="1.5" width="61" height="61" rx="14.5" stroke="#FFFFFF" stroke-opacity="0.16" stroke-width="1"/>
+      <rect x="24" y="9.5" width="30" height="30" rx="8.5" fill="url(#vpsTileL)"/>
+      <g transform="translate(43.8 19.2)" stroke="#FFFDF9" stroke-width="2.35" stroke-linecap="round">
+        <line x1="0" y1="-4.9" x2="0" y2="4.9"/>
+        <line x1="-4.25" y1="-2.45" x2="4.25" y2="2.45"/>
+        <line x1="4.25" y1="-2.45" x2="-4.25" y2="2.45"/>
+      </g>
+      <g clip-path="url(#iconVpsClipL)">
+        <rect x="11.5" y="23" width="31" height="31" rx="9.5" fill="#0B0A09" fill-opacity="0.42"/>
+      </g>
+      <rect x="10" y="24.5" width="30" height="30" rx="8.5" fill="url(#localTileL)" stroke="#FAF8F4" stroke-opacity="0.26" stroke-width="1.1"/>
+      <path d="M17.2 35L22.6 39.5L17.2 44" stroke="#FAF8F4" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="25.6" y1="44" x2="32.8" y2="44" stroke="#EC916F" stroke-width="2.9" stroke-linecap="round"/>
     </g>
+
+    <!-- Display Title -->
+    <text x="124" y="128" font-size="44" font-weight="750" letter-spacing="-1" fill="#141413">T3 Claude VPS</text>
+
+    <!-- Crisp Tagline -->
+    <text x="52" y="176" font-size="17" font-weight="500" fill="#524E47">让 Linux VPS 上的官方 Claude Code 原生接入 Windows 端 T3 Code</text>
+
+    <!-- Subtle Rule & Three Minimalist Guarantees -->
+    <line x1="52" y1="206" x2="612" y2="206" stroke="#E5E0D5" stroke-width="1"/>
+
+    <circle cx="57" cy="236" r="3.5" fill="#D97757"/>
+    <text x="70" y="241" font-size="13.5" font-weight="600" fill="#2F2D29">零反代 · 零逆向</text>
+
+    <line x1="202" y1="227" x2="202" y2="245" stroke="#DDD8CC" stroke-width="1"/>
+    <circle cx="222" cy="236" r="3.5" fill="#1F7A5A"/>
+    <text x="235" y="241" font-size="13.5" font-weight="600" fill="#2F2D29">OAuth 凭据留 VPS</text>
+
+    <line x1="390" y1="227" x2="390" y2="245" stroke="#DDD8CC" stroke-width="1"/>
+    <circle cx="410" cy="236" r="3.5" fill="#6F6B62"/>
+    <text x="423" y="241" font-size="13.5" font-weight="600" fill="#2F2D29">代码与 T3 Token 留本机</text>
+  </g>
+
+  <!-- RIGHT COLUMN: Bespoke Minimalist System Illustration -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif">
+    <!-- Left Card: Windows Host / T3 Code -->
+    <rect x="686" y="66" width="180" height="168" rx="14" fill="#FFFFFF" stroke="#E2DDD2" stroke-width="1.2"/>
+    <!-- Card header -->
+    <circle cx="704" cy="84" r="3" fill="#DDD7CB"/>
+    <circle cx="715" cy="84" r="3" fill="#DDD7CB"/>
+    <circle cx="726" cy="84" r="3" fill="#DDD7CB"/>
+    <text x="850" y="88" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="10" font-weight="600" fill="#8C877D">WINDOWS</text>
+    <line x1="686" y1="100" x2="866" y2="100" stroke="#EFECE4" stroke-width="1"/>
+    <!-- Card content -->
+    <text x="704" y="126" font-size="14.5" font-weight="700" fill="#181715">T3 Code</text>
+    <text x="704" y="145" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#7D786E">claudeAgent · native</text>
+    <!-- Minimalist code/workspace bars -->
+    <rect x="704" y="160" width="52" height="6" rx="3" fill="#D97757" fill-opacity="0.85"/>
+    <rect x="762" y="160" width="76" height="6" rx="3" fill="#E8E4DA"/>
+    <rect x="704" y="174" width="96" height="6" rx="3" fill="#EFECE4"/>
+    <rect x="806" y="174" width="34" height="6" rx="3" fill="#D7EDE3"/>
+    <!-- Bottom status -->
+    <line x1="704" y1="198" x2="848" y2="198" stroke="#F0EDE6" stroke-width="1"/>
+    <circle cx="709" cy="215" r="3" fill="#1F7A5A"/>
+    <text x="719" y="219" font-size="11.5" font-weight="600" fill="#1F7A5A">源码与本机 MCP 隔离</text>
+
+    <!-- Center Bridge Rails (clean 9px clearance above/below SSH pill) -->
+    <path d="M866 128H952" stroke="url(#railWarmL)" stroke-width="2" marker-end="url(#arrTerraL)"/>
+    <path d="M958 172H872" stroke="url(#railSageL)" stroke-width="2" marker-end="url(#arrSageL)"/>
+    <rect x="887" y="139" width="50" height="22" rx="11" fill="#FFFFFF" stroke="#DED8CC" stroke-width="1.2"/>
+    <text x="912" y="153.5" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" font-weight="700" fill="#2F2D29">SSH</text>
+
+    <!-- Right Card: Linux VPS / Official Claude CLI -->
+    <rect x="958" y="66" width="198" height="168" rx="14" fill="#FFFFFF" stroke="#E4CFC5" stroke-width="1.2"/>
+    <!-- Card header -->
+    <g transform="translate(978 84)" stroke="#D97757" stroke-width="1.8" stroke-linecap="round">
+      <line x1="0" y1="-4.5" x2="0" y2="4.5"/>
+      <line x1="-3.9" y1="-2.25" x2="3.9" y2="2.25"/>
+      <line x1="3.9" y1="-2.25" x2="-3.9" y2="2.25"/>
+    </g>
+    <text x="1140" y="88" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="10" font-weight="600" fill="#C45D3E">LINUX VPS</text>
+    <line x1="958" y1="100" x2="1156" y2="100" stroke="#F4EAE5" stroke-width="1"/>
+    <!-- Dual Quota Ring Motif (5h / 7d visual signature) -->
+    <g transform="translate(1002 148)">
+      <circle cx="0" cy="0" r="23" stroke="#F2E7E1" stroke-width="4.4"/>
+      <circle cx="0" cy="0" r="23" stroke="#D97757" stroke-width="4.4" stroke-linecap="round" stroke-dasharray="102 145" transform="rotate(-90)"/>
+      <circle cx="0" cy="0" r="14.8" stroke="#EFECE4" stroke-width="3.6"/>
+      <circle cx="0" cy="0" r="14.8" stroke="#2D8A68" stroke-width="3.6" stroke-linecap="round" stroke-dasharray="54 93" transform="rotate(-90)"/>
+    </g>
+    <text x="1040" y="138" font-size="14" font-weight="700" fill="#181715">Claude CLI</text>
+    <text x="1040" y="157" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#7D786E">stream-json</text>
+    <text x="1040" y="175" font-size="11" font-weight="600" fill="#C45D3E">5h / 7d 实时圆环</text>
+    <!-- Bottom status -->
+    <line x1="976" y1="198" x2="1138" y2="198" stroke="#F4EAE5" stroke-width="1"/>
+    <circle cx="981" cy="215" r="3" fill="#D97757"/>
+    <text x="991" y="219" font-size="11.5" font-weight="600" fill="#B55233">官方原版 · 凭据留远端</text>
   </g>
 </svg>

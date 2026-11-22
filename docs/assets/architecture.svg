@@ -1,140 +1,181 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
-  <title id="title">T3 Claude VPS 双引擎架构与安全边界</title>
-  <desc id="desc">Windows 端 T3 Code 通过原生 claudeAgent Shim 或 Local ACP 适配器经单条免密 SSH 双向通道连接 Linux VPS 上的原版官方 Claude Code。Anthropic 凭据留 VPS，源码、开发工具与 T3 本地 MCP Token 严格留 Windows。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">T3 Claude VPS 架构与信任边界</title>
+  <desc id="desc">Windows 端 T3 Code 通过原生 claudeAgent Shim 经单条免密 SSH 双向通道连接 Linux VPS 上的原版官方 Claude Code。Anthropic 凭据留 VPS，源码、开发工具与 T3 / 本机 MCP Token 严格留 Windows。</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#F7F9FB"/>
-      <stop offset="100%" stop-color="#EEF3F6"/>
+    <linearGradient id="archBgL" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FCFBF8"/>
+      <stop offset="100%" stop-color="#F5F2EA"/>
     </linearGradient>
-    <linearGradient id="nativeGrad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#12303B"/>
-      <stop offset="100%" stop-color="#194452"/>
-    </linearGradient>
-    <linearGradient id="acpGrad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#1E3A5F"/>
-      <stop offset="100%" stop-color="#284B78"/>
-    </linearGradient>
-    <linearGradient id="vpsGrad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#EAF6F2"/>
-      <stop offset="100%" stop-color="#E1F0EC"/>
-    </linearGradient>
-    <marker id="arrowTeal" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0 0 8 4 0 8Z" fill="#0F766E"/>
+    <marker id="mTerraL" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M1 1L7 4L1 7Z" fill="#C85F3E"/>
     </marker>
-    <marker id="arrowAmber" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0 0 8 4 0 8Z" fill="#B45309"/>
+    <marker id="mSageL" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M1 1L7 4L1 7Z" fill="#1F7A5A"/>
     </marker>
-    <marker id="arrowSlate" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-      <path d="M0 0 8 4 0 8Z" fill="#475569"/>
+    <marker id="mStoneL" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0.8 0.8L6.2 3.5L0.8 6.2Z" fill="#7D786E"/>
     </marker>
   </defs>
 
-  <rect width="1280" height="640" rx="22" fill="url(#bg)" stroke="#D6E0E6" stroke-width="1.5"/>
+  <!-- Canvas -->
+  <rect x="0.75" y="0.75" width="1278.5" height="638.5" rx="20" fill="url(#archBgL)" stroke="#E3DED3" stroke-width="1.5"/>
 
-  <g font-family="Segoe UI, Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif" fill="#132A33">
-    <!-- Header -->
-    <text x="42" y="48" font-size="25" font-weight="800">T3 Claude VPS 双引擎架构与安全边界</text>
-    <text x="42" y="74" font-size="14.5" fill="#526973">官方 Claude Code 与登录凭据留在 Linux VPS；项目代码、构建工具与 T3 / 本机 MCP 凭据严格留在 Windows</text>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif" fill="#181715">
+    <!-- HEADER -->
+    <text x="40" y="45" font-size="22" font-weight="750" letter-spacing="-0.4">架构与信任边界</text>
+    <text x="40" y="69" font-size="13.5" fill="#635F57">官方 Claude Code 与登录凭据留在 Linux VPS；项目源码、工具与 T3 / 本机 MCP Token 严格留在 Windows</text>
 
-    <!-- Security badge top-right -->
-    <rect x="936" y="28" width="302" height="36" rx="18" fill="#E6F6F3" stroke="#99DFD4"/>
-    <text x="1087" y="51" text-anchor="middle" font-size="13.5" font-weight="700" fill="#0F766E">零反代 · 零逆向 · 零 T3 Token 出境</text>
+    <rect x="970" y="29" width="270" height="32" rx="16" fill="#FFFFFF" stroke="#DED8CC"/>
+    <circle cx="988" cy="45" r="3.5" fill="#1F7A5A"/>
+    <text x="1000" y="49.5" font-size="12.5" font-weight="600" fill="#2F2D29">零反代 · 零逆向 · 凭据双端隔离</text>
 
-    <!-- LEFT PANEL: Windows Host -->
-    <rect x="40" y="96" width="470" height="482" rx="18" fill="#FFFFFF" stroke="#D1DDE3" stroke-width="1.4"/>
-    <text x="64" y="130" font-size="19" font-weight="800" fill="#102933">Windows 本机</text>
-    <rect x="200" y="110" width="286" height="26" rx="13" fill="#EEF4F7"/>
-    <text x="343" y="127" text-anchor="middle" font-size="12.5" font-weight="600" fill="#46606B">源码 · 工具 · Hooks · T3 本地凭据隔离</text>
+    <line x1="40" y1="88" x2="1240" y2="88" stroke="#E7E2D7" stroke-width="1"/>
 
-    <!-- Path 1: Native Shim -->
-    <rect x="64" y="148" width="422" height="94" rx="13" fill="url(#nativeGrad)"/>
-    <rect x="356" y="160" width="116" height="22" rx="11" fill="#1E5D6B"/>
-    <text x="414" y="175" text-anchor="middle" font-size="11.5" font-weight="700" fill="#7CEEE0">推荐主力</text>
-    <text x="82" y="177" font-size="17" font-weight="700" fill="#FFFFFF">路径 1：Claude VPS（原生 Shim）</text>
-    <text x="82" y="201" font-size="13" fill="#B8DDE3">t3-native/ · driver: claudeAgent · 独立 claude-home</text>
-    <text x="82" y="224" font-size="12.5" fill="#7CEEE0">5h/7d 实时圆环 · 单套权限 · textGeneration · 流式 SSE MCP</text>
+    <!-- ZONE 1: WINDOWS HOST (x=40..492, w=452) -->
+    <rect x="40" y="108" width="452" height="450" rx="16" fill="#FFFFFF" stroke="#E2DDD2" stroke-width="1.2"/>
+    <rect x="60" y="128" width="10" height="10" rx="2.5" fill="#1F7A5A"/>
+    <text x="78" y="138" font-size="16" font-weight="750" fill="#141413">Windows 本机</text>
+    <text x="472" y="137" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="10.5" font-weight="600" letter-spacing="0.8" fill="#8C877D">TRUSTED LOCAL HOST</text>
+    <line x1="60" y1="152" x2="472" y2="152" stroke="#F0EDE6" stroke-width="1"/>
 
-    <!-- Path 2: Local ACP + CodexHost -->
-    <rect x="64" y="254" width="422" height="86" rx="13" fill="url(#acpGrad)"/>
-    <rect x="356" y="266" width="116" height="22" rx="11" fill="#2F5D94"/>
-    <text x="414" y="281" text-anchor="middle" font-size="11.5" font-weight="700" fill="#BFDBFE">ACP / CodexHost</text>
-    <text x="82" y="283" font-size="17" font-weight="700" fill="#FFFFFF">路径 2：Claude VPS Bridge</text>
-    <text x="82" y="307" font-size="13" fill="#C7DDF7">t3/ + plugin/ · driver: acpRegistry · 协议 3 多路复用</text>
-    <text x="82" y="328" font-size="12.5" fill="#93C5FD">Read/Edit 红绿 Diff 卡片 · /usage /status · Skills 热刷新</text>
+    <!-- Card 1A: Native Shim (Inset Floating Terracotta Accent Pill) -->
+    <rect x="60" y="166" width="412" height="86" rx="11" fill="#FCFBF8" stroke="#E6D5CC" stroke-width="1.2"/>
+    <rect x="68" y="176" width="3.5" height="66" rx="1.75" fill="#D97757"/>
+    <text x="82" y="191" font-size="15.5" font-weight="750" fill="#141413">Claude VPS</text>
+    <rect x="176" y="175" width="66" height="21" rx="10.5" fill="#FDF1EC" stroke="#F0CCC0"/>
+    <text x="209" y="189.5" text-anchor="middle" font-size="11" font-weight="700" fill="#C45D3E">原生接入</text>
+    <text x="456" y="190" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="11" font-weight="600" fill="#8C877D">claudeAgent</text>
+    <text x="82" y="214" font-size="12.5" fill="#4E4A43">t3-native/ 直通官方 stream-json · 独立 claude-home</text>
+    <text x="82" y="236" font-size="12" fill="#7D786E">5h/7d 实时圆环 · 单套权限 · 读图回映射 · 流式 SSE MCP</text>
 
-    <!-- Shared Security & Runtime Layer -->
-    <rect x="64" y="356" width="422" height="86" rx="12" fill="#F3F8F9" stroke="#C8DCE2"/>
-    <text x="82" y="381" font-size="14.5" font-weight="700" fill="#0F4C5C">共享本机安全与执行层</text>
-    <text x="82" y="403" font-size="12.5" fill="#3B5964">• mcp-policy + LocalMcpHub：Plan 硬拦截，扣留本机 Token</text>
-    <text x="82" y="424" font-size="12.5" fill="#3B5964">• workspace-runtime：读写 / 搜索 / Hooks / 长任务取消与查回</text>
+    <!-- Card 1B: CodexHost Upstream Compatibility (Inset Floating Stone Accent Pill) -->
+    <rect x="60" y="264" width="412" height="82" rx="11" fill="#FCFBF8" stroke="#E4DFD4" stroke-width="1.2"/>
+    <rect x="68" y="274" width="3.5" height="62" rx="1.75" fill="#7D786E"/>
+    <text x="82" y="289" font-size="15.5" font-weight="750" fill="#141413">CodexHost 插件兼容</text>
+    <rect x="234" y="273" width="68" height="21" rx="10.5" fill="#F2EFE8" stroke="#DDD8CC"/>
+    <text x="268" y="287.5" text-anchor="middle" font-size="11" font-weight="600" fill="#524E47">可选共存</text>
+    <text x="456" y="288" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="11" font-weight="600" fill="#8C877D">plugin.mjs</text>
+    <text x="82" y="311" font-size="12.5" fill="#4E4A43">plugin/ 协议 3 多路复用 · 上游 CodexHost 0.20.0+ 完整兼容</text>
+    <text x="82" y="332" font-size="12" fill="#7D786E">共用核心工作区运行时与多线路 SSH · 支持纯 T3 独立安装</text>
 
-    <!-- Local Capabilities Grid -->
-    <rect x="64" y="456" width="204" height="48" rx="10" fill="#F6F8FA" stroke="#DCE5EA"/>
-    <text x="166" y="485" text-anchor="middle" font-size="13" font-weight="600">项目源码 · CLAUDE.md · Skills</text>
+    <!-- Card 1C: Shared Security & Runtime Layer (Subtle Sage Accent) -->
+    <rect x="60" y="360" width="412" height="84" rx="11" fill="#F3FAF7" stroke="#C8E5D9" stroke-width="1.2"/>
+    <text x="78" y="384" font-size="13.5" font-weight="750" fill="#165E45">本机安全策略与工作区运行时</text>
+    <text x="78" y="406" font-size="12.5" fill="#325347">• mcp-policy + LocalMcpHub：Plan 硬拦截，扣留本机 Token</text>
+    <text x="78" y="427" font-size="12.5" fill="#325347">• workspace-runtime：读写 / 搜索 / Hooks / 长任务取消与查回</text>
 
-    <rect x="282" y="456" width="204" height="48" rx="10" fill="#F6F8FA" stroke="#DCE5EA"/>
-    <text x="384" y="485" text-anchor="middle" font-size="13" font-weight="600">PowerShell · 构建 · GPU</text>
+    <!-- Bottom 2x2 Capability Chips -->
+    <rect x="60" y="458" width="200" height="36" rx="8" fill="#F6F4EE" stroke="#E6E1D6"/>
+    <text x="160" y="481" text-anchor="middle" font-size="12.5" font-weight="600" fill="#36342F">项目源码 · CLAUDE.md · Skills</text>
 
-    <rect x="64" y="514" width="204" height="48" rx="10" fill="#F6F8FA" stroke="#DCE5EA"/>
-    <text x="166" y="543" text-anchor="middle" font-size="12.5" font-weight="600">T3 &amp; 自定义 HTTP/Stdio MCP</text>
+    <rect x="272" y="458" width="200" height="36" rx="8" fill="#F6F4EE" stroke="#E6E1D6"/>
+    <text x="372" y="481" text-anchor="middle" font-size="12.5" font-weight="600" fill="#36342F">PowerShell · 构建 · GPU</text>
 
-    <rect x="282" y="514" width="204" height="48" rx="10" fill="#F6F8FA" stroke="#DCE5EA"/>
-    <text x="384" y="543" text-anchor="middle" font-size="13" font-weight="600">Playwright 浏览器（可选）</text>
+    <rect x="60" y="504" width="200" height="36" rx="8" fill="#F6F4EE" stroke="#E6E1D6"/>
+    <text x="160" y="527" text-anchor="middle" font-size="12" font-weight="600" fill="#36342F">T3 &amp; 自定义 HTTP / Stdio MCP</text>
 
-    <!-- CENTER: SSH Tunnel -->
-    <rect x="526" y="180" width="166" height="236" rx="14" fill="#FFFFFF" stroke="#B9D7D2" stroke-dasharray="6 4" stroke-width="1.5"/>
-    <text x="609" y="208" text-anchor="middle" font-size="14.5" font-weight="800" fill="#0F766E">单条免密 SSH</text>
-    <text x="609" y="227" text-anchor="middle" font-size="12" fill="#526973">Windows 主动发起</text>
+    <rect x="272" y="504" width="200" height="36" rx="8" fill="#F6F4EE" stroke="#E6E1D6"/>
+    <text x="372" y="527" text-anchor="middle" font-size="12.5" font-weight="600" fill="#36342F">Playwright 浏览器（可选）</text>
 
-    <path d="M512 262H704" fill="none" stroke="#B45309" stroke-width="2.2" marker-end="url(#arrowAmber)"/>
-    <rect x="540" y="246" width="138" height="24" rx="6" fill="#FEF3C7"/>
-    <text x="609" y="263" text-anchor="middle" font-size="12" font-weight="700" fill="#92400E">stream-json / 结果</text>
+    <!-- CENTER CORRIDOR: TRUST BOUNDARY & SSH TUNNEL (x=492..692, center=592) -->
+    <line x1="592" y1="112" x2="592" y2="554" stroke="#D8D2C5" stroke-width="1.5" stroke-dasharray="4 5"/>
+    <rect x="550" y="110" width="84" height="24" rx="12" fill="#F8F6F0" stroke="#DDD7CB"/>
+    <text x="592" y="126" text-anchor="middle" font-size="11" font-weight="700" fill="#7D786E">信任边界</text>
 
-    <path d="M706 318H514" fill="none" stroke="#0F766E" stroke-width="2.2" marker-end="url(#arrowTeal)"/>
-    <rect x="536" y="302" width="146" height="24" rx="6" fill="#CCFBF1"/>
-    <text x="609" y="319" text-anchor="middle" font-size="12" font-weight="700" fill="#115E59">工作区 / MCP 回调</text>
+    <!-- Flow 1: Windows -> VPS (y=232) -->
+    <path d="M492 232H685" stroke="#C85F3E" stroke-width="2" marker-end="url(#mTerraL)"/>
+    <rect x="512" y="217" width="160" height="30" rx="15" fill="#FFFFFF" stroke="#E8C7BA" stroke-width="1.2"/>
+    <text x="592" y="236.5" text-anchor="middle" font-size="12" font-weight="700" fill="#B55233">stream-json / 工具结果</text>
 
-    <rect x="538" y="346" width="142" height="54" rx="9" fill="#F4F7F9" stroke="#D5E0E6"/>
-    <text x="609" y="368" text-anchor="middle" font-size="12" font-weight="700" fill="#334E59">多线路自动切线</text>
-    <text x="609" y="387" text-anchor="middle" font-size="11.5" fill="#5C7680">direct / SOCKS5 / CF</text>
+    <!-- Flow 2: VPS -> Windows (y=310) -->
+    <path d="M692 310H499" stroke="#1F7A5A" stroke-width="2" marker-end="url(#mSageL)"/>
+    <rect x="512" y="295" width="160" height="30" rx="15" fill="#FFFFFF" stroke="#BFE2D3" stroke-width="1.2"/>
+    <text x="592" y="314.5" text-anchor="middle" font-size="12" font-weight="700" fill="#165E45">工作区读写 / MCP 回调</text>
 
-    <!-- RIGHT PANEL: Linux VPS -->
-    <rect x="708" y="96" width="332" height="482" rx="18" fill="#FFFFFF" stroke="#D1DDE3" stroke-width="1.4"/>
-    <text x="732" y="130" font-size="19" font-weight="800" fill="#102933">Linux x64 VPS</text>
-    <rect x="880" y="110" width="138" height="26" rx="13" fill="#EAF6F2"/>
-    <text x="949" y="127" text-anchor="middle" font-size="12.5" font-weight="600" fill="#0F766E">官方原版运行时</text>
+    <!-- SSH Tunnel Checkpoint Card (sits cleanly over dashed line) -->
+    <rect x="514" y="378" width="156" height="96" rx="12" fill="#FFFFFF" stroke="#DDD7CB" stroke-width="1.2"/>
+    <text x="592" y="405" text-anchor="middle" font-size="13.5" font-weight="750" fill="#181715">单条免密 SSH</text>
+    <text x="592" y="425" text-anchor="middle" font-size="11.5" fill="#6E6A61">Windows 主动发起</text>
+    <rect x="528" y="438" width="128" height="24" rx="7" fill="#F5F2EA" stroke="#E4DFD4"/>
+    <text x="592" y="454" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" font-weight="600" fill="#524E47">direct · SOCKS5 · CF</text>
 
-    <rect x="732" y="148" width="284" height="118" rx="13" fill="url(#vpsGrad)" stroke="#B7DDD2"/>
-    <text x="874" y="182" text-anchor="middle" font-size="19" font-weight="800" fill="#103630">官方 Claude Code CLI</text>
-    <text x="874" y="208" text-anchor="middle" font-size="13" fill="#3D615B">原版二进制直接运行，无任何补丁</text>
-    <text x="874" y="232" text-anchor="middle" font-size="12.5" font-weight="600" fill="#0F766E">claude-stream-relay · remote-server</text>
-    <text x="874" y="252" text-anchor="middle" font-size="12" fill="#4C6D67">workspace-guard.py · mcp-local.py</text>
+    <!-- ZONE 2: LINUX x64 VPS (x=692..1026, w=334) -->
+    <rect x="692" y="108" width="334" height="450" rx="16" fill="#FFFFFF" stroke="#E2DDD2" stroke-width="1.2"/>
+    <rect x="712" y="128" width="10" height="10" rx="2.5" fill="#D97757"/>
+    <text x="730" y="138" font-size="16" font-weight="750" fill="#141413">Linux x64 VPS</text>
+    <text x="1006" y="137" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="10.5" font-weight="600" letter-spacing="0.8" fill="#C45D3E">REMOTE RUNTIME</text>
+    <line x1="712" y1="152" x2="1006" y2="152" stroke="#F0EDE6" stroke-width="1"/>
 
-    <rect x="732" y="282" width="284" height="58" rx="10" fill="#F5F9FA" stroke="#D4E3E8"/>
-    <text x="874" y="307" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1E3F4B">tool-bridge.mjs 私有通道</text>
-    <text x="874" y="327" text-anchor="middle" font-size="12" fill="#526973">0600 Unix Socket + 64B Token + 白名单</text>
+    <!-- Official Claude Code CLI Card -->
+    <rect x="712" y="166" width="294" height="118" rx="12" fill="#FDF7F4" stroke="#EBC9BC" stroke-width="1.2"/>
+    <g transform="translate(736 192)" stroke="#D97757" stroke-width="2" stroke-linecap="round">
+      <line x1="0" y1="-5.2" x2="0" y2="5.2"/>
+      <line x1="-4.5" y1="-2.6" x2="4.5" y2="2.6"/>
+      <line x1="4.5" y1="-2.6" x2="-4.5" y2="2.6"/>
+    </g>
+    <text x="752" y="198" font-size="16.5" font-weight="750" fill="#181715">官方 Claude Code CLI</text>
+    <text x="728" y="222" font-size="12.5" fill="#635B55">原版二进制直接运行 · 无任何反代或补丁</text>
+    <rect x="728" y="236" width="142" height="22" rx="6" fill="#FFFFFF" stroke="#EBD5CC"/>
+    <text x="799" y="251" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" font-weight="600" fill="#B55233">claude-stream-relay</text>
+    <rect x="878" y="236" width="112" height="22" rx="6" fill="#FFFFFF" stroke="#EBD5CC"/>
+    <text x="934" y="251" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10.5" font-weight="600" fill="#524E47">remote-server</text>
+    <text x="728" y="274" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#8C817A">workspace-guard.py · mcp-local.py</text>
 
-    <rect x="732" y="358" width="284" height="58" rx="10" fill="#FFF7ED" stroke="#FCD3A4"/>
-    <text x="874" y="383" text-anchor="middle" font-size="14" font-weight="700" fill="#9A3412">Anthropic OAuth 凭据（留 VPS）</text>
-    <text x="874" y="403" text-anchor="middle" font-size="12" fill="#B45309">不导出、不同步到 Windows</text>
+    <!-- Tool Bridge -->
+    <rect x="712" y="298" width="294" height="62" rx="10" fill="#FCFBF8" stroke="#E4DFD4"/>
+    <text x="728" y="323" font-size="13.5" font-weight="700" fill="#181715">tool-bridge.mjs 私有通道</text>
+    <text x="728" y="344" font-size="12" fill="#6E6A61">0600 Unix Socket · 64B Token · 工具白名单</text>
 
-    <rect x="732" y="432" width="284" height="58" rx="10" fill="#F6F8FA" stroke="#DCE5EA"/>
-    <text x="874" y="457" text-anchor="middle" font-size="13.5" font-weight="600">原生会话历史与续接</text>
-    <text x="874" y="477" text-anchor="middle" font-size="12" fill="#526973">--resume / --fork-session / 压缩</text>
+    <!-- Anthropic OAuth Credentials -->
+    <rect x="712" y="374" width="294" height="66" rx="10" fill="#FEF8F2" stroke="#F0D2B8"/>
+    <text x="728" y="400" font-size="13.5" font-weight="750" fill="#9A421D">Anthropic OAuth 凭据（留 VPS）</text>
+    <text x="728" y="422" font-size="12" fill="#B55A32">不导出、不同步到 Windows 本机</text>
 
-    <rect x="732" y="506" width="284" height="54" rx="10" fill="#F6F8FA" stroke="#DCE5EA"/>
-    <text x="874" y="538" text-anchor="middle" font-size="13.5" font-weight="600">Tavily 搜索（可选，VPS 直连）</text>
+    <!-- Native Session & Optional Tavily -->
+    <rect x="712" y="454" width="294" height="86" rx="10" fill="#F8F6F0" stroke="#E6E1D6"/>
+    <text x="728" y="479" font-size="13" font-weight="700" fill="#2A2825">原生会话续接</text>
+    <text x="990" y="479" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#7D786E">--resume · --fork-session</text>
+    <line x1="728" y1="496" x2="990" y2="496" stroke="#E8E3D8" stroke-width="1"/>
+    <text x="728" y="522" font-size="13" font-weight="600" fill="#2A2825">Tavily 联网搜索</text>
+    <text x="990" y="522" text-anchor="end" font-size="11.5" fill="#7D786E">可选，VPS 直连</text>
 
-    <!-- FAR RIGHT: Anthropic API -->
-    <path d="M1042 200H1076" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrowSlate)"/>
-    <path d="M1078 232H1044" fill="none" stroke="#475569" stroke-width="2" marker-end="url(#arrowSlate)"/>
+    <!-- CONNECTOR: VPS <-> ANTHROPIC (x=1026..1084, span=58px) -->
+    <text x="1055" y="198" text-anchor="middle" font-family="ui-monospace, Consolas, monospace" font-size="10" font-weight="600" fill="#8C877D">HTTPS</text>
+    <path d="M1026 212H1078" stroke="#7D786E" stroke-width="1.8" marker-end="url(#mStoneL)"/>
+    <path d="M1084 238H1032" stroke="#7D786E" stroke-width="1.8" marker-end="url(#mStoneL)"/>
 
-    <rect x="1080" y="148" width="160" height="122" rx="15" fill="#FFFFFF" stroke="#C5D5DC" stroke-width="1.5"/>
-    <text x="1160" y="192" text-anchor="middle" font-size="17" font-weight="800" fill="#132A33">Anthropic</text>
-    <text x="1160" y="216" text-anchor="middle" font-size="15" font-weight="700" fill="#0F766E">官方模型服务</text>
-    <text x="1160" y="245" text-anchor="middle" font-size="12" fill="#526973">VPS 直接连接</text>
+    <!-- ZONE 3: ANTHROPIC & ISOLATION SUMMARY (x=1084..1240, exact top y=108 & bottom y=558 alignment) -->
+    <rect x="1084" y="108" width="156" height="176" rx="16" fill="#FFFFFF" stroke="#E2DDD2" stroke-width="1.2"/>
+    <g transform="translate(1162 162)" stroke="#D97757" stroke-width="2.4" stroke-linecap="round">
+      <line x1="0" y1="-7.5" x2="0" y2="7.5"/>
+      <line x1="-6.5" y1="-3.75" x2="6.5" y2="3.75"/>
+      <line x1="6.5" y1="-3.75" x2="-6.5" y2="3.75"/>
+    </g>
+    <text x="1162" y="200" text-anchor="middle" font-size="16" font-weight="750" fill="#141413">Anthropic</text>
+    <text x="1162" y="222" text-anchor="middle" font-size="12.5" font-weight="600" fill="#C45D3E">官方模型服务</text>
+    <rect x="1120" y="240" width="84" height="22" rx="11" fill="#F6F4EE" stroke="#E6E1D6"/>
+    <text x="1162" y="255" text-anchor="middle" font-size="11" font-weight="600" fill="#635F57">VPS 直连</text>
 
-    <!-- Footer Note -->
-    <text x="42" y="612" font-size="13.5" fill="#526973">项目无需整份同步；仅按需读取的代码片段、附件及工具调用结果会发往 VPS 与模型服务。底层兼容上游 claude-vps-bridge (0.14.1) 插件接口。</text>
+    <!-- Balanced Bottom Right Card: Isolation Principles (aligns cleanly to y=558) -->
+    <rect x="1084" y="298" width="156" height="260" rx="16" fill="#FFFFFF" stroke="#E2DDD2" stroke-width="1.2"/>
+    <text x="1102" y="328" font-size="13" font-weight="750" fill="#181715">核心安全边界</text>
+    <line x1="1102" y1="342" x2="1222" y2="342" stroke="#EDE9DF" stroke-width="1"/>
+
+    <text x="1102" y="366" font-family="ui-monospace, Consolas, monospace" font-size="10.5" font-weight="700" fill="#C45D3E">01 / CREDENTIALS</text>
+    <text x="1102" y="386" font-size="12.5" font-weight="600" fill="#2A2825">登录态双端隔离</text>
+    <text x="1102" y="405" font-size="11.5" fill="#7D786E">OAuth 留 VPS</text>
+    <text x="1102" y="421" font-size="11.5" fill="#7D786E">T3 Token 留本机</text>
+
+    <line x1="1102" y1="438" x2="1222" y2="438" stroke="#EDE9DF" stroke-width="1"/>
+    <text x="1102" y="460" font-family="ui-monospace, Consolas, monospace" font-size="10.5" font-weight="700" fill="#1F7A5A">02 / WORKSPACE</text>
+    <text x="1102" y="480" font-size="12.5" font-weight="600" fill="#2A2825">零整库同步</text>
+    <text x="1102" y="499" font-size="11.5" fill="#7D786E">仅按需传输片段</text>
+    <text x="1102" y="515" font-size="11.5" fill="#7D786E">与工具调用结果</text>
+    <text x="1102" y="540" font-family="ui-monospace, Consolas, monospace" font-size="10.5" fill="#8C877D">Plan Fail-Closed</text>
+
+    <!-- FOOTER -->
+    <line x1="40" y1="578" x2="1240" y2="578" stroke="#E7E2D7" stroke-width="1"/>
+    <text x="40" y="608" font-size="12.5" fill="#747067">项目目录无需整份同步；所有本机文件访问、PowerShell 构建与 MCP 调用均经由单条认证 SSH 按需回调执行。</text>
+    <text x="1240" y="608" text-anchor="end" font-family="ui-monospace, Consolas, monospace" font-size="11.5" fill="#8C877D">v1.0.0 · Upstream base: claude-vps-bridge 0.14.1</text>
   </g>
 </svg>

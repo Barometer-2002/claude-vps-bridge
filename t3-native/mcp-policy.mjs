@@ -1,4 +1,4 @@
-// Shared MCP policy & local MCP config validation used by both T3 ACP (t3/) and T3 Native Shim (t3-native/).
+// Local MCP policy & config validation for T3 Claude VPS Native Shim (t3-native/).
 
 export const MCP_SERVER_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -167,7 +167,6 @@ export function validateLocalMcpServerConfig(name, entry) {
 
 /**
  * Evaluate local MCP policy before executing tools/call.
- * Shared across T3 ACP and T3 Native Shim.
  */
 export function evaluateLocalMcpToolCall({
   server,

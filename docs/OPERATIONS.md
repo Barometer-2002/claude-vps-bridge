@@ -1,24 +1,22 @@
 # 运维、诊断、升级与排障
 
-本文档覆盖 **T3 Claude VPS（`t3-claude-vps`）** 的日常运维，包括 T3 Code 双接入方案管理、核心 Bridge 统一诊断、SSH 线路观测、日志清理、事务升级与回滚，以及上游兼容的 CodexHost 插件停用说明。
+本文档覆盖 **T3 Claude VPS（`t3-claude-vps`）** 的日常运维，包括 T3 Code 原生接入管理、核心 Bridge 统一诊断、SSH 线路观测、日志清理、事务升级与回滚，以及上游兼容的 CodexHost 插件停用说明。
 
 ## T3 Code 接入诊断、升级与独立卸载
 
-- **查看双模式状态**（不提交模型请求）：
+- **查看状态**（不提交模型请求；加 `--offline` 可跳过远端实时探针）：
 
 ```powershell
-node .\t3-native\manage-native.mjs status   # 检查独立原生 Claude VPS (driver: claudeAgent)
-node .\t3\manage.mjs status                 # 检查 Local ACP 适配器 Claude VPS Bridge
+node .\t3-native\manage-native.mjs status
 ```
 
 - **同步升级**：在仓库根目录重新执行：
-  - 纯 T3 Code：`pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native`
-  - T3 Code + CodexHost 共存：`pwsh -NoProfile -File .\install.ps1 -WithT3 -WithT3Native`
-- **独立卸载（互不影响，不碰默认 `claudeAgent`，保留会话数据）**：
+  - 纯 T3 Code：`pwsh -NoProfile -File .\install.ps1 -T3Only`
+  - T3 Code + CodexHost 共存：`pwsh -NoProfile -File .\install.ps1 -WithT3`
+- **独立卸载（不碰默认 `claudeAgent`，保留 `claude-home` 会话数据）**：
 
 ```powershell
-node .\t3-native\manage-native.mjs uninstall   # 仅移除 claude-vps，保留 claude-home
-node .\t3\manage.mjs uninstall                 # 仅移除 claude-vps-bridge，保留 sessions 映射
+node .\t3-native\manage-native.mjs uninstall
 ```
 
 ## 统一诊断（核心桥接与 SSH 线路）

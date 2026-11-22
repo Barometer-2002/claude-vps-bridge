@@ -19,28 +19,6 @@ CodexHost 适配器通过独立依赖目录安装；本仓库不复制其完整�
 
 官方 Claude Code、T3 Code 和 CodexHost 由各自权利方提供，本仓库不分发它们的二进制、账号或凭据。它们自身的条款不因本仓库许可证而改变。
 
-## Clawd 图形
+## 原创矢量图形
 
-`plugin/icon.svg` 与 `docs/assets/banner.svg` 中的 Clawd 轮廓来自 [LobeHub Icons](https://github.com/lobehub/lobe-icons)，保留原路径和比例。本机终端、VPS 与双向 SSH 连接图形为本项目及上游组合设计。Clawd 角色属于 Anthropic。
-
-MIT License
-
-Copyright (c) 2023 LobeHub
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+`plugin/icon.svg`、`docs/assets/banner.svg`、`docs/assets/banner-dark.svg`、`docs/assets/architecture.svg` 与 `docs/assets/architecture-dark.svg` 均为本仓库原创绘制的几何矢量图形，随本仓库采用 LGPL-3.0-only 许可。

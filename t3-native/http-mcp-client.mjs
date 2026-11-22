@@ -3,15 +3,11 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 
-const policyUrl = existsSync(new URL('./mcp-policy.mjs', import.meta.url))
-  ? new URL('./mcp-policy.mjs', import.meta.url)
-  : new URL('../t3/mcp-policy.mjs', import.meta.url);
-
-const {
+import {
   evaluateLocalMcpToolCall,
   normalizeMcpName,
   validateLocalMcpServerConfig,
-} = await import(policyUrl.href);
+} from './mcp-policy.mjs';
 
 const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 290_000;
 const DEFAULT_HTTP_CLOSE_TIMEOUT_MS = 3_000;

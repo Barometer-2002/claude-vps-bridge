@@ -12,12 +12,12 @@ export async function inspectBridge() {
     manifest = JSON.parse((await readFile(manifestPath, 'utf8')).replace(/^\uFEFF/, ''));
   } catch (error) {
     if (error.code === 'ENOENT') {
-      throw new Error(`Claude VPS Bridge 尚未安装。请先运行仓库根目录的 install.ps1 完成本机与 VPS 部署。预期目录：${root}`);
+      throw new Error(`T3 Claude VPS 核心桥接尚未安装。请先运行仓库根目录的 install.ps1 完成本机与 VPS 部署。预期目录：${root}`);
     }
     throw error;
   }
   if (manifest.id !== 'claude-vps' || manifest.adapterApiVersion !== 1 || manifest.entry !== 'plugin.mjs') {
-    throw new Error('T3 适配器需要 Claude VPS Bridge 的 Harness Adapter API 1 与 plugin.mjs 入口。');
+    throw new Error('T3 原生 Shim 需要底层桥接的 Harness Adapter API 1 与 plugin.mjs 入口。');
   }
   const entry = path.join(root, manifest.entry);
   await access(entry);

@@ -25,7 +25,7 @@ Bash 只是传输通道。每次只发一条命令，参数是一个用单引号
 | `write` / `edit` | 需要当前 sha256 作为 `expectedHash`（新文件用 `absent`）；`edit` 只替换唯一且完全匹配的一处 |
 | `run` | PowerShell 7 的 `script`，或 `executable` + `args`；`requestId` 不能重复；可选 `workingDirectory`、`waitMs`（≤ 30000）、`artifacts` |
 | `job` / `jobs` | `status`、`cancel`，或按字节偏移分页读 `output`；读输出，不要重跑命令 |
-| `media` | 把图片/PDF（≤ 5 MiB）传过来给原生 Read；视频只返回路径和大小 |
+| `media` | 把图片/PDF（≤ 5 MiB）传过来给原生 Read；视频只返回路径和大小。向用户展示、引用或嵌入图片/文件链接时，始终使用原始 Windows 路径（`source`），不要输出 `.bridge-media` 远端缓存路径 |
 | `artifact` | 核对生成的文件，返回可放进回答的 Markdown |
 | `capability` | 读取本机 Skill/命令/Agent 定义（`skill:name`）及其附带文件 |
 | `isolation` | 用户明确同意并行改代码时使用 Git worktree；`apply` 只做快进合并 |

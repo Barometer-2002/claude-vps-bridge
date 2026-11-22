@@ -60,8 +60,7 @@ function duplexControl(binding,action,more,lane='control'){
   if(localPending.size>=256)return Promise.reject(Object.assign(new Error('Too many local operations are pending; no operation was submitted'),{code:'LOCAL_CAPACITY'}));
   const controlId=randomUUID();
   return new Promise((resolve,reject)=>{
-    const timeout=action==='mcp'&&more?.server!=='playwright'?305000:110000;
-    const timer=setTimeout(()=>{localPending.delete(controlId);reject(new Error('Local operation timed out; outcome unknown, no retry was sent'));},timeout);
+    const timer=setTimeout(()=>{localPending.delete(controlId);reject(new Error('Local operation timed out; outcome unknown, no retry was sent'));},110000);
     localPending.set(controlId,{resolve,reject,timer});
     send({controlId,controlNo:++controlNo,controlEpoch,sessionId:binding.sessionId,lane,request:{action,...more}});
   });
@@ -234,7 +233,7 @@ async function releaseOpening(sessionId,opening){
   });return opening.releasing;
 }
 async function request(method, params, signal) {
-  if(method==='health')return {protocol:BRIDGE_PROTOCOL,ingress,bridgeVersion,dependencyVersion,capabilities:['project-context','local-policy','local-hooks','media-cache','agent-context','job-recovery','native-fork','duplex-control','live-reverse-probe','duplex-tools','context-delta','local-mcp','account-usage','t3-mcp'],adapterSha256};
+  if(method==='health')return {protocol:BRIDGE_PROTOCOL,ingress,bridgeVersion,dependencyVersion,capabilities:['project-context','local-policy','local-hooks','media-cache','agent-context','job-recovery','native-fork','duplex-control','live-reverse-probe','duplex-tools','context-delta','local-mcp','account-usage'],adapterSha256};
   if(method==='account')return inspectAccount();
   if(method==='reverse-health'){
     const legacy=remoteConfig.legacy;if(!legacy?.enabled)return false;
@@ -272,7 +271,6 @@ async function request(method, params, signal) {
     }
     const environment=await localControl(binding,'environment');
     if(binding.duplexTools)binding.toolEnvironment=toolBridge.register(binding);
-    const mcpNames=Array.isArray(params.localMcpServers)?params.localMcpServers.filter(name=>typeof name==='string'&&/^[A-Za-z0-9._-]{1,64}$/.test(name)&&!name.includes('__')):[];
     const knownSession=input.kind==='resume'?await claimNativeSession(input.nativeRef,binding,true):false;
     const result = await adapter.open({ ...input, ...(!input.permissionModeId&&environment.defaultMode?{permissionModeId:environment.defaultMode}:{}), cwd, environment: {
       WINDOWS_PROJECT_CWD: verified.cwd,
@@ -282,8 +280,6 @@ async function request(method, params, signal) {
       ...binding.toolEnvironment,
       CODEXHOST_CLI_PATH: agentCommand,
       WINDOWS_BRIDGE_ROOT: bridgeRoot,
-      ...(params.t3Mcp === true ? { WINDOWS_T3_MCP: '1' } : {}),
-      ...(mcpNames.length ? { WINDOWS_LOCAL_MCP_SERVERS: JSON.stringify(mcpNames) } : {}),
       ...(parentThread ? { WINDOWS_PARENT_THREAD_ID: parentThread } : {}),
     } });
     if (!result.ok)return result;
@@ -393,10 +389,8 @@ async function request(method, params, signal) {
         const update=contextUpdate(binding.contextState,environment);binding.pendingContext=update.state;
         send({timing:{phase:'context-injection',mode:update.mode,bytes:Buffer.byteLength(update.text),fullBytes:Buffer.byteLength(environment.text)}});
         const context=[update.text,'Current workspace permission mode: '+binding.permissionMode,...[...(binding.startContext??[]),...hooks].map(h=>h.hookSpecificOutput?.additionalContext??h.additionalContext??'')];binding.startContext=[];
-        const userReqMatch=prompt.match(/<user_request>\s*([\s\S]*?)\s*<\/user_request>/i);
-        const capCandidate=(userReqMatch?userReqMatch[1]:prompt).trim();
-        const capInvoke=capCandidate.match(/^([/$])([\w-]+)(?:\s+([\s\S]*))?$/);
-        if(capInvoke){const prefix=capInvoke[1],capName=capInvoke[2].toLowerCase(),capArgs=capInvoke[3]??'';const item=environment.capabilities.find(c=>(prefix==='$'?c.kind==='skill':['skill','command'].includes(c.kind))&&c.name.toLowerCase()===capName);if(item){try{const value=await localControl(binding,'capability-context',{id:item.id});context.push('User explicitly invoked '+item.id+':\n'+value.content.replaceAll('$ARGUMENTS',capArgs));command={...command,input:[{type:'text',text:'Execute the explicitly invoked local capability '+item.id+'. Arguments: '+capArgs}]};}catch(capErr){context.push('Failed to load local capability '+item.id+': '+capErr.message);}}}
+        const slash=prompt.match(/^\s*\/([\w-]+)(?:\s+([\s\S]*))?$/);
+        if(slash){const item=environment.capabilities.find(c=>['skill','command'].includes(c.kind)&&c.name===slash[1]);if(item){const value=await localControl(binding,'capability-context',{id:item.id});context.push('User explicitly invoked '+item.id+':\n'+value.content.replaceAll('$ARGUMENTS',slash[2]??''));command={...command,input:[{type:'text',text:'Execute the explicitly invoked local capability '+item.id+'. Arguments: '+(slash[2]??'')}]};}}
         const pending=(environment.jobs??[]).filter(j=>['starting','queued','running','unresponsive','interrupted'].includes(j.status));
         if(pending.length)context.push('Existing local tasks; query these IDs, never resubmit uncertain work:\n'+JSON.stringify(pending.map(({requestId,status,cwd,startedAt})=>({requestId,status,cwd,startedAt}))));
         if(params.attachments?.length){await localControl(binding,'attachments',{paths:params.attachments});for(const file of params.attachments){const media=await localMedia(binding,file);context.push('Explicitly attached local media (cached images/PDFs use native Read; local video remains a Windows file):\n'+JSON.stringify(media));}}

@@ -1,14 +1,13 @@
 # 架构与数据边界
 
-**T3 Claude VPS（`t3-claude-vps`）** 基于上游 `vv-get-ti/claude-vps-bridge` 的核心 SSH 双向通道与 Windows 工作区运行时构建，同时支撑 **T3 Code 原生 `claudeAgent` Shim（`t3-native/`）**、**T3 Code Local ACP 适配器（`t3/`）** 与 **上游兼容的 CodexHost 插件（`plugin/`）**。T3 Code 双路径数据流图见 [T3 Code 适配与使用指南](T3CODE.md)，相对上游的改动清单见 [Fork 起源与改进说明](FORK_CHANGES.md)。
+**T3 Claude VPS（`t3-claude-vps`）** 基于上游 `vv-get-ti/claude-vps-bridge` 的核心 SSH 双向通道与 Windows 工作区运行时构建，面向 **T3 Code 原生 `claudeAgent` Shim（`t3-native/`）**，并完整保留 **上游兼容的 CodexHost 插件（`plugin/`）**。T3 Code 数据流图见 [T3 Code 适配与使用指南](T3CODE.md)，相对上游的改动清单见 [Fork 起源与改进说明](FORK_CHANGES.md)。
 
 ## 模块职责
 
 | 模块 | 职责 | 不应承担 |
 |---|---|---|
-| `plugin/plugin.mjs` | 满足 CodexHost Harness 接口，对应本机项目与远端会话 | 提供模型账号、代登录 |
-| `t3-native/` | T3 Code 官方 `claudeAgent` 原生 Shim（`claude-vps-shim.exe`/`.mjs` + `http-mcp-client.mjs`），直通 `stream-json` 并在本机隔离 T3 HTTP MCP 凭据 | 修改默认 `claudeAgent` 或将 T3 Token 发往 VPS |
-| `t3/` | T3 Code Local ACP 适配器（`claude-vps-acp.mjs` / `acp-helpers.mjs`），提供工具卡片翻译、MCP-over-ACP、Plan 面板、`/usage` & `/status` | 绕过 T3 审批或修改 T3 宿主程序 |
+| `t3-native/` | T3 Code 官方 `claudeAgent` 原生 Shim（`claude-vps-shim.exe`/`.mjs` + `http-mcp-client.mjs` + `mcp-policy.mjs`），直通 `stream-json`、读图路径双向回映射并在本机隔离 T3 / 自定义 MCP 凭据 | 修改默认 `claudeAgent` 或将 T3 Token 发往 VPS |
+| `plugin/plugin.mjs` | 满足上游兼容的 CodexHost Harness 接口，对应本机项目与远端会话 | 提供模型账号、代登录 |
 | `plugin/runtime/ssh-transport.mjs` | 持久连接、同一 relay 的消息确认与恢复 | 在结果未知时用新编号重做操作 |
 | `remote/remote-server.mjs` | 通过受管理的上游适配器运行官方 Claude，关联本机工具请求 | 保存整个本机项目的同步副本 |
 | `remote/claude-stream-relay.mjs` | 为 `t3-native/` 原生 Shim 直连 VPS 原版 Claude Code `stream-json`，复用 `tool-bridge.mjs` 与 `workspace-guard.py` | 实现反代、篡改登录态或修改 VPS 全局 `~/.claude` |

@@ -6,18 +6,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
-import { inspectBridge } from '../t3/bridge-installation.mjs';
+import { inspectBridge } from './bridge-installation.mjs';
 
 const execFileAsync = promisify(execFile);
 const nativeDir = path.dirname(fileURLToPath(import.meta.url));
-const t3Dir = path.resolve(nativeDir, '..', 't3');
 const INSTANCE_ID = 'claude-vps';
 const DISPLAY_NAME = 'Claude VPS';
 const VERSION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const SCRIPT_ASSETS = [
-  { name: 'bridge-installation.mjs', src: path.join(t3Dir, 'bridge-installation.mjs') },
-  { name: 'mcp-policy.mjs', src: path.join(t3Dir, 'mcp-policy.mjs') },
+  { name: 'bridge-installation.mjs', src: path.join(nativeDir, 'bridge-installation.mjs') },
+  { name: 'mcp-policy.mjs', src: path.join(nativeDir, 'mcp-policy.mjs') },
   { name: 'http-mcp-client.mjs', src: path.join(nativeDir, 'http-mcp-client.mjs') },
   { name: 'claude-vps-shim.mjs', src: path.join(nativeDir, 'claude-vps-shim.mjs') },
 ];
@@ -298,7 +297,7 @@ async function install(t3Home, { offline = false } = {}) {
   } else {
     console.log(`远端实时版本探测：${liveVersionOut}`);
   }
-  console.log('未修改默认 claudeAgent 与现有 claude-vps-bridge (ACP) 实例。');
+  console.log('未修改默认 claudeAgent 实例与本机 ~/.claude。');
 }
 
 async function status(t3Home, { offline = false } = {}) {

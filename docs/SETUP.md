@@ -82,17 +82,15 @@ claude auth login
 # 1. 生成连接配置（将 my-linux-host 替换为你的 SSH 别名）
 python .\installer\configure.py --ssh-host my-linux-host --t3-only
 
-# 2. 部署两端桥接 + 注册官方原生 Claude VPS 与 Local ACP Claude VPS Bridge
-pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native
+# 2. 部署两端桥接 + 注册官方原生实例 Claude VPS
+pwsh -NoProfile -File .\install.ps1 -T3Only
 ```
-
-> 若只想安装 Local ACP 模式，省略 `-WithT3Native` 即可。
 
 ### 场景 B：T3 Code 与 CodexHost 双宿共存
 
 ```powershell
 python .\installer\configure.py --ssh-host my-linux-host --host-root 'D:\Apps\CodexHost'
-pwsh -NoProfile -File .\install.ps1 -WithT3 -WithT3Native
+pwsh -NoProfile -File .\install.ps1 -WithT3
 ```
 
 ### 场景 C：仅安装 CodexHost 插件（上游兼容模式）
@@ -106,7 +104,7 @@ pwsh -NoProfile -File .\install.ps1
 
 - `configure.py` 会通过 SSH 验证远端可执行文件并生成 `bridge-config.local.json`（保留已有配置，不进入 Git）。安装脚本优先选择 `py -3` 或真实 Python 3.11+（自动排除 WindowsApps 占位程序）。
 - 两端部署采用事务式备份与文件哈希校验，保留既有会话和用户数据，不修改 T3 Code 或 CodexHost 任何程序文件。
-- 为保持与上游配置及数据目录兼容，核心桥接仍安装到 `%USERPROFILE%\.codexhost\plugins\claude-vps`，T3 原生 Shim 与 ACP 适配器分别独立安装到 `%USERPROFILE%\.t3\integrations\claude-vps-native` 与 `claude-vps`（可通过 `-T3Home` 或 `T3CODE_HOME` 指定自定义 T3 数据目录）。
+- 为保持与上游配置及数据目录兼容，核心桥接仍安装到 `%USERPROFILE%\.codexhost\plugins\claude-vps`，T3 原生 Shim 独立安装到 `%USERPROFILE%\.t3\integrations\claude-vps-native`（可通过 `-T3Home` 或 `T3CODE_HOME` 指定自定义 T3 数据目录）。
 - 使用 CodexHost 模式时，`codexhost` 在 PATH 且能定位目录可省略 `--host-root`；安装脚本仅支持默认 `%USERPROFILE%\.codexhost`（遇到自定义 `CODEXHOST_DATA_DIR` / `CODEXHOST_PLUGIN_DIRECTORY` 会安全停止）。旧版曾打过宿主补丁的用户请重装或升级 CodexHost 清除旧补丁。
 
 ---
@@ -116,17 +114,16 @@ pwsh -NoProfile -File .\install.ps1
 ### 在 T3 Code 中验收
 
 1. 打开任意本机 Windows 测试项目，新建会话。
-2. 在模型选择器中选择 **`Claude VPS`**（原生 `claudeAgent` Shim）或 **`Claude VPS Bridge`**（Local ACP 适配器）。如刚安装完未立即出现，可在 **Settings → Providers** 刷新或重启 T3 Code。
+2. 在模型选择器中选择 **`Claude VPS`**（原生 `claudeAgent` Shim）。如刚安装完未立即出现，可在 **Settings → Providers** 刷新或重启 T3 Code。
 3. 依次验证：
    - **本机读写与 T3 MCP**：让它读取本机文件、查看当前 Windows 项目路径并调用 `t3_environment_read`。
-   - **原生 `Claude VPS`**：查看顶部 / 账号页 5h & 7d 实时额度圆环是否亮起，并测试 `TaskCreate` / `TaskUpdate` 进度面板。
-   - **ACP `Claude VPS Bridge`**：输入 `/status` 与 `/usage`（0 Token），确认 SSH 路由、`T3 MCP 桥接：已连通` 与 5h/7d 额度正常返回。
+   - **实时额度与任务进度**：查看顶部 / 账号页 5h & 7d 实时额度圆环是否亮起，并测试 `TaskCreate` / `TaskUpdate` 进度面板。
+   - **图片预览渲染**：让它读取项目中的一张本地 PNG/JPG，确认 T3 Code 读图卡片正常渲染预览。
 
 同时可在终端执行快速健康检查（不提交模型请求）：
 
 ```powershell
 node .\t3-native\manage-native.mjs status
-node .\t3\manage.mjs status
 node .\plugin\diagnose.mjs --json
 ```
 

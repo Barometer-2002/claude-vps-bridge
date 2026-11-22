@@ -1,22 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { LocalMcpHub } from './http-mcp-client.mjs';
-
-const bridgeInstallUrl = existsSync(new URL('./bridge-installation.mjs', import.meta.url))
-  ? new URL('./bridge-installation.mjs', import.meta.url)
-  : new URL('../t3/bridge-installation.mjs', import.meta.url);
-const policyUrl = existsSync(new URL('./mcp-policy.mjs', import.meta.url))
-  ? new URL('./mcp-policy.mjs', import.meta.url)
-  : new URL('../t3/mcp-policy.mjs', import.meta.url);
-
-const { inspectBridge } = await import(bridgeInstallUrl.href);
-const { evaluateLocalMcpToolCall, parseT3McpPolicy, resolveLocalMcpTool } = await import(policyUrl.href);
+import { inspectBridge } from './bridge-installation.mjs';
+import { evaluateLocalMcpToolCall, parseT3McpPolicy, resolveLocalMcpTool } from './mcp-policy.mjs';
 
 const shimDir = path.dirname(fileURLToPath(import.meta.url));
 const versionCachePath = path.join(shimDir, 'vps-version-cache.json');
@@ -24,6 +16,9 @@ const VERSION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const RELAY_START_TIMEOUT_MS = 20_000;
 const CANCEL_WAIT_CAP_MS = 14_000;
 const MEDIA_EXT_RE = /\.(?:png|jpe?g|webp|gif|pdf)$/i;
+const BRIDGE_MEDIA_PATH_RE = /(?:^|\/)\.bridge-media\/[A-Za-z0-9_-]+\/([a-f0-9]{64}\.(?:png|jpe?g|webp|gif|pdf))$/i;
+const BRIDGE_MEDIA_INLINE_RE = /(file:\/\/)?(\/[^\s"'`<>|)\]]*\/\.bridge-media\/[A-Za-z0-9_-]+\/([a-f0-9]{64}\.(?:png|jpe?g|webp|gif|pdf)))/gi;
+const MEDIA_CACHE_LIMIT = 256;
 const ACTIVE_JOB_STATUSES = new Set(['starting', 'queued', 'running', 'unresponsive', 'interrupted']);
 const PERMISSION_MODES = new Set(['default', 'plan', 'acceptEdits', 'bypassPermissions', 'dontAsk', 'auto', 'delegate']);
 const UUID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -211,6 +206,344 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
+function sameWinPath(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  return path.win32.resolve(a).toLowerCase() === path.win32.resolve(b).toLowerCase();
+}
+
+export function createMediaPathRemapper({
+  remoteWorkspaceRoot = '',
+  sessionId = '',
+  projectId = '',
+  cacheFile = null,
+  existsCheck = existsSync,
+} = {}) {
+  const exactMap = new Map();
+  const hashMap = new Map();
+  const pendingReadBlocks = new Map();
+  const readToolUseIds = new Set();
+  const pendingApprovals = new Map();
+  let persistChain = Promise.resolve();
+
+  if (cacheFile && projectId) {
+    try {
+      const parsed = JSON.parse(readFileSync(cacheFile, 'utf8'));
+      const entries = parsed?.entries && typeof parsed.entries === 'object' ? parsed.entries : {};
+      const prefix = `${projectId}:`;
+      for (const [key, entry] of Object.entries(entries)) {
+        if (!key.startsWith(prefix)) continue;
+        const hashExt = key.slice(prefix.length).toLowerCase();
+        if (typeof entry?.path === 'string' && path.win32.isAbsolute(entry.path)) {
+          hashMap.set(hashExt, entry.path);
+        }
+      }
+    } catch {
+      // Cache file does not exist yet or is unreadable.
+    }
+  }
+
+  function persistEntries(records) {
+    if (!cacheFile || !projectId || !records.length) return;
+    persistChain = persistChain.then(async () => {
+      let entries = {};
+      try {
+        const existing = JSON.parse(await readFile(cacheFile, 'utf8'));
+        if (existing?.entries && typeof existing.entries === 'object') entries = existing.entries;
+      } catch {
+        // Fresh cache file.
+      }
+      const now = Date.now();
+      for (const { hashExt, winPath } of records) {
+        entries[`${projectId}:${hashExt}`] = { path: winPath, projectId, updatedAt: now };
+      }
+      const sorted = Object.entries(entries)
+        .filter(([, v]) => v && typeof v.path === 'string')
+        .sort((a, b) => (b[1].updatedAt ?? 0) - (a[1].updatedAt ?? 0))
+        .slice(0, MEDIA_CACHE_LIMIT);
+      const payload = JSON.stringify({ version: 1, entries: Object.fromEntries(sorted) }, null, 2);
+      await mkdir(path.dirname(cacheFile), { recursive: true });
+      const tmp = `${cacheFile}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(tmp, payload, 'utf8');
+        await rename(tmp, cacheFile);
+      } finally {
+        await unlink(tmp).catch(() => {});
+      }
+    }).catch(() => {});
+  }
+
+  function recordExport(value) {
+    if (!value || typeof value !== 'object' || typeof value.source !== 'string' || !path.win32.isAbsolute(value.source)) return;
+    const files = Array.isArray(value.files) ? value.files : [];
+    const saved = [];
+    for (const item of files) {
+      if (typeof item?.sha256 !== 'string' || typeof item?.extension !== 'string') continue;
+      const hashExt = `${item.sha256}${item.extension}`.toLowerCase();
+      if (!/^[a-f0-9]{64}\.(?:png|jpe?g|webp|gif|pdf)$/.test(hashExt)) continue;
+      hashMap.set(hashExt, value.source);
+      if (remoteWorkspaceRoot && sessionId) {
+        const vpsPath = path.posix.join(remoteWorkspaceRoot, '.bridge-media', sessionId, hashExt);
+        exactMap.set(vpsPath, value.source);
+      }
+      saved.push({ hashExt, winPath: value.source });
+    }
+    if (saved.length > 0) persistEntries(saved);
+  }
+
+  function resolve(vpsPath) {
+    if (typeof vpsPath !== 'string' || !vpsPath) return null;
+    const trimmed = vpsPath.trim();
+    let candidate = exactMap.get(trimmed) ?? null;
+    if (!candidate) {
+      const m = trimmed.match(BRIDGE_MEDIA_PATH_RE);
+      if (m) candidate = hashMap.get(m[1].toLowerCase()) ?? null;
+    }
+    if (!candidate || !path.win32.isAbsolute(candidate)) return null;
+    try {
+      if (!existsCheck(candidate)) return null;
+    } catch {
+      return null;
+    }
+    return candidate;
+  }
+
+  function replaceInlineText(text) {
+    if (typeof text !== 'string' || !text.includes('.bridge-media/')) return text;
+    return text.replace(BRIDGE_MEDIA_INLINE_RE, (full, fileScheme, vpsPath) => {
+      const mapped = resolve(vpsPath);
+      if (!mapped) return full;
+      const posixWin = mapped.replace(/\\/g, '/');
+      return fileScheme ? `file:///${posixWin}` : posixWin;
+    });
+  }
+
+  function flushPendingStreamBlocks() {
+    const out = [];
+    for (const state of pendingReadBlocks.values()) {
+      for (const deltaFrame of state.deltas) out.push(deltaFrame);
+    }
+    pendingReadBlocks.clear();
+    return out;
+  }
+
+  function rewriteOutgoingFrame(frame) {
+    if (!frame || typeof frame !== 'object') return [frame];
+
+    if (frame.type === 'stream_event' && frame.event && typeof frame.event === 'object') {
+      const ev = frame.event;
+      if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use' && ev.content_block?.name === 'Read') {
+        if (typeof ev.content_block.id === 'string' && ev.content_block.id) {
+          readToolUseIds.add(ev.content_block.id);
+        }
+        let nextFrame = frame;
+        if (typeof ev.content_block.input?.file_path === 'string') {
+          const mapped = resolve(ev.content_block.input.file_path);
+          if (mapped) {
+            nextFrame = {
+              ...frame,
+              event: {
+                ...ev,
+                content_block: {
+                  ...ev.content_block,
+                  input: { ...ev.content_block.input, file_path: mapped },
+                },
+              },
+            };
+          }
+        }
+        if (typeof ev.index === 'number') {
+          pendingReadBlocks.set(ev.index, { partialJson: '', deltas: [] });
+        }
+        return [nextFrame];
+      }
+      if (ev.type === 'content_block_delta' && typeof ev.index === 'number' && pendingReadBlocks.has(ev.index)
+          && ev.delta?.type === 'input_json_delta' && typeof ev.delta.partial_json === 'string') {
+        const state = pendingReadBlocks.get(ev.index);
+        state.partialJson += ev.delta.partial_json;
+        state.deltas.push(frame);
+        if (state.partialJson.length > 16384) {
+          pendingReadBlocks.delete(ev.index);
+          return state.deltas;
+        }
+        return [];
+      }
+      if (ev.type === 'content_block_stop' && typeof ev.index === 'number' && pendingReadBlocks.has(ev.index)) {
+        const state = pendingReadBlocks.get(ev.index);
+        pendingReadBlocks.delete(ev.index);
+        let rewrittenDelta = null;
+        if (state.deltas.length > 0 && state.partialJson.trim()) {
+          try {
+            const parsedInput = JSON.parse(state.partialJson);
+            if (parsedInput && typeof parsedInput.file_path === 'string') {
+              const mapped = resolve(parsedInput.file_path);
+              if (mapped) {
+                const base = state.deltas[0];
+                rewrittenDelta = {
+                  ...base,
+                  event: {
+                    ...base.event,
+                    delta: {
+                      ...base.event.delta,
+                      partial_json: JSON.stringify({ ...parsedInput, file_path: mapped }),
+                    },
+                  },
+                };
+              }
+            }
+          } catch {
+            // Fall through and flush raw deltas unchanged.
+          }
+        }
+        return rewrittenDelta ? [rewrittenDelta, frame] : [...state.deltas, frame];
+      }
+      if (ev.type === 'message_stop' && pendingReadBlocks.size > 0) {
+        return [...flushPendingStreamBlocks(), frame];
+      }
+      return [frame];
+    }
+
+    const prefix = pendingReadBlocks.size > 0 && (frame.type === 'assistant' || frame.type === 'result')
+      ? flushPendingStreamBlocks()
+      : [];
+
+    if (frame.type === 'assistant' && Array.isArray(frame.message?.content)) {
+      let changed = false;
+      const content = frame.message.content.map(block => {
+        if (!block || typeof block !== 'object') return block;
+        if (block.type === 'tool_use' && block.name === 'Read') {
+          if (typeof block.id === 'string' && block.id) readToolUseIds.add(block.id);
+          if (typeof block.input?.file_path === 'string') {
+            const mapped = resolve(block.input.file_path);
+            if (mapped) {
+              changed = true;
+              return { ...block, input: { ...block.input, file_path: mapped } };
+            }
+          }
+          return block;
+        }
+        if (block.type === 'text' && typeof block.text === 'string') {
+          const replaced = replaceInlineText(block.text);
+          if (replaced !== block.text) {
+            changed = true;
+            return { ...block, text: replaced };
+          }
+        }
+        return block;
+      });
+      if (changed) {
+        return [...prefix, { ...frame, message: { ...frame.message, content } }];
+      }
+      return [...prefix, frame];
+    }
+
+    if (frame.type === 'user') {
+      let nextFrame = frame;
+      const tur = frame.tool_use_result;
+      if (tur && typeof tur === 'object') {
+        let nextTur = tur;
+        if (typeof tur.filePath === 'string') {
+          const mapped = resolve(tur.filePath);
+          if (mapped) nextTur = { ...nextTur, filePath: mapped };
+        }
+        if (tur.file && typeof tur.file === 'object') {
+          let nextFile = tur.file;
+          if (typeof tur.file.filePath === 'string') {
+            const mapped = resolve(tur.file.filePath);
+            if (mapped) nextFile = { ...nextFile, filePath: mapped };
+          }
+          if (typeof tur.file.file_path === 'string') {
+            const mapped = resolve(tur.file.file_path);
+            if (mapped) nextFile = { ...nextFile, file_path: mapped };
+          }
+          if (nextFile !== tur.file) nextTur = { ...nextTur, file: nextFile };
+        }
+        if (nextTur !== tur) nextFrame = { ...nextFrame, tool_use_result: nextTur };
+      }
+      if (Array.isArray(nextFrame.message?.content)) {
+        let changed = false;
+        const content = nextFrame.message.content.map(block => {
+          if (!block || typeof block !== 'object' || block.type !== 'tool_result') return block;
+          if (!readToolUseIds.has(block.tool_use_id)) return block;
+          if (typeof block.content === 'string') {
+            const replaced = replaceInlineText(block.content);
+            if (replaced !== block.content) {
+              changed = true;
+              return { ...block, content: replaced };
+            }
+          }
+          return block;
+        });
+        if (changed) {
+          nextFrame = { ...nextFrame, message: { ...nextFrame.message, content } };
+        }
+      }
+      return [...prefix, nextFrame];
+    }
+
+    if (frame.type === 'control_request' && frame.request?.subtype === 'can_use_tool'
+        && frame.request.tool_name === 'Read' && typeof frame.request.input?.file_path === 'string') {
+      const vpsPath = frame.request.input.file_path;
+      const mapped = resolve(vpsPath);
+      if (mapped) {
+        if (typeof frame.request_id === 'string' && frame.request_id) {
+          pendingApprovals.set(frame.request_id, { vpsPath, winPath: mapped });
+        }
+        return [...prefix, {
+          ...frame,
+          request: {
+            ...frame.request,
+            input: { ...frame.request.input, file_path: mapped },
+          },
+        }];
+      }
+    }
+
+    return [...prefix, frame];
+  }
+
+  function rewriteIncomingFrame(msg) {
+    if (!msg || typeof msg !== 'object' || msg.type !== 'control_response') return msg;
+    const reqId = msg.response?.request_id;
+    if (typeof reqId !== 'string' || !pendingApprovals.has(reqId)) return msg;
+    const { vpsPath, winPath } = pendingApprovals.get(reqId);
+    pendingApprovals.delete(reqId);
+
+    const inner = msg.response?.response;
+    if (inner?.updatedInput && typeof inner.updatedInput === 'object' && sameWinPath(inner.updatedInput.file_path, winPath)) {
+      return {
+        ...msg,
+        response: {
+          ...msg.response,
+          response: {
+            ...inner,
+            updatedInput: { ...inner.updatedInput, file_path: vpsPath },
+          },
+        },
+      };
+    }
+    if (msg.response?.updatedInput && typeof msg.response.updatedInput === 'object' && sameWinPath(msg.response.updatedInput.file_path, winPath)) {
+      return {
+        ...msg,
+        response: {
+          ...msg.response,
+          updatedInput: { ...msg.response.updatedInput, file_path: vpsPath },
+        },
+      };
+    }
+    return msg;
+  }
+
+  return {
+    recordExport,
+    resolve,
+    replaceInlineText,
+    rewriteOutgoingFrame,
+    rewriteIncomingFrame,
+    flushPendingStreamBlocks,
+    flushPersistence: () => persistChain,
+  };
+}
+
 async function runOfflineSelfTest() {
   const hub = new LocalMcpHub();
   let rejectedBadConfig = false;
@@ -230,6 +563,28 @@ async function runOfflineSelfTest() {
     && !('env' in rewritten['t3-code']);
   await hub.closeAll();
 
+  const sampleHash = 'a'.repeat(64);
+  const sampleVpsPath = `/home/user/windows-local-work/.bridge-media/s1/${sampleHash}.png`;
+  const sampleWinPath = 'C:\\example\\demo.png';
+  const remapper = createMediaPathRemapper({
+    remoteWorkspaceRoot: '/home/user/windows-local-work',
+    sessionId: 's1',
+    projectId: 'p1',
+    existsCheck: p => p === sampleWinPath,
+  });
+  remapper.recordExport({ source: sampleWinPath, kind: 'image', files: [{ sha256: sampleHash, extension: '.png' }] });
+  const outRead = remapper.rewriteOutgoingFrame({
+    type: 'control_request',
+    request_id: 'r1',
+    request: { subtype: 'can_use_tool', tool_name: 'Read', input: { file_path: sampleVpsPath } },
+  })[0];
+  const inAllow = remapper.rewriteIncomingFrame({
+    type: 'control_response',
+    response: { subtype: 'success', request_id: 'r1', response: { behavior: 'allow', updatedInput: { file_path: sampleWinPath } } },
+  });
+  const mediaRemapOk = outRead?.request?.input?.file_path === sampleWinPath
+    && inAllow?.response?.response?.updatedInput?.file_path === sampleVpsPath;
+
   let bridge = null;
   let bridgeError = null;
   try {
@@ -238,13 +593,14 @@ async function runOfflineSelfTest() {
     bridgeError = err?.message ?? String(err);
   }
 
-  const ok = rejectedBadConfig && sanitizedOk && !bridgeError;
+  const ok = rejectedBadConfig && sanitizedOk && mediaRemapOk && !bridgeError;
   process.stdout.write(`${JSON.stringify({
     ok,
     mode: 'offline-self-test',
     shimDir,
     rejectedBadConfig,
     sanitizedOk,
+    mediaRemapOk,
     bridgeVersion: bridge?.version ?? null,
     ...(bridgeError ? { bridgeError } : {}),
   })}\n`);
@@ -554,7 +910,7 @@ async function main() {
     return;
   }
 
-  const { config, SshRoutes, classifySshFailure, workspace, envMod, streams } = await loadBridgeModules();
+  const { info: bridgeInfo, config, SshRoutes, classifySshFailure, workspace, envMod, streams } = await loadBridgeModules();
 
   if (parsed.isVersionCheck) {
     await handleVersionCheck(config, SshRoutes, classifySshFailure, { live: parsed.liveVersionCheck });
@@ -619,6 +975,13 @@ async function main() {
       projectContext = projectContext ? `${projectContext}\n\n${recoveryNote}` : recoveryNote;
     }
   }
+
+  const mediaRemapper = createMediaPathRemapper({
+    remoteWorkspaceRoot: config.remoteWorkspaceRoot,
+    sessionId,
+    projectId: info?.projectId ?? '',
+    cacheFile: info?.projectId ? path.join(bridgeInfo.root, 'runtime', 'state', 'media-path-cache.json') : null,
+  });
 
   const startPayload = {
     type: 'start',
@@ -744,6 +1107,9 @@ async function main() {
         value = await workspace.handle(boundReq, { signal: activeTurn?.controller.signal });
       } else {
         value = await workspace.control(boundReq);
+        if (request?.action === 'media-export') {
+          mediaRemapper.recordExport(value);
+        }
       }
       if (value?.data?.requestId && typeof value.data.requestId === 'string') {
         trackedJobIds.add(value.data.requestId);
@@ -812,7 +1178,11 @@ async function main() {
         }
         if (activeTurn === turn) activeTurn = null;
       }
-      process.stdout.write(`${line}\n`);
+      const outFrames = mediaRemapper.rewriteOutgoingFrame(parsedOut);
+      for (const outFrame of outFrames) {
+        if (outFrame === parsedOut) process.stdout.write(`${line}\n`);
+        else writeStdoutFrame(outFrame);
+      }
     }).catch(() => {});
   };
 
@@ -919,7 +1289,8 @@ async function main() {
         respondControlError(msg.request_id, 'initialize contains local-only MCP or environment configuration');
         return;
       }
-      sendToRelay({ type: 'claude_in', line });
+      const forwardedMsg = mediaRemapper.rewriteIncomingFrame(msg);
+      sendToRelay({ type: 'claude_in', line: forwardedMsg === msg ? line : JSON.stringify(forwardedMsg) });
     }).catch(err => {
       process.stderr.write(`Claude VPS shim stdin processing error: ${err?.message ?? err}\n`);
     });
@@ -936,6 +1307,10 @@ async function main() {
     sshExited = true;
 
     await stdoutChain.catch(() => {});
+    for (const trailing of mediaRemapper.flushPendingStreamBlocks()) {
+      writeStdoutFrame(trailing);
+    }
+    await mediaRemapper.flushPersistence().catch(() => {});
     if (activeTurn?.cancel) await activeTurn.cancel;
     if (unexpectedDisconnect && (activeTurn || trackedJobIds.size > 0)) {
       const liveJobs = await withBoundedTimeout(listRelevantLocalJobs(workspace, info, sessionId, trackedJobIds), 2000, () => []);

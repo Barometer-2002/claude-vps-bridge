@@ -80,16 +80,7 @@ export function createHarnessAdapter(context) {
       const started=performance.now();
       const request={...frame.request,cwd:binding.cwd,projectId:binding.projectId,sessionId:frame.sessionId,parentThread:binding.parentThread,bridgeRequestId:frame.controlId};
       timing({phase:'local-operation-start',action:request.action,lane:frame.lane??'control'});
-      const proxyMcp=request.action==='mcp'&&(binding.localMcpServers.includes(request.server)||(request.server==='t3-code'&&binding.t3Mcp));
-      const proxyPreflight=request.action==='preflight'&&request.request?.action==='mcp-call'&&binding.localMcpServers.some(name=>
-        [name,name.replace(/[^A-Za-z0-9_-]/g,'_')].some(alias=>request.request.tool?.startsWith('mcp__'+alias+'__')));
-      const value=await (
-        frame.lane==='tool'&&request.action!=='media-export'
-          ? handle(request)
-          : ((proxyMcp||proxyPreflight)&&typeof context.onMcpRequest==='function'
-              ? context.onMcpRequest({...request,acpSessionId:binding.acpSessionId})
-              : control(request))
-      );
+      const value=await (frame.lane==='tool'&&request.action!=='media-export'?handle(request):control(request));
       timing({phase:'local-control',action:frame.request.action,ms:performance.now()-started});
       await transport.reply({controlId:frame.controlId,value});
     }catch(error){await transport.reply({controlId:frame.controlId,error:error.message}).catch(()=>{});}
@@ -111,7 +102,7 @@ export function createHarnessAdapter(context) {
       if(frame.controlId){void localRequest(frame);return;}
       if(frame.timing){timing(frame.timing);return;}
       if(frame.sessionId){
-        if(frame.closed){const binding=localBindings.get(frame.sessionId);if(binding){binding.remoteClosed=true;binding.readLifetime.abort();binding.confirmClosed?.();}reads.close(frame.sessionId);closeMcpSession(frame.sessionId);context.onMcpSessionClosed?.(frame.sessionId);channels.get(frame.sessionId)?.end();channels.delete(frame.sessionId);localBindings.delete(frame.sessionId);return;}
+        if(frame.closed){const binding=localBindings.get(frame.sessionId);if(binding){binding.remoteClosed=true;binding.readLifetime.abort();binding.confirmClosed?.();}reads.close(frame.sessionId);closeMcpSession(frame.sessionId);channels.get(frame.sessionId)?.end();channels.delete(frame.sessionId);localBindings.delete(frame.sessionId);return;}
         if(frame.closeError){timing({phase:'session-cleanup',status:'unconfirmed',message:frame.closeError});return;}
         const channel=channels.get(frame.sessionId),binding=localBindings.get(frame.sessionId);
         const output=remap(frame.output,'claude-code',ID);
@@ -176,14 +167,10 @@ export function createHarnessAdapter(context) {
           await exec(getBridgeConfig().pwshExecutable,['-NoLogo','-NoProfile','-File',EXPORT],{env:{...env,CODEX_THREAD_ID:parent},windowsHide:true,timeout:15000});
         }
         sessionId=randomUUID();channel=new SessionChannel(reason=>faultSession(sessionId,reason)); channels.set(sessionId,channel);
-        const {environment,signal,t3Mcp,acpSessionId,localMcpServers,...safeInput}=input;
-        const enableT3Mcp=t3Mcp===true&&typeof context.onMcpRequest==='function';
-        const safeAcpSessionId=typeof acpSessionId==='string'&&acpSessionId.length>0?acpSessionId:undefined;
+        const {environment,signal,...safeInput}=input;
         const workspace=await projectInfo(input.cwd);
-        const mcpNames=typeof context.onMcpRequest==='function'&&Array.isArray(localMcpServers)
-          ?localMcpServers.filter(name=>typeof name==='string'&&/^[A-Za-z0-9._-]{1,64}$/.test(name)&&!name.includes('__')):[];
-        localBindings.set(sessionId,{cwd:workspace.cwd,projectId:workspace.projectId,parentThread:parent,t3Mcp:enableT3Mcp,localMcpServers:mcpNames,acpSessionId:safeAcpSessionId,requests:new SessionRequests(),readLifetime:new AbortController()});
-        const opened=await rpc('open',{sessionId,input:safeInput,localCwd:input.cwd,parentThread:parent,workspace,t3Mcp:enableT3Mcp,localMcpServers:mcpNames,localFeatures:['prepare-turn'],localControl:health.capabilities.includes('duplex-control'),localTools:health.capabilities.includes('duplex-tools')},input.kind==='fork'?180000:60000,options?.signal??signal);
+        localBindings.set(sessionId,{cwd:workspace.cwd,projectId:workspace.projectId,parentThread:parent,requests:new SessionRequests(),readLifetime:new AbortController()});
+        const opened=await rpc('open',{sessionId,input:safeInput,localCwd:input.cwd,parentThread:parent,workspace,localFeatures:['prepare-turn'],localControl:health.capabilities.includes('duplex-control'),localTools:health.capabilities.includes('duplex-tools')},input.kind==='fork'?180000:60000,options?.signal??signal);
         if(!opened.ok){channel.end();channels.delete(sessionId);localBindings.delete(sessionId);return opened;}
         const metadata=opened.value;
         const binding=localBindings.get(sessionId);binding.nativeState??=metadata.initialState;
@@ -219,7 +206,7 @@ export function createHarnessAdapter(context) {
                 let timer;try{await Promise.race([binding.closedSignal,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Remote session cleanup is still pending')),15000);})]);}finally{clearTimeout(timer);}
               }
             }
-            closeMcpSession(sessionId);context.onMcpSessionClosed?.(sessionId);localBindings.delete(sessionId);channel.end();channels.delete(sessionId);
+            closeMcpSession(sessionId);localBindings.delete(sessionId);channel.end();channels.delete(sessionId);
           })();
           binding.closePromise=task;
           // Keep output/binding alive on failure for late confirmation and hooks.
@@ -231,7 +218,7 @@ export function createHarnessAdapter(context) {
           if(!binding.rebinding)binding.rebinding=(async()=>{
             const nativeRef=remap(binding.nativeState?.nativeRef??metadata.nativeWriterRef,'claude-code',ID);
             if(!nativeRef)throw new Error('The previous native session identity is unknown; no replacement conversation was created');
-            const restored=await rpc('open',{sessionId,rebind:true,t3Mcp:binding.t3Mcp===true,localMcpServers:binding.localMcpServers,input:{kind:'resume',cwd:input.cwd,nativeRef,model:binding.nativeState?.effectiveModel??input.model,thinkingOptionId:binding.nativeState?.effectiveThinkingOptionId??input.thinkingOptionId,permissionModeId:binding.nativeState?.effectivePermissionModeId??input.permissionModeId},localCwd:input.cwd,parentThread:binding.parentThread,workspace,localFeatures:['prepare-turn'],localControl:true,localTools:true});
+            const restored=await rpc('open',{sessionId,rebind:true,input:{kind:'resume',cwd:input.cwd,nativeRef,model:binding.nativeState?.effectiveModel??input.model,thinkingOptionId:binding.nativeState?.effectiveThinkingOptionId??input.thinkingOptionId,permissionModeId:binding.nativeState?.effectivePermissionModeId??input.permissionModeId},localCwd:input.cwd,parentThread:binding.parentThread,workspace,localFeatures:['prepare-turn'],localControl:true,localTools:true});
             if(!restored.ok)throw new Error(restored.error.message);binding.capabilities=restored.value.capabilities;if(restored.value.initialUsage)channel.push({kind:'event',event:{type:'session.usage.changed',usage:restored.value.initialUsage}});binding.needsRebind=false;timing({phase:'native-session-restored',nativeSessionId:nativeRef.nativeSessionId});
           })().finally(()=>{binding.rebinding=null;});
           return binding.rebinding;
@@ -302,7 +289,7 @@ export function createHarnessAdapter(context) {
         if(sessionId){
           const binding=localBindings.get(sessionId);if(binding)binding.closing=true;
           channels.delete(sessionId);
-          try{const closed=await rpc('close',{sessionId},15000);if(closed===null||closed?.closed===true){closeMcpSession(sessionId);context.onMcpSessionClosed?.(sessionId);localBindings.delete(sessionId);}}
+          try{const closed=await rpc('close',{sessionId},15000);if(closed===null||closed?.closed===true){closeMcpSession(sessionId);localBindings.delete(sessionId);}}
           catch(cleanupError){timing({phase:'session-cleanup',status:'unconfirmed',message:cleanupError.message});}
           // Keep the binding until remote cleanup is confirmed. Existing local
           // hooks may still need to return after an open RPC times out.
@@ -310,7 +297,7 @@ export function createHarnessAdapter(context) {
         return {...errorResult(e.message),error:{...errorResult(e.message).error,retryable:false}};
       }
     },
-    async close(){for(const [id,binding] of localBindings){binding.readLifetime.abort();closeMcpSession(id);context.onMcpSessionClosed?.(id);}reads.close();await transport.close();for(const c of channels.values())c.end();},
+    async close(){for(const [id,binding] of localBindings){binding.readLifetime.abort();closeMcpSession(id);}reads.close();await transport.close();for(const c of channels.values())c.end();},
   };
   return adapter;
 }

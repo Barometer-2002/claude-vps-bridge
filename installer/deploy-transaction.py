@@ -100,7 +100,7 @@ def main():
         replace(reportPath,json.dumps(report,ensure_ascii=False,indent=2).encode())
         routes=len(config.get('sshRoutes',[None]))
         subprocess.run([str(node),str(INSTALLER/'verify-upgrade.mjs')],check=True,timeout=100+50*(routes-1))
-        activate=[str(hostRoot/'bin'/'codexhost.exe')+' stop',str(hostRoot/'bin'/'codexhost.exe')] if hostRoot else ['node .\\t3\\manage.mjs install']
+        activate=[str(hostRoot/'bin'/'codexhost.exe')+' stop',str(hostRoot/'bin'/'codexhost.exe')] if hostRoot else ['node .\\t3-native\\manage-native.mjs install']
         journal['phase']='verified';(stage/'journal.json').write_text(json.dumps(journal,indent=2));print(json.dumps({'success':True,'transaction':str(stage),'restartRequired':bool(hostRoot),'activate':activate},ensure_ascii=False))
     except Exception as error:
         problems=[]
