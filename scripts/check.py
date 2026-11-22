@@ -25,6 +25,10 @@ for name in re.findall(r"'([^']+)'", t3_assets.group(1)):
     if not (T3 / name).is_file():
         raise SystemExit('T3 installer copies a missing file: t3/' + name)
 
+for name in ('claude-vps-shim.cs', 'claude-vps-shim.mjs', 'http-mcp-client.mjs', 'manage-native.mjs'):
+    if not (T3_NATIVE / name).is_file():
+        raise SystemExit('Missing T3 native shim file: t3-native/' + name)
+
 manifest = json.loads((PLUGIN / 'manifest.json').read_text(encoding='utf-8'))
 for field in ('entry', 'icon'):
     if not (PLUGIN / manifest[field]).is_file():

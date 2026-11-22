@@ -65,14 +65,14 @@ python .\installer\configure.py --ssh-host my-linux-host --host-root 'D:\Apps\Co
 pwsh -NoProfile -File .\install.ps1
 ```
 
-如果同时接入 T3 Code，可改为 `pwsh -NoProfile -File .\install.ps1 -WithT3`；如果仅使用 T3 Code 且本机未安装 CodexHost 桌面端，可改用独立模式：
+如果同时接入 T3 Code，可改为 `pwsh -NoProfile -File .\install.ps1 -WithT3 -WithT3Native`（同时安装官方 `claudeAgent` 原生 Shim **`Claude VPS`** 与 Local ACP 适配器 **`Claude VPS Bridge`**）；如果仅使用 T3 Code 且本机未安装 CodexHost 桌面端，可改用独立模式：
 
 ```powershell
 python .\installer\configure.py --ssh-host my-linux-host --t3-only
-pwsh -NoProfile -File .\install.ps1 -T3Only
+pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native
 ```
 
-详细用法见 [T3 Code 适配说明](T3CODE.md)。
+详细对比与独立管理命令见 [T3 Code 适配与使用指南](T3CODE.md)。
 
 配置命令通过 SSH 验证远端可执行文件，生成 `bridge-config.local.json`。已有配置会保留，该文件不进入 Git。`python` 需为 3.11 及以上版本，装有 Python 启动器时也可以用 `py -3`；安装脚本优先 `py -3`，其次是真实 Python 3.11+，排除 WindowsApps 商店占位程序，全程使用选中的同一解释器。
 

@@ -5,8 +5,11 @@
 | 模块 | 职责 | 不应承担 |
 |---|---|---|
 | `plugin/plugin.mjs` | 满足 CodexHost Harness 接口，对应本机项目与远端会话 | 提供模型账号、代登录 |
+| `t3-native/` | T3 Code 官方 `claudeAgent` 原生 Shim（`claude-vps-shim.exe`/`.mjs` + `http-mcp-client.mjs`），直通 `stream-json` 并在本机隔离 T3 HTTP MCP 凭据 | 修改默认 `claudeAgent` 或将 T3 Token 发往 VPS |
+| `t3/` | T3 Code Local ACP 适配器（`claude-vps-acp.mjs` / `acp-helpers.mjs`），提供工具卡片翻译、MCP-over-ACP、Plan 面板、`/usage` & `/status` | 绕过 T3 审批或修改 T3 宿主程序 |
 | `plugin/runtime/ssh-transport.mjs` | 持久连接、同一 relay 的消息确认与恢复 | 在结果未知时用新编号重做操作 |
 | `remote/remote-server.mjs` | 通过受管理的上游适配器运行官方 Claude，关联本机工具请求 | 保存整个本机项目的同步副本 |
+| `remote/claude-stream-relay.mjs` | 为 `t3-native/` 原生 Shim 直连 VPS 原版 Claude Code `stream-json`，复用 `tool-bridge.mjs` 与 `workspace-guard.py` | 实现反代、篡改登录态或修改 VPS 全局 `~/.claude` |
 | `plugin/runtime/workspace-runtime.mjs` | 本机文件、任务、权限与结果登记 | 将目录检查宣传为系统沙箱 |
 | `plugin/runtime/project-environment.mjs` | 读取和解释支持的本机规则、能力与 Hooks | 假装所有 Claude 原生选项已兼容 |
 | 可选 MCP 模块 | 声明工具的执行位置、权限和生命周期 | 决定基础桥接能否安装 |

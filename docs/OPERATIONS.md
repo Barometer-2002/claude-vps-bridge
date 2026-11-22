@@ -147,6 +147,23 @@ python .\installer\deploy-transaction.py --rollback .\transactions\TRANSACTION_I
 
 **保留执行安装的源码目录和事务记录，直到确认不再需要回滚。** 它们已被 Git 忽略，不应发布。
 
+## T3 Code 接入诊断、升级与卸载
+
+- **状态检查**：
+
+```powershell
+node .\t3-native\manage-native.mjs status   # 检查独立原生 Claude VPS (driver: claudeAgent)
+node .\t3\manage.mjs status                 # 检查 Local ACP 适配器 Claude VPS Bridge
+```
+
+- **同步升级**：重新运行 `pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native`（纯 T3）或 `-WithT3 -WithT3Native`（双宿共存）。
+- **独立卸载（互不影响，保留会话数据）**：
+
+```powershell
+node .\t3-native\manage-native.mjs uninstall   # 仅移除 claude-vps，保留 claude-home
+node .\t3\manage.mjs uninstall                 # 仅移除 claude-vps-bridge，保留 sessions 映射
+```
+
 ## 常见停止点
 
 | 表现 | 优先检查 |

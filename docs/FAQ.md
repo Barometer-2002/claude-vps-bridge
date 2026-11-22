@@ -93,3 +93,19 @@ Default 是 Claude 适配器的模型选择策略，Auto 是思考策略。指�
 ## 能按原生会话 ID 查找 CodexHost 聊天吗？
 
 当前宿主公开 CLI 不提供这项查询，插件不再读取内部 `mapping-store`。请使用明确的 CodexHost 聊天链接或原生客户端的历史入口；这是能力缺口，不表示原生聊天丢失。
+
+## T3 Code 中「Claude VPS（原生 Shim）」和「Claude VPS Bridge（ACP）」怎么选？
+
+- 日常主力推荐 **`Claude VPS`**（`t3-native/`，官方 `claudeAgent` 驱动）：原生支持顶部 5h/7d 实时额度圆环、单套原生权限、自动标题/Commit/PR（`textGeneration`）、`effort`/`ultracode`/`fastMode` 与缓存过期自动压缩。
+- 若更偏好把 `windows-workspace` 解包渲染为原生 `Read`/`Edit`(红绿 Diff)/`Grep`/`PowerShell` 工具卡片，或常用零消耗 `/usage`、`/status` 与本地 `$skill` 补全菜单，可选择 **`Claude VPS Bridge`**（`t3/`，Local ACP 适配器）。
+- 两者注册为不同的 Provider 实例，可完全共存、按会话自由切换，详见 [T3 Code 适配说明](T3CODE.md)。
+
+## 接入 T3 Code 会影响本机原生 Claude 或破坏 VPS 环境稳定性吗？
+
+不会。原生 Shim 在 T3 Code 中注册为独立的 `claude-vps` 实例并使用隔离的 `claude-home`，不改动默认 `claudeAgent` 实例、不碰本机 `~/.claude`，也不修改 T3 Code 任何程序文件。
+
+VPS 上始终运行官方原版 `claude` CLI 并由 VPS 直接访问 Anthropic，不使用反代、不注入或逆向官方二进制，对 VPS 账号环境来说与你在 VPS 终端里直接使用官方 Claude Code 一致。
+
+## 只用 T3 Code，必须安装 CodexHost 桌面端吗？
+
+不需要。使用 `python .\installer\configure.py --ssh-host <host> --t3-only` 与 `pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native` 即可独立部署运行。

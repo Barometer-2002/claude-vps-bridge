@@ -1,5 +1,29 @@
 # 更新记录
 
+## T3 Code 深度适配与原生 Shim · 2026-11-22
+
+在保持与 CodexHost 0.20.0+ 及 Bridge 0.14.1 完全兼容的基础上，新增两套可并存的 T3 Code 接入方案与纯 T3 独立安装模式：
+
+**官方 `claudeAgent` 原生 Shim（`t3-native/`）**
+
+- 新增独立的 `claude-vps`（显示名 **Claude VPS**，`driver: claudeAgent`）实例与专属 `claude-home`，不修改默认 `claudeAgent` 与本机 `~/.claude`。
+- 新增 Windows 轻量启动器（`claude-vps-shim.cs` → `.exe`）、Node 代理（`claude-vps-shim.mjs`）、本机 Streamable HTTP MCP 客户端（`http-mcp-client.mjs`）及 VPS 直通中继（`remote/claude-stream-relay.mjs`）。
+- 完整直通 VPS 原版 Claude Code 标准 `stream-json` 协议：解锁顶部 5h/7d 实时额度圆环（`get_usage` + `rate_limit_event`）、单套原生权限（`can_use_tool`）、原生 `textGeneration`、`effort`/`ultracode`/`fastMode` 与缓存过期自动压缩。
+- 在 Windows 本机拦截 `--mcp-config` 与动态 `control_request: mcp_set_servers`，将 T3 本地 `127.0.0.1` HTTP 端点与 Bearer Token 严格留在 Windows，经既有 SSH 双向通道与 `mcp-local.py --server t3-code` 完成全量 T3 MCP 工具透传；放行 `ToolSearch` 支持延迟加载，并将 `bridge-instructions.md` 与本机项目规则合并入 `initialize.appendSystemPrompt`。
+
+**Local ACP 适配器（`t3/`，v1.1.0 → v1.3.1）**
+
+- 支持完整模型目录、按模型过滤的推理深度（`thought_level` + `_meta.reasoningEfforts`）、`Claude Mode` 与 Plan 开关联动（可选 `T3_CLAUDE_HIDE_MODE_OPTION=1`）、上下文 `usage_update`、零消耗 `/usage` 与 `/status`、≥90% 额度通知、`/compact` 压缩、交互式提问与计划审批、图片附件及 `new`/`load`/`resume`/`fork`/`list`/`close`/`delete` 全生命周期。
+- 接入 MCP-over-ACP（`mcpCapabilities.acp = true`），严格按 `acpSessionId` 隔离多会话，Plan 模式采用 Fail-Closed 只读白名单，支持 `T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与断线自动重连。
+- 将 `windows-workspace` 调用自动解包并翻译为原生 `Read` / `List` / `Grep` / `Edit`(红绿 Diff) / `Write` / `PowerShell` / `Batch` 卡片与可点击 Windows 绝对路径 `locations`，同步优化权限审批弹窗可读性并过滤 PowerShell 进度 CLIXML 噪音。
+- 放行 `TodoWrite`、`TaskCreate`、`TaskUpdate`、`TaskList`、`TaskGet`、`ExitPlanMode`、`EnterPlanMode`，实现跨轮持久的 T3 Plan 任务进度面板与历史会话重建。
+- 自动扫描本机 `.claude/{skills,commands}` 注入 T3 补全菜单并支持每轮热刷新；远端同步支持 `$skill` 与 `/command`（含 `<user_request>` 包裹）大小写不敏感匹配与 `$ARGUMENTS` 注入执行。
+- 移除 `remote/workspace-guard.py` 所有 `updatedInput` 改写（未转义单引号直接拒绝并提示 `\u0027`），彻底修复 `auto` 模式下简写与 JSON 并发调用冲突。
+
+**安装与校验**
+
+- `installer/configure.py` 与 `install.ps1` 新增 `--t3-only` / `-T3Only` / `-WithT3` / `-WithT3Native` 支持；`scripts/check.py` 扩展校验 `t3/` 与 `t3-native/` 源码及文件清单。
+
 ## 0.14.1 · 2026-11-18
 
 - 线路切换时记录归类后的失败原因与时间（例如 `dns-failed`、`cloudflared-error`、`connection-timeout`），`diagnose.mjs` 一并显示；原始 SSH/cloudflared 报错只在内存中归类，不写盘也不输出。

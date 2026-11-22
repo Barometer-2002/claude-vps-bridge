@@ -60,8 +60,14 @@ if ($WithT3Native) {
     Invoke-T3NativeManage 'install'
 }
 
-if ($T3Only) {
-    Write-Host 'Installed for T3 Code. Refresh Claude VPS Bridge in T3 Code (Settings -> Providers) or restart T3 Code, then check with: node .\t3\manage.mjs status'
+if ($T3Only -and $WithT3Native) {
+    Write-Host 'Installed for T3 Code (Native Claude VPS + ACP Claude VPS Bridge). Refresh Providers in T3 Code or restart T3 Code, then check with: node .\t3-native\manage-native.mjs status ; node .\t3\manage.mjs status'
+} elseif ($T3Only) {
+    Write-Host 'Installed for T3 Code (ACP Claude VPS Bridge). Refresh Claude VPS Bridge in T3 Code (Settings -> Providers) or restart T3 Code, then check with: node .\t3\manage.mjs status'
+} elseif ($WithT3 -and $WithT3Native) {
+    Write-Host 'Installed for CodexHost and T3 Code (Native Claude VPS + ACP Claude VPS Bridge). For CodexHost: finish running tasks, run "codexhost stop", then reopen CodexHost. For T3 Code: check with node .\t3-native\manage-native.mjs status'
+} elseif ($WithT3Native) {
+    Write-Host 'Installed for CodexHost and T3 Code (Native Claude VPS). For CodexHost: finish running tasks, run "codexhost stop", then reopen CodexHost. For T3 Code: check with node .\t3-native\manage-native.mjs status'
 } elseif ($WithT3) {
     Write-Host 'Installed for CodexHost and T3 Code. For CodexHost: finish running tasks, run "codexhost stop", then reopen CodexHost. For T3 Code: refresh Claude VPS Bridge in Settings -> Providers or restart T3 Code.'
 } else {
