@@ -47,6 +47,10 @@
 
 更多技术细节与环境变量配置见 [T3 Code 适配与使用指南](docs/T3CODE.md)。
 
+### T3 Code 界面美化（可选）
+
+Windows 用户可单独安装 [T3 Code Enhancer](https://github.com/Barometer-2002/t3code-enhancer)，使用明暗主题、工作过程折叠、模型与思考深度面板，以及用量和上下文统计。项目 README 提供安装说明、版本兼容性和[界面预览](https://github.com/Barometer-2002/t3code-enhancer#界面预览)。
+
 ---
 
 ## 快速开始
