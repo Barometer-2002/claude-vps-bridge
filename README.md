@@ -26,7 +26,7 @@
 
 ## 它解决什么问题
 
-一句话概括：**在隔离环境下，达到 Windows 本机原生使用 Claude Code 的效果。**
+**Claude Code 在 VPS 运行，项目与工具留在 Windows。** 本项目基于 Claude VPS Bridge，新增 T3 Code 原生接入，并兼容 CodexHost。
 
 很多时候你希望把 **Claude Code 的账号登录态和网络出口固定、隔离在一台干净的 Linux VPS 上**（不碰反代、不折腾本机代理环境、不把登录态带回本地），但日常干活的**代码仓库、PowerShell、编译工具、GPU、本地 MCP、图片和 `.claude` 规则**全都在 Windows 电脑上。
 
