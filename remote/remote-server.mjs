@@ -390,8 +390,10 @@ async function request(method, params, signal) {
         const update=contextUpdate(binding.contextState,environment);binding.pendingContext=update.state;
         send({timing:{phase:'context-injection',mode:update.mode,bytes:Buffer.byteLength(update.text),fullBytes:Buffer.byteLength(environment.text)}});
         const context=[update.text,'Current workspace permission mode: '+binding.permissionMode,...[...(binding.startContext??[]),...hooks].map(h=>h.hookSpecificOutput?.additionalContext??h.additionalContext??'')];binding.startContext=[];
-        const slash=prompt.match(/^\s*\/([\w-]+)(?:\s+([\s\S]*))?$/);
-        if(slash){const item=environment.capabilities.find(c=>['skill','command'].includes(c.kind)&&c.name===slash[1]);if(item){const value=await localControl(binding,'capability-context',{id:item.id});context.push('User explicitly invoked '+item.id+':\n'+value.content.replaceAll('$ARGUMENTS',slash[2]??''));command={...command,input:[{type:'text',text:'Execute the explicitly invoked local capability '+item.id+'. Arguments: '+(slash[2]??'')}]};}}
+        const userReqMatch=prompt.match(/<user_request>\s*([\s\S]*?)\s*<\/user_request>/i);
+        const capCandidate=(userReqMatch?userReqMatch[1]:prompt).trim();
+        const capInvoke=capCandidate.match(/^([/$])([\w-]+)(?:\s+([\s\S]*))?$/);
+        if(capInvoke){const prefix=capInvoke[1],capName=capInvoke[2],capArgs=capInvoke[3]??'';const item=environment.capabilities.find(c=>(prefix==='$'?c.kind==='skill':['skill','command'].includes(c.kind))&&c.name===capName);if(item){const value=await localControl(binding,'capability-context',{id:item.id});context.push('User explicitly invoked '+item.id+':\n'+value.content.replaceAll('$ARGUMENTS',capArgs));command={...command,input:[{type:'text',text:'Execute the explicitly invoked local capability '+item.id+'. Arguments: '+capArgs}]};}}
         const pending=(environment.jobs??[]).filter(j=>['starting','queued','running','unresponsive','interrupted'].includes(j.status));
         if(pending.length)context.push('Existing local tasks; query these IDs, never resubmit uncertain work:\n'+JSON.stringify(pending.map(({requestId,status,cwd,startedAt})=>({requestId,status,cwd,startedAt}))));
         if(params.attachments?.length){await localControl(binding,'attachments',{paths:params.attachments});for(const file of params.attachments){const media=await localMedia(binding,file);context.push('Explicitly attached local media (cached images/PDFs use native Read; local video remains a Windows file):\n'+JSON.stringify(media));}}

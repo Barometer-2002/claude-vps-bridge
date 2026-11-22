@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const ADAPTER_VERSION = '1.2.1';
+export const ADAPTER_VERSION = '1.3.0';
 export const DEFAULT_MODEL_ID = 'default';
 export const DEFAULT_MODEL = { modelId: DEFAULT_MODEL_ID, name: 'Claude VPS default' };
 
@@ -891,6 +891,8 @@ export function extractFileChangePresentation(item) {
         ...(typeof change.oldText === 'string' ? { oldText: change.oldText } : {}),
         newText: change.newText,
       });
+    } else if (typeof change.unifiedDiff === 'string' && change.unifiedDiff.trim()) {
+      summaryLines.push(change.unifiedDiff.trim());
     } else if (typeof change.diff === 'string' && change.diff.trim()) {
       summaryLines.push(change.diff.trim());
     } else if (typeof change.patch === 'string' && change.patch.trim()) {
@@ -914,6 +916,274 @@ export function extractFileChangePresentation(item) {
   return {
     title,
     locations: locations.length ? locations : undefined,
+    content,
+  };
+}
+
+const WORKSPACE_CMD_PREFIX_RE = /^\s*(?:\/usr\/local\/bin\/|\/[^\s'"]+\/)?windows-workspace\s+/;
+
+export function parseWorkspaceCommand(command) {
+  if (typeof command !== 'string' || !WORKSPACE_CMD_PREFIX_RE.test(command)) return null;
+  const rest = command.replace(WORKSPACE_CMD_PREFIX_RE, '').trim();
+  const jsonMatch = rest.match(/^'(\{[\s\S]*\})'$/) ?? rest.match(/^"(\{[\s\S]*\})"$/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      if (parsed && typeof parsed === 'object' && typeof parsed.action === 'string') return parsed;
+    } catch {
+      return null;
+    }
+  }
+  const simple = rest.match(/^(read|list|search|status|info|jobs)(?:\s+([\s\S]*))?$/);
+  if (!simple) return null;
+  const action = simple[1];
+  const argsStr = (simple[2] ?? '').trim();
+  if (action === 'status' || action === 'info' || action === 'jobs') return { action };
+  const targetMatch = argsStr.match(/^'([^']+)'|^"([^"]+)"|^(\S+)/);
+  const targetPath = targetMatch ? (targetMatch[1] ?? targetMatch[2] ?? targetMatch[3]) : '.';
+  if (action === 'search') {
+    const patMatch = argsStr.match(/--pattern\s+(?:'([^']+)'|"([^"]+)"|(\S+))/);
+    return { action, path: targetPath, ...(patMatch ? { pattern: patMatch[1] ?? patMatch[2] ?? patMatch[3] } : {}) };
+  }
+  return { action, path: targetPath };
+}
+
+function resolveWinPath(sessionCwd, relOrAbs) {
+  if (typeof relOrAbs !== 'string' || !relOrAbs.trim()) return null;
+  const trimmed = relOrAbs.trim();
+  if (path.win32.isAbsolute(trimmed)) return trimmed;
+  if (typeof sessionCwd === 'string' && sessionCwd.trim()) {
+    return path.win32.resolve(sessionCwd, trimmed);
+  }
+  return trimmed;
+}
+
+function displayRelPath(sessionCwd, relOrAbs) {
+  if (typeof relOrAbs !== 'string' || !relOrAbs.trim()) return '.';
+  const trimmed = relOrAbs.trim();
+  if (sessionCwd && path.win32.isAbsolute(trimmed)) {
+    const rel = path.win32.relative(sessionCwd, trimmed);
+    if (rel && !rel.startsWith('..') && !path.win32.isAbsolute(rel)) return rel.replaceAll('\\', '/');
+  }
+  return trimmed.replaceAll('\\', '/');
+}
+
+function compactOneLine(value, maxLen = 72) {
+  if (typeof value !== 'string') return '';
+  const first = value.trim().split(/\r?\n/).find(l => l.trim()) ?? '';
+  const cleaned = first.replace(/\s+/g, ' ').trim();
+  return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen - 1)}…` : cleaned;
+}
+
+function parseWorkspaceEnvelope(output) {
+  const raw = extractTextOutput(output).trim();
+  if (!raw || !raw.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && parsed.bridge === 'windows-workspace-v1') return parsed;
+  } catch {
+    // Not a complete JSON envelope yet.
+  }
+  return null;
+}
+
+function formatWorkspaceEnvelopeContent(op, envelope, absPath) {
+  if (!envelope) return null;
+  if (envelope.ok === false) {
+    const msg = envelope.error?.message ?? 'Operation failed';
+    const code = envelope.error?.code ? `[${envelope.error.code}] ` : '';
+    return [{ type: 'content', content: { type: 'text', text: `${code}${msg}` } }];
+  }
+  const data = envelope.data;
+  if (!data || typeof data !== 'object') return null;
+
+  if (op.action === 'read' && typeof data.content === 'string') {
+    const startLine = Number.isInteger(data.offset) ? data.offset + 1 : 1;
+    const header = Number.isInteger(data.totalLines)
+      ? `[${data.path ?? op.path} · lines ${startLine}-${Math.min(data.totalLines, startLine + data.content.split('\n').length - 1)} / ${data.totalLines}${data.truncated ? ' (truncated)' : ''}]\n`
+      : '';
+    return [{ type: 'content', content: { type: 'text', text: `${header}${data.content}` } }];
+  }
+
+  if (op.action === 'list' && Array.isArray(data.entries)) {
+    const lines = data.entries.map(e => `${e.kind === 'directory' ? `${e.name}/` : e.name}`);
+    if (data.excludedEntries > 0) lines.push(`(${data.excludedEntries} excluded)`);
+    return [{ type: 'content', content: { type: 'text', text: lines.join('\n') || '(empty directory)' } }];
+  }
+
+  if (op.action === 'search') {
+    const matches = Array.isArray(data.matches) ? data.matches : [];
+    const lines = matches.map(m => {
+      const loc = m.path ?? m.file ?? '';
+      const ln = m.line ?? m.lineNumber;
+      const snippet = typeof m.text === 'string' ? m.text.trim() : (typeof m.lineText === 'string' ? m.lineText.trim() : '');
+      return `${loc}${ln ? `:${ln}` : ''}${snippet ? `: ${snippet}` : ''}`;
+    });
+    if (data.hasMore) lines.push('… (more results available)');
+    return [{ type: 'content', content: { type: 'text', text: lines.join('\n') || 'No matches found.' } }];
+  }
+
+  if (op.action === 'edit' || op.action === 'write') {
+    const out = [];
+    const targetPath = data.path ?? absPath;
+    if (op.action === 'edit' && typeof targetPath === 'string' && typeof op.oldText === 'string' && typeof op.newText === 'string') {
+      out.push({ type: 'diff', path: targetPath, oldText: op.oldText, newText: op.newText });
+    } else if (op.action === 'write' && typeof targetPath === 'string' && typeof op.content === 'string') {
+      out.push({ type: 'diff', path: targetPath, newText: op.content });
+    } else if (typeof data.change?.unifiedDiff === 'string' && data.change.unifiedDiff.trim()) {
+      out.push({ type: 'content', content: { type: 'text', text: data.change.unifiedDiff.trim() } });
+    }
+    if (data.unchanged) {
+      out.push({ type: 'content', content: { type: 'text', text: 'File unchanged.' } });
+    }
+    return out.length ? out : null;
+  }
+
+  if (op.action === 'run' || op.action === 'job') {
+    const parts = [];
+    if (typeof data.stdout === 'string' && data.stdout.trim()) parts.push(data.stdout.trimEnd());
+    if (typeof data.stderr === 'string' && data.stderr.trim()) parts.push(`[stderr]\n${data.stderr.trimEnd()}`);
+    if (typeof data.content === 'string' && data.content.trim()) parts.push(data.content.trimEnd());
+    const meta = [];
+    if (data.status) meta.push(`status=${data.status}`);
+    if (typeof data.exitCode === 'number') meta.push(`exitCode=${data.exitCode}`);
+    if (data.error) meta.push(`error=${data.error}`);
+    if (!parts.length && meta.length) parts.push(meta.join(' · '));
+    else if (meta.length && data.status && data.status !== 'succeeded') parts.push(`[${meta.join(' · ')}]`);
+    return parts.length ? [{ type: 'content', content: { type: 'text', text: parts.join('\n\n') } }] : null;
+  }
+
+  return null;
+}
+
+export function presentWorkspaceToolCall(item, sessionCwd, outcome) {
+  if (!item || typeof item !== 'object') return null;
+  const op = parseWorkspaceCommand(item.command);
+  if (!op) return null;
+
+  const rel = displayRelPath(sessionCwd, op.path);
+  const abs = resolveWinPath(sessionCwd, op.path);
+  const envelope = outcome ? parseWorkspaceEnvelope(item.output) : null;
+
+  let title = `Workspace ${op.action}`;
+  let kind = 'other';
+  let name = 'Workspace';
+  let locations = abs ? [{ path: abs }] : undefined;
+  let rawInput = op;
+  let content = [];
+
+  if (op.action === 'read') {
+    kind = 'read';
+    name = 'Read';
+    const range = Number.isInteger(op.offset) || Number.isInteger(op.limit)
+      ? ` (L${(op.offset ?? 0) + 1}${op.limit ? `-${(op.offset ?? 0) + op.limit}` : '+'})`
+      : '';
+    title = `Read ${rel}${range}`;
+    if (abs) locations = [{ path: abs, ...(Number.isInteger(op.offset) && op.offset > 0 ? { line: op.offset + 1 } : {}) }];
+    rawInput = { path: op.path, ...(op.offset !== undefined ? { offset: op.offset } : {}), ...(op.limit !== undefined ? { limit: op.limit } : {}) };
+  } else if (op.action === 'list') {
+    kind = 'read';
+    name = 'List';
+    title = `List ${rel}`;
+    rawInput = { path: op.path ?? '.' };
+  } else if (op.action === 'search') {
+    kind = 'search';
+    name = 'Grep';
+    const pat = compactOneLine(String(op.pattern ?? ''), 40);
+    title = pat
+      ? `Search "${pat}"${rel && rel !== '.' ? ` in ${rel}` : ''}`
+      : `Search ${rel}`;
+    rawInput = { pattern: op.pattern, path: op.path ?? '.' };
+  } else if (op.action === 'edit') {
+    kind = 'edit';
+    name = 'Edit';
+    title = `Edit ${rel}`;
+    if (abs && typeof op.oldText === 'string' && typeof op.newText === 'string') {
+      content.push({ type: 'diff', path: abs, oldText: op.oldText, newText: op.newText });
+    }
+    rawInput = { path: op.path, oldText: op.oldText, newText: op.newText };
+  } else if (op.action === 'write') {
+    kind = 'edit';
+    name = 'Write';
+    title = `Write ${rel}`;
+    if (abs && typeof op.content === 'string') {
+      content.push({ type: 'diff', path: abs, newText: op.content });
+    }
+    rawInput = { path: op.path };
+  } else if (op.action === 'run') {
+    kind = 'execute';
+    name = typeof op.executable === 'string' && op.executable.trim() ? op.executable.trim() : 'PowerShell';
+    const cmdText = typeof op.script === 'string' && op.script.trim()
+      ? op.script.trim()
+      : [op.executable, ...(Array.isArray(op.args) ? op.args : [])].filter(Boolean).join(' ');
+    const summary = compactOneLine(cmdText, 76) || 'Run local command';
+    title = summary;
+    const workDir = resolveWinPath(sessionCwd, op.workingDirectory);
+    locations = workDir ? [{ path: workDir }] : undefined;
+    rawInput = { command: cmdText, ...(op.workingDirectory ? { workingDirectory: op.workingDirectory } : {}) };
+  } else if (op.action === 'job' || op.action === 'jobs') {
+    kind = 'execute';
+    name = 'Task';
+    title = op.action === 'jobs'
+      ? 'List background tasks'
+      : `Task ${op.operation ?? 'status'}${op.requestId ? ` (${op.requestId})` : ''}`;
+    locations = undefined;
+  } else if (op.action === 'batch') {
+    kind = 'read';
+    name = 'Batch';
+    const reqs = Array.isArray(op.requests) ? op.requests : [];
+    const counts = {};
+    const locs = [];
+    const seen = new Set();
+    for (const r of reqs) {
+      if (!r || typeof r !== 'object') continue;
+      counts[r.action] = (counts[r.action] ?? 0) + 1;
+      const p = resolveWinPath(sessionCwd, r.path);
+      if (p && !seen.has(p)) {
+        seen.add(p);
+        locs.push({ path: p });
+      }
+    }
+    const summary = Object.entries(counts).map(([a, n]) => `${a} ×${n}`).join(', ');
+    title = summary ? `Batch (${summary})` : `Batch (${reqs.length})`;
+    locations = locs.length ? locs : undefined;
+  } else if (op.action === 'capability') {
+    kind = 'read';
+    name = 'Skill';
+    title = `Load ${op.id ?? 'capability'}`;
+    locations = undefined;
+  } else if (op.action === 'isolation') {
+    kind = 'execute';
+    name = 'Worktree';
+    title = `Worktree ${op.operation ?? 'status'}`;
+    locations = undefined;
+  } else if (op.action === 'artifact' || op.action === 'media') {
+    kind = 'read';
+    name = op.action === 'media' ? 'Media' : 'Artifact';
+    title = `${name} ${rel}`;
+  } else if (op.action === 'agent') {
+    kind = 'other';
+    name = 'Agent';
+    const argvText = Array.isArray(op.argv) ? compactOneLine(op.argv.join(' '), 60) : '';
+    title = argvText ? `Agent ${argvText}` : 'Agent';
+    locations = undefined;
+  } else if (op.action === 'status' || op.action === 'info' || op.action === 'context') {
+    kind = 'read';
+    name = 'Workspace';
+    title = `Inspect workspace ${op.action}`;
+  }
+
+  if (envelope) {
+    const formatted = formatWorkspaceEnvelopeContent(op, envelope, abs);
+    if (formatted) content = formatted;
+  }
+
+  return {
+    title,
+    kind,
+    name,
+    locations,
+    rawInput,
     content,
   };
 }

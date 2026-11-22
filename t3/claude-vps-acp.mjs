@@ -27,7 +27,9 @@ import {
   isT3McpToolAllowed,
   mapElicitationAnswers,
   parseT3McpPolicy,
+  parseWorkspaceCommand,
   pickValidThinkingId,
+  presentWorkspaceToolCall,
   resolveThinkingOptionsForModel,
 } from './acp-helpers.mjs';
 
@@ -564,20 +566,25 @@ function displayItem(session, turn, item, outcome) {
         update(session, { sessionUpdate: 'plan', entries: planEntries });
       }
     }
-    const content = toolContent(item);
-    const locations = toolLocations(item);
-    const rawName = typeof item.toolName === 'string' && item.toolName.trim()
-      ? item.toolName.trim()
-      : (typeof item.tool === 'string' && item.tool.trim() ? item.tool.trim() : undefined);
+    const translated = presentWorkspaceToolCall(item, session.cwd, outcome);
+    const content = translated ? (translated.content.length ? translated.content : (outcome ? toolContent(item) : [])) : toolContent(item);
+    const locations = translated ? translated.locations : toolLocations(item);
+    const rawName = translated
+      ? translated.name
+      : (typeof item.toolName === 'string' && item.toolName.trim()
+          ? item.toolName.trim()
+          : (typeof item.tool === 'string' && item.tool.trim() ? item.tool.trim() : undefined));
     const status = outcome ? (outcome.status === 'succeeded' ? 'completed' : 'failed') : 'in_progress';
     update(session, {
       sessionUpdate: previous ? 'tool_call_update' : 'tool_call',
       toolCallId: item.itemId,
-      title: toolTitle(item),
-      kind: toolKind(item),
+      title: translated ? translated.title : toolTitle(item),
+      kind: translated ? translated.kind : toolKind(item),
       status,
       ...(rawName ? { name: rawName } : {}),
-      ...(item.arguments === undefined ? {} : { rawInput: item.arguments }),
+      ...(translated
+        ? { rawInput: translated.rawInput }
+        : (item.arguments === undefined ? {} : { rawInput: item.arguments })),
       ...(outcome && item.output !== undefined ? { rawOutput: item.output } : {}),
       ...(locations ? { locations } : {}),
       ...(content.length ? { content } : {}),
@@ -608,13 +615,18 @@ async function respondToInteraction(session, turn, interaction) {
       const options = interaction.actions
         .filter(action => Object.hasOwn(permissionKinds, action.effect))
         .map(action => ({ optionId: action.id, name: action.label, kind: permissionKinds[action.effect] }));
+      const translated = item ? presentWorkspaceToolCall(item, session.cwd, null) : null;
+      const approvalLocations = translated?.locations ?? (item ? toolLocations(item) : undefined);
+      const approvalTitle = translated
+        ? [translated.title, interaction.description].filter(Boolean).join('\n')
+        : [interaction.title, interaction.description, item?.command].filter(Boolean).join('\n');
       const reply = await askClient('session/request_permission', {
         sessionId: session.id,
         toolCall: {
           toolCallId: item?.itemId ?? interaction.itemId ?? interactionId,
-          title: [interaction.title, interaction.description, item?.command].filter(Boolean).join('\n'),
-          ...(item ? { kind: toolKind(item) } : {}),
-          ...(item && toolLocations(item) ? { locations: toolLocations(item) } : {}),
+          title: approvalTitle,
+          ...(translated ? { kind: translated.kind } : (item ? { kind: toolKind(item) } : {})),
+          ...(approvalLocations ? { locations: approvalLocations } : {}),
         },
         options,
       }, controller.signal).catch(() => null);
@@ -696,7 +708,7 @@ async function consume(session) {
           } else if (item && event.update?.type === 'output.append' && typeof event.update.text === 'string') {
             const nextOutput = typeof item.output === 'string' ? item.output + event.update.text : event.update.text;
             turn.items.set(event.itemId, { ...item, output: nextOutput });
-            if (event.update.text.length > 0) {
+            if (event.update.text.length > 0 && !parseWorkspaceCommand(item.command)) {
               update(session, {
                 sessionUpdate: 'tool_call_content_chunk',
                 toolCallId: item.itemId,
@@ -750,34 +762,43 @@ async function consume(session) {
   }
 }
 
+async function syncAvailableCommands(session, force = false) {
+  if (!sessions.has(session.id) || session.closing) return;
+  let availableCommands = AVAILABLE_COMMANDS;
+  if (typeof loadProjectEnvironment === 'function') {
+    try {
+      const projectEnv = await loadProjectEnvironment(session.cwd);
+      const built = buildAvailableCommands(projectEnv);
+      availableCommands = built.commands;
+      session.localCapabilities = {
+        skills: built.localSkillCount,
+        commands: built.localCommandCount,
+        error: null,
+      };
+    } catch (err) {
+      session.localCapabilities = {
+        skills: 0,
+        commands: 0,
+        error: err?.message ?? '加载失败',
+      };
+    }
+  }
+  if (!sessions.has(session.id) || session.closing) return;
+  const sig = JSON.stringify(availableCommands);
+  if (!force && sig === session.lastCommandsSignature) return;
+  session.lastCommandsSignature = sig;
+  update(session, {
+    sessionUpdate: 'available_commands_update',
+    availableCommands,
+  });
+}
+
 function schedulePostOpenNotifications(session) {
   setImmediate(async () => {
     if (!sessions.has(session.id) || session.closing) return;
     session.initialized = true;
-    let availableCommands = AVAILABLE_COMMANDS;
-    if (typeof loadProjectEnvironment === 'function') {
-      try {
-        const projectEnv = await loadProjectEnvironment(session.cwd);
-        const built = buildAvailableCommands(projectEnv);
-        availableCommands = built.commands;
-        session.localCapabilities = {
-          skills: built.localSkillCount,
-          commands: built.localCommandCount,
-          error: null,
-        };
-      } catch (err) {
-        session.localCapabilities = {
-          skills: 0,
-          commands: 0,
-          error: err?.message ?? '加载失败',
-        };
-      }
-    }
+    await syncAvailableCommands(session, true);
     if (!sessions.has(session.id) || session.closing) return;
-    update(session, {
-      sessionUpdate: 'available_commands_update',
-      availableCommands,
-    });
     if (session.latestUsage) {
       emitUsageIfChanged(session, session.latestUsage);
     }
@@ -1103,6 +1124,8 @@ async function prompt({ sessionId, prompt }) {
     return handleLocalSlashCommand(session, slash);
   }
 
+  void syncAvailableCommands(session, false);
+
   const bridgeInput = slash?.name === 'compact' ? null : convertPromptBlocks(prompt);
 
   if (!session.title) {
@@ -1265,6 +1288,9 @@ const methods = {
   'session/load': async params => {
     const { configOptions, models, modes } = await openSession(params);
     const session = getSession(params.sessionId);
+    if (session.title) {
+      update(session, { sessionUpdate: 'session_info_update', title: session.title, updatedAt: new Date().toISOString() });
+    }
     const history = unwrap(await session.native.readSnapshot());
     for (const turn of history.turns ?? []) {
       for (const block of turn.input ?? []) {
