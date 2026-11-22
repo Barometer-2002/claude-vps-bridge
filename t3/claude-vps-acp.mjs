@@ -15,6 +15,7 @@ import {
   buildUsageUpdate,
   convertPromptBlocks,
   extractFileChangePresentation,
+  extractSessionTitle,
   extractSlashCommand,
   findCatalogModel,
   formatPercent,
@@ -830,9 +831,9 @@ async function prompt({ sessionId, prompt }) {
   const bridgeInput = slash?.name === 'compact' ? null : convertPromptBlocks(prompt);
 
   if (!session.title) {
-    const firstText = (prompt ?? []).find(b => b?.type === 'text' && b.text?.trim())?.text?.trim();
-    if (firstText && !firstText.startsWith('/')) {
-      session.title = firstText.replace(/\s+/g, ' ').slice(0, 80);
+    const title = extractSessionTitle(prompt);
+    if (title) {
+      session.title = title;
       void persistSession(session).catch(() => {});
     }
   }

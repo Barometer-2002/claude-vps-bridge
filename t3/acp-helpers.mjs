@@ -306,6 +306,28 @@ export function extractSlashCommand(prompt) {
   return { name: match[1].toLowerCase(), arg: (match[2] ?? '').trim() };
 }
 
+export function extractSessionTitle(prompt) {
+  const raw = (prompt ?? []).find(b => b?.type === 'text' && b.text?.trim())?.text;
+  if (!raw) return null;
+  let candidate = raw;
+  const userReq = candidate.match(/<user_request>\s*([\s\S]*?)\s*<\/user_request>/i);
+  if (userReq) {
+    candidate = userReq[1];
+  } else {
+    candidate = candidate
+      .replace(/<t3_code(?:_orchestration)?_instructions>[\s\S]*?<\/t3_code(?:_orchestration)?_instructions>/gi, '')
+      .replace(/<runtime_info>[\s\S]*?<\/runtime_info>/gi, '')
+      .replace(/<pull_request_linking>[\s\S]*?<\/pull_request_linking>/gi, '');
+  }
+  const handoffMarker = candidate.lastIndexOf('\nUser message:\n');
+  if (handoffMarker !== -1 && /Context handoff\s*\(/i.test(candidate.slice(0, handoffMarker))) {
+    candidate = candidate.slice(handoffMarker + '\nUser message:\n'.length);
+  }
+  const cleaned = candidate.replace(/\s+/g, ' ').trim();
+  if (!cleaned || cleaned.startsWith('/')) return null;
+  return cleaned.slice(0, 80);
+}
+
 export function buildQuestionElicitation(interaction) {
   const questions = Array.isArray(interaction?.questions) ? interaction.questions : [];
   if (!questions.length) return null;
