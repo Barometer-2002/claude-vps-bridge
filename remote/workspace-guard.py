@@ -62,7 +62,10 @@ if __name__ == '__main__':
             if decision['decision'] in ('deny','ask','allow'):
                 output.update(permissionDecision=decision['decision'],permissionDecisionReason=decision['reason'])
             if decision.get('additionalContext'):output['additionalContext']=decision['additionalContext']
-            if re.match(r'^\s*'+WORKSPACE_PATTERN+r'\s',request['tool_input']['command']):
+            raw_cmd=request['tool_input']['command']
+            raw_match=re.fullmatch(r"\s*"+WORKSPACE_PATTERN+r"\s+'(\{.*\})'\s*",raw_cmd,re.S)
+            needs_rewrite=(not raw_match) or ("'" in raw_match.group(1)) or (not re.match(r"^\s*windows-workspace\s+'",raw_cmd))
+            if needs_rewrite and re.match(r'^\s*'+WORKSPACE_PATTERN+r'\s',raw_cmd):
                 canonical="windows-workspace '"+json.dumps(operation,ensure_ascii=False).replace("'",'\\u0027')+"'"
                 output['updatedInput']={**request['tool_input'],'command':canonical}
             print(json.dumps({'hookSpecificOutput':output}))
@@ -94,7 +97,7 @@ if __name__ == '__main__':
             print(json.dumps({'hookSpecificOutput':output}))
         elif isinstance(name,str) and name.startswith('mcp__t3-code__') and os.environ.get('WINDOWS_T3_MCP')=='1':
             print('{}')
-        elif name in ('AskUserQuestion', 'WebSearch', 'WebFetch'):
+        elif name in ('AskUserQuestion', 'WebSearch', 'WebFetch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'):
             print('{}')
         else:
             print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'This session operates a Windows project. Use windows-workspace with one single-quoted JSON argument, or the literal windows-agent CLI. Native VPS filesystem/shell operations are not this workspace. Use action info for project details.'}}))

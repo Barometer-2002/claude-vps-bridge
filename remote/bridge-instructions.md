@@ -57,4 +57,4 @@ Bash 只是传输通道。每次只发一条命令，参数是一个用单引号
 
 ## MCP
 
-`tavily` 直接联网搜索。`playwright` 控制 Windows 上一个独立的 Chrome：它的 localhost 是 Windows，没有用户的任何登录状态，文件在 `.claude-vps/browser` 下。用完关掉浏览器。某个 MCP 服务出错时，只报告这个服务的错误。
+`tavily` 直接联网搜索。`playwright` 控制 Windows 上一个独立的 Chrome：它的 localhost 是 Windows，没有用户的任何登录状态，文件在 `.claude-vps/browser` 下。用完关掉浏览器。在 T3 Code 会话启用 T3 MCP 透传时，T3 原生工具会以 `mcp__t3-code__<工具名>` 暴露，请直接调用对应 MCP 工具，不要走 shell 的 `acp-mcp-call` 回退。某个 MCP 服务出错时，只报告这个服务的错误。

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const ADAPTER_VERSION = '1.2.0';
+export const ADAPTER_VERSION = '1.2.1';
 export const DEFAULT_MODEL_ID = 'default';
 export const DEFAULT_MODEL = { modelId: DEFAULT_MODEL_ID, name: 'Claude VPS default' };
 
@@ -74,12 +74,46 @@ function normalizePlanPriority(priority) {
   return 'medium';
 }
 
-export function extractPlanEntries(item, taskMap) {
+function extractTextOutput(output) {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output?.content)) {
+    return output.content
+      .filter(b => b?.type === 'text' && typeof b.text === 'string')
+      .map(b => b.text)
+      .join('\n');
+  }
+  return '';
+}
+
+function extractTaskIdFromOutput(output) {
+  const raw = extractTextOutput(output);
+  if (!raw) return null;
+  const hashMatch = raw.match(/\bTask\s+#?([A-Za-z0-9_-]+)\b/i);
+  if (hashMatch) return hashMatch[1];
+  const jsonMatch = raw.match(/"(?:taskId|id)"\s*:\s*"?([A-Za-z0-9_-]+)"?/i);
+  if (jsonMatch) return jsonMatch[1];
+  return null;
+}
+
+function rekeyMapInPlace(map, oldKey, newKey, value) {
+  if (oldKey === newKey || !map.has(oldKey)) {
+    map.set(newKey, value);
+    return;
+  }
+  const entries = [...map.entries()];
+  map.clear();
+  for (const [k, v] of entries) {
+    if (k === oldKey) map.set(newKey, value);
+    else if (k !== newKey) map.set(k, v);
+  }
+}
+
+export function extractPlanEntries(item, taskMap, outcome) {
   const toolName = String(item?.toolName ?? item?.tool ?? '').trim();
   const args = item?.arguments;
   if (!args || typeof args !== 'object') return null;
 
-  if (toolName === 'TodoWrite' && Array.isArray(args.todos)) {
+  if ((toolName === 'Todo' || toolName === 'TodoWrite') && Array.isArray(args.todos)) {
     const entries = [];
     for (const todo of args.todos) {
       if (!todo || typeof todo !== 'object') continue;
@@ -97,12 +131,26 @@ export function extractPlanEntries(item, taskMap) {
   if (toolName === 'TaskCreate' && taskMap instanceof Map) {
     const content = String(args.subject ?? args.description ?? args.activeForm ?? '').trim();
     if (!content) return null;
-    const key = String(args.taskId ?? args.id ?? item.itemId ?? (taskMap.size + 1));
-    taskMap.set(key, {
+    const pendingKey = item.itemId ? `__pending_${item.itemId}` : null;
+    const resolvedId = outcome
+      ? (extractTaskIdFromOutput(item.output) ?? args.taskId ?? args.id ?? null)
+      : (args.taskId ?? args.id ?? null);
+    const entry = {
       content,
       priority: normalizePlanPriority(args.priority),
       status: normalizePlanStatus(args.status),
-    });
+    };
+    if (resolvedId !== null && resolvedId !== undefined) {
+      const finalKey = String(resolvedId);
+      if (pendingKey && taskMap.has(pendingKey)) {
+        rekeyMapInPlace(taskMap, pendingKey, finalKey, entry);
+      } else {
+        taskMap.set(finalKey, entry);
+      }
+    } else {
+      const key = pendingKey ?? String(taskMap.size + 1);
+      taskMap.set(key, entry);
+    }
     return [...taskMap.values()];
   }
 
@@ -130,6 +178,58 @@ export function extractPlanEntries(item, taskMap) {
   }
 
   return null;
+}
+
+const PLAN_MODE_BLOCKED_T3_TOOLS = new Set([
+  'delegate_task',
+  't3_thread_launch',
+  'create_threads',
+  't3_thread_send',
+  't3_thread_send_attachments',
+  't3_thread_interrupt',
+  't3_thread_organize',
+  't3_thread_configure',
+  't3_thread_transfer',
+  'schedule_task',
+  'delete_scheduled_task',
+  'run_scheduled_task_now',
+  't3_project_create',
+  't3_project_update',
+  't3_project_delete',
+  't3_project_clone',
+  't3_environment_preferences_update',
+  't3_theme_set',
+  't3_worktree_handoff',
+  'create_issue',
+  'comment_on_issue',
+  'set_issue_state',
+  'preview_act',
+  'preview_evaluate',
+  'preview_dialog',
+]);
+
+function parseCsvSet(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const items = value.split(',').map(s => s.trim()).filter(Boolean);
+  return items.length ? new Set(items) : null;
+}
+
+export function parseT3McpPolicy(env = process.env) {
+  return {
+    allow: parseCsvSet(env?.T3_MCP_ALLOW_TOOLS),
+    deny: parseCsvSet(env?.T3_MCP_DENY_TOOLS),
+  };
+}
+
+export function isT3McpToolAllowed(toolName, policy, { permissionModeId, enforceMode = false } = {}) {
+  if (typeof toolName !== 'string' || !toolName.trim()) return false;
+  const name = toolName.trim();
+  if (policy?.deny?.has(name)) return false;
+  if (policy?.allow && !policy.allow.has(name)) return false;
+  if (enforceMode && permissionModeId === 'plan' && PLAN_MODE_BLOCKED_T3_TOOLS.has(name)) {
+    return false;
+  }
+  return true;
 }
 
 export function normalizeThinkingOption(entry, catalogThinkingMap) {
@@ -726,14 +826,19 @@ export function formatStatusReport({
       const mcpDetail = t3Mcp.connected
         ? `已连通${typeof t3Mcp.toolCount === 'number' ? ` · ${t3Mcp.toolCount} 个 T3 工具` : ''}`
         : '已开启（等待 VPS Claude 首次握手）';
-      lines.push(`- **T3 MCP 桥接**：${mcpDetail}`);
+      const errSuffix = t3Mcp.lastError ? `（最近错误：${t3Mcp.lastError}）` : '';
+      lines.push(`- **T3 MCP 桥接**：${mcpDetail}${errSuffix}`);
     } else {
       lines.push('- **T3 MCP 桥接**：未启用（当前客户端未注入 ACP MCP 服务）');
     }
   }
 
-  if (localCapabilities && (localCapabilities.skills > 0 || localCapabilities.commands > 0)) {
-    lines.push(`- **本机项目扩展**：${localCapabilities.skills} 个 Skills · ${localCapabilities.commands} 个 Commands（已同步至补全菜单）`);
+  if (localCapabilities) {
+    if (localCapabilities.error) {
+      lines.push(`- **本机项目扩展**：未加载（${localCapabilities.error}）`);
+    } else if (localCapabilities.skills > 0 || localCapabilities.commands > 0) {
+      lines.push(`- **本机项目扩展**：${localCapabilities.skills} 个 Skills · ${localCapabilities.commands} 个 Commands（会话打开时同步至补全菜单）`);
+    }
   }
 
   if (Number.isInteger(usage.contextUsedTokens) && Number.isInteger(usage.contextWindowTokens) && usage.contextWindowTokens > 0) {

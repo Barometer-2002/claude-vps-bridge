@@ -83,8 +83,8 @@ export function createHarnessAdapter(context) {
       const value=await (
         frame.lane==='tool'&&request.action!=='media-export'
           ? handle(request)
-          : (request.action==='mcp'&&request.server==='t3-code'&&typeof context.onMcpRequest==='function'
-              ? context.onMcpRequest(request)
+          : (request.action==='mcp'&&request.server==='t3-code'&&binding.t3Mcp===true&&typeof context.onMcpRequest==='function'
+              ? context.onMcpRequest({...request,...(binding.acpSessionId?{acpSessionId:binding.acpSessionId}:{})})
               : control(request))
       );
       timing({phase:'local-control',action:frame.request.action,ms:performance.now()-started});
@@ -173,10 +173,11 @@ export function createHarnessAdapter(context) {
           await exec(getBridgeConfig().pwshExecutable,['-NoLogo','-NoProfile','-File',EXPORT],{env:{...env,CODEX_THREAD_ID:parent},windowsHide:true,timeout:15000});
         }
         sessionId=randomUUID();channel=new SessionChannel(reason=>faultSession(sessionId,reason)); channels.set(sessionId,channel);
-        const {environment,signal,t3Mcp,...safeInput}=input;
+        const {environment,signal,t3Mcp,acpSessionId,...safeInput}=input;
         const enableT3Mcp=t3Mcp===true&&typeof context.onMcpRequest==='function';
+        const safeAcpSessionId=typeof acpSessionId==='string'&&acpSessionId.length>0?acpSessionId:undefined;
         const workspace=await projectInfo(input.cwd);
-        localBindings.set(sessionId,{cwd:workspace.cwd,projectId:workspace.projectId,parentThread:parent,t3Mcp:enableT3Mcp,requests:new SessionRequests(),readLifetime:new AbortController()});
+        localBindings.set(sessionId,{cwd:workspace.cwd,projectId:workspace.projectId,parentThread:parent,t3Mcp:enableT3Mcp,acpSessionId:safeAcpSessionId,requests:new SessionRequests(),readLifetime:new AbortController()});
         const opened=await rpc('open',{sessionId,input:safeInput,localCwd:input.cwd,parentThread:parent,workspace,t3Mcp:enableT3Mcp,localFeatures:['prepare-turn'],localControl:health.capabilities.includes('duplex-control'),localTools:health.capabilities.includes('duplex-tools')},input.kind==='fork'?180000:60000,options?.signal??signal);
         if(!opened.ok){channel.end();channels.delete(sessionId);localBindings.delete(sessionId);return opened;}
         const metadata=opened.value;

@@ -24,7 +24,9 @@ import {
   formatPromptResponseUsage,
   formatStatusReport,
   formatUsageReport,
+  isT3McpToolAllowed,
   mapElicitationAnswers,
+  parseT3McpPolicy,
   pickValidThinkingId,
   resolveThinkingOptionsForModel,
 } from './acp-helpers.mjs';
@@ -44,6 +46,7 @@ const pendingRequests = new Map();
 const processAbort = new AbortController();
 const mcpConnections = new Map();
 const mcpConnecting = new Map();
+const mcpPolicy = parseT3McpPolicy();
 const clientCaps = {
   elicitationForm: false,
   compaction: false,
@@ -51,47 +54,43 @@ const clientCaps = {
   clientName: '',
 };
 
-function findT3McpServerId(cwd) {
+function resolveSessionForMcp(request) {
+  if (typeof request?.acpSessionId === 'string') {
+    const exact = sessions.get(request.acpSessionId);
+    if (exact) return exact;
+  }
+  const cwd = request?.cwd;
   for (const session of sessions.values()) {
-    if (session.t3Mcp?.enabled && (!cwd || session.cwd === cwd)) {
-      return session.t3Mcp.serverId ?? 't3-code';
-    }
+    if (session.t3Mcp?.enabled && (!cwd || session.cwd === cwd)) return session;
   }
   for (const session of sessions.values()) {
-    if (session.t3Mcp?.enabled) return session.t3Mcp.serverId ?? 't3-code';
+    if (session.t3Mcp?.enabled) return session;
   }
-  return 't3-code';
+  return null;
 }
 
-function updateT3McpStats(cwd, patch) {
-  let matched = false;
-  for (const session of sessions.values()) {
-    if (session.t3Mcp?.enabled && cwd && session.cwd === cwd) {
-      Object.assign(session.t3Mcp, patch);
-      matched = true;
-    }
-  }
-  if (!matched) {
-    for (const session of sessions.values()) {
-      if (session.t3Mcp?.enabled) Object.assign(session.t3Mcp, patch);
-    }
-  }
-}
-
-async function ensureT3McpConnection(localConnId, bridgeSessionId, cwd) {
+async function ensureT3McpConnection(localConnId, request, session) {
   const existing = mcpConnections.get(localConnId);
   if (existing) return existing;
   const inflight = mcpConnecting.get(localConnId);
   if (inflight) return inflight;
   const task = (async () => {
-    const serverId = findT3McpServerId(cwd);
+    const serverId = session?.t3Mcp?.serverId ?? 't3-code';
     const connected = await askClient('mcp/connect', { serverId }, processAbort.signal);
     if (typeof connected?.connectionId !== 'string' || !connected.connectionId) {
       throw new Error('T3 Code MCP connect did not return a connectionId');
     }
-    const entry = { acpConnId: connected.connectionId, bridgeSessionId, serverId, cwd };
+    const entry = {
+      acpConnId: connected.connectionId,
+      bridgeSessionId: request.sessionId,
+      acpSessionId: session?.id ?? request.acpSessionId ?? null,
+      serverId,
+    };
     mcpConnections.set(localConnId, entry);
-    updateT3McpStats(cwd, { connected: true });
+    if (session?.t3Mcp) {
+      session.t3Mcp.connected = true;
+      session.t3Mcp.lastError = null;
+    }
     return entry;
   })().finally(() => {
     mcpConnecting.delete(localConnId);
@@ -130,9 +129,28 @@ async function handleT3McpRequest(request) {
   if (!frame || typeof frame !== 'object' || typeof frame.method !== 'string') {
     throw new Error('Invalid MCP JSON-RPC frame');
   }
+  const session = resolveSessionForMcp(request);
+  if (session && !session.t3Mcp?.enabled) {
+    throw new Error('T3 MCP is not enabled for this session');
+  }
   const isNotification = frame.id === undefined || frame.id === null;
+  if (frame.method === 'tools/call') {
+    const toolName = frame.params?.name;
+    if (!isT3McpToolAllowed(toolName, mcpPolicy, { permissionModeId: session?.currentPermissionModeId, enforceMode: true })) {
+      return {
+        jsonrpc: '2.0',
+        id: frame.id,
+        error: {
+          code: -32602,
+          message: session?.currentPermissionModeId === 'plan'
+            ? `T3 MCP tool "${String(toolName)}" is blocked in Plan mode. Switch mode before mutating or launching external work.`
+            : `T3 MCP tool "${String(toolName)}" is blocked by T3_MCP_ALLOW_TOOLS / T3_MCP_DENY_TOOLS policy.`,
+        },
+      };
+    }
+  }
   try {
-    const entry = await ensureT3McpConnection(localConnId, request.sessionId, request.cwd);
+    const entry = await ensureT3McpConnection(localConnId, request, session);
     const payload = {
       connectionId: entry.acpConnId,
       method: frame.method,
@@ -142,12 +160,23 @@ async function handleT3McpRequest(request) {
       send({ method: 'mcp/notification', params: payload });
       return {};
     }
-    const result = await askClient('mcp/message', payload, processAbort.signal);
+    let result = await askClient('mcp/message', payload, processAbort.signal);
     if (frame.method === 'tools/list' && Array.isArray(result?.tools)) {
-      updateT3McpStats(request.cwd, { connected: true, toolCount: result.tools.length });
+      const filteredTools = result.tools.filter(tool => isT3McpToolAllowed(tool?.name, mcpPolicy));
+      result = { ...result, tools: filteredTools };
+      if (session?.t3Mcp) {
+        session.t3Mcp.connected = true;
+        session.t3Mcp.toolCount = filteredTools.length;
+        session.t3Mcp.lastError = null;
+      }
+    } else if (session?.t3Mcp) {
+      session.t3Mcp.lastError = null;
     }
     return { jsonrpc: '2.0', id: frame.id, result: result ?? {} };
   } catch (err) {
+    if (session?.t3Mcp) {
+      session.t3Mcp.lastError = err?.message ?? 'T3 MCP request failed';
+    }
     if (isNotification) return {};
     return {
       jsonrpc: '2.0',
@@ -527,7 +556,7 @@ function displayItem(session, turn, item, outcome) {
       ...(content.length ? { content } : {}),
     });
   } else {
-    const planEntries = extractPlanEntries(item, turn.tasks);
+    const planEntries = extractPlanEntries(item, turn.tasks, outcome);
     if (planEntries) {
       const planKey = JSON.stringify(planEntries);
       if (planKey !== turn.lastPlanKey) {
@@ -734,9 +763,14 @@ function schedulePostOpenNotifications(session) {
         session.localCapabilities = {
           skills: built.localSkillCount,
           commands: built.localCommandCount,
+          error: null,
         };
-      } catch {
-        // Fallback to built-in commands if project environment cannot be parsed.
+      } catch (err) {
+        session.localCapabilities = {
+          skills: 0,
+          commands: 0,
+          error: err?.message ?? '加载失败',
+        };
       }
     }
     if (!sessions.has(session.id) || session.closing) return;
@@ -814,6 +848,7 @@ async function openSession({ cwd, sessionId, forkFromSessionId, mcpServers }) {
       serverId: t3McpServer?.serverId ?? null,
       connected: false,
       toolCount: null,
+      lastError: null,
     },
     localCapabilities: null,
     initialized: false,
@@ -869,7 +904,7 @@ async function openSession({ cwd, sessionId, forkFromSessionId, mcpServers }) {
     }
 
     if (t3McpServer) {
-      openInput = { ...openInput, t3Mcp: true };
+      openInput = { ...openInput, t3Mcp: true, acpSessionId: id };
     }
 
     const [inspection, openedNative] = await Promise.all([

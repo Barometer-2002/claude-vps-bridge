@@ -10,7 +10,7 @@ export async function createToolBridge(dispatch){
   const directory=path.join(bridgeRoot,'run');await fs.mkdir(directory,{recursive:true,mode:0o700});
   const socketPath=path.join(directory,'tools-'+randomUUID()+'.sock'),sessions=new Map();
   const server=net.createServer(socket=>{
-    let buffer='',consumed=false;socket.on('error',()=>{});socket.setTimeout(120000,()=>socket.destroy());
+    let buffer='',consumed=false;socket.on('error',()=>{});socket.setTimeout(310000,()=>socket.destroy());
     socket.on('data',chunk=>{if(consumed)return;buffer+=chunk;if(Buffer.byteLength(buffer)>48*1024*1024){socket.destroy();return;}if(!buffer.includes('\n'))return;consumed=true;
       void(async()=>{const message=JSON.parse(buffer.split('\n')[0]);const binding=sessions.get(message.sessionId),candidate=Buffer.from(String(message.token??''));
         if(!binding||candidate.length!==64||!timingSafeEqual(candidate,Buffer.from(binding.toolToken)))throw new Error('Unknown tool session or invalid authentication');
