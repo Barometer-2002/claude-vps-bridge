@@ -4,11 +4,16 @@
 
 ## 初次配置
 
-Windows 需要 PowerShell 7、OpenSSH 客户端、Python 3.11+ 和 CodexHost。Linux x64 需要 Node/npm、Python 3 与已安装并登录的官方 Claude Code。使用已有的 SSH 配置与已确认的主机密钥；安装器不关闭主机身份校验。
+Windows 需要 T3 Code（或 CodexHost 0.20.0+）、Node.js 24+、PowerShell 7、OpenSSH 客户端、Python 3.11+。Linux x64 需要 Node/npm、Python 3 与已安装并登录的官方 Claude Code。使用已有的 SSH 配置与已确认的主机密钥；安装器不关闭主机身份校验。
 
 ```powershell
+# 纯 T3 Code 独立安装（推荐，无需 CodexHost 桌面端）
+python .\installer\configure.py --ssh-host my-linux-host --t3-only
+pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native
+
+# 或与 CodexHost 双宿共存
 python .\installer\configure.py --ssh-host my-linux-host --host-root 'D:\Apps\CodexHost'
-pwsh -NoProfile -File .\install.ps1
+pwsh -NoProfile -File .\install.ps1 -WithT3 -WithT3Native
 ```
 
 `configure.py` 查询远端用户主目录与 Claude 路径，创建 `bridge-config.local.json`，不覆盖已有文件。可显式提供 `--remote-root`、`--remote-workspace-root`、`--remote-claude`。配置文件只保存非敏感连接与路径参数，不保存账号凭据。自动发现的 Claude 路径仍需实际存在；安装健康检查与真实运行验收是独立步骤。

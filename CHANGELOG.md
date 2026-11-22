@@ -1,8 +1,14 @@
 # 更新记录
 
-## T3 Code 深度适配与原生 Shim · 2026-11-22
+本记录分为两部分：上方为 **T3 Claude VPS（`t3-claude-vps`）** 基于上游 `vv-get-ti/claude-vps-bridge@0.14.1`（`0acd8a0`）之后的 Fork 变更；下方完整保留上游历史发布记录。完整改进对比见 [docs/FORK_CHANGES.md](docs/FORK_CHANGES.md)。
 
-在保持与 CodexHost 0.20.0+ 及 Bridge 0.14.1 完全兼容的基础上，新增两套可并存的 T3 Code 接入方案与纯 T3 独立安装模式：
+---
+
+## T3 Claude VPS（Fork 变更记录）
+
+### T3 Claude VPS（`t3-claude-vps`）· 2026-11-22
+
+基于上游 `vv-get-ti/claude-vps-bridge@0.14.1`（LGPL-3.0-only）独立维护并更名为 **T3 Claude VPS（`t3-claude-vps`）**，在保持对 CodexHost 0.20.0+ 及现有配置/数据目录完全兼容的基础上，面向 T3 Code 新增双引擎接入与独立安装模式：
 
 **官方 `claudeAgent` 原生 Shim（`t3-native/`）**
 
@@ -20,11 +26,16 @@
 - 自动扫描本机 `.claude/{skills,commands}` 注入 T3 补全菜单并支持每轮热刷新；远端同步支持 `$skill` 与 `/command`（含 `<user_request>` 包裹）大小写不敏感匹配与 `$ARGUMENTS` 注入执行。
 - 移除 `remote/workspace-guard.py` 所有 `updatedInput` 改写（未转义单引号直接拒绝并提示 `\u0027`），彻底修复 `auto` 模式下简写与 JSON 并发调用冲突。
 
-**安装与校验**
+**安装、校验与文档重构**
 
 - `installer/configure.py` 与 `install.ps1` 新增 `--t3-only` / `-T3Only` / `-WithT3` / `-WithT3Native` 支持；`scripts/check.py` 扩展校验 `t3/` 与 `t3-native/` 源码及文件清单。
+- 以 T3 Code 优先视角重构 `README.md` 与全套文档，新增 [docs/FORK_CHANGES.md](docs/FORK_CHANGES.md) 与 [docs/T3CODE.md](docs/T3CODE.md)，并在 `THIRD_PARTY_NOTICES.md` 明确列出上游基线与 LGPL-3.0-only 许可声明。
 
-## 0.14.1 · 2026-11-18
+---
+
+## 上游基线记录（`vv-get-ti/claude-vps-bridge`）
+
+### 0.14.1 · 2026-11-18
 
 - 线路切换时记录归类后的失败原因与时间（例如 `dns-failed`、`cloudflared-error`、`connection-timeout`），`diagnose.mjs` 一并显示；原始 SSH/cloudflared 报错只在内存中归类，不写盘也不输出。
 

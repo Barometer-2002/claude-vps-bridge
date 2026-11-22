@@ -1,18 +1,38 @@
 # 常见问题
 
+## T3 Claude VPS 与上游 `claude-vps-bridge` 是什么关系？
+
+**T3 Claude VPS（`t3-claude-vps`）** 是基于上游 [`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge)（基线 `0.14.1`）开发的 **LGPL-3.0-only** 增强分支。它在完整保留上游 SSH 协议 3 多路复用传输、Windows 本机工作区运行时与 CodexHost 插件兼容性的前提下，面向 T3 Code 新增了官方 `claudeAgent` 原生 Shim（`t3-native/`）、Local ACP v2 适配器（`t3/`）、T3 MCP 本机直通代理与纯 T3 独立安装模式。详细差异见 [Fork 起源与改进说明](FORK_CHANGES.md)。
+
+## T3 Code 中「Claude VPS（原生 Shim）」和「Claude VPS Bridge（ACP）」怎么选？
+
+- 日常主力推荐 **`Claude VPS`**（`t3-native/`，官方 `claudeAgent` 驱动）：原生支持顶部 5h/7d 实时额度圆环、单套原生权限、自动标题/Commit/PR（`textGeneration`）、`effort`/`ultracode`/`fastMode` 与缓存过期自动压缩。
+- 若更偏好把 `windows-workspace` 解包渲染为原生 `Read`/`Edit`（红绿 Diff）/`Grep`/`PowerShell` 工具卡片，或常用零消耗 `/usage`、`/status` 与本地 `$skill` 补全菜单，可选择 **`Claude VPS Bridge`**（`t3/`，Local ACP 适配器）。
+- 两者注册为不同的 Provider 实例，可完全共存、按会话自由切换，详见 [T3 Code 适配说明](T3CODE.md)。
+
+## 接入 T3 Code 会影响本机原生 Claude 或破坏 VPS 环境稳定性吗？
+
+不会。原生 Shim 在 T3 Code 中注册为独立的 `claude-vps` 实例并使用隔离的 `claude-home`，不改动默认 `claudeAgent` 实例、不碰本机 `~/.claude`，也不修改 T3 Code 任何程序文件。
+
+VPS 上始终运行官方原版 `claude` CLI 并由 VPS 直接访问 Anthropic，不使用反代、不注入或逆向官方二进制，对 VPS 账号环境来说与你在 VPS 终端里直接使用官方 Claude Code 一致。
+
+## 只用 T3 Code，必须安装 CodexHost 桌面端吗？
+
+不需要。使用 `python .\installer\configure.py --ssh-host <host> --t3-only` 与 `pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native` 即可独立部署运行。
+
 ## 为什么把 Claude Code 放在 VPS？
 
-当 Claude Code 的运行环境放在 VPS，而项目和开发工具在自己的电脑上时，可以用这个插件把两端连接起来。凭据集中保存在 VPS。本机继续负责项目文件、终端和工具，VPS 无需承担构建、浏览器或视频处理的负载。
+当 Claude Code 的运行环境放在 VPS，而项目和开发工具在自己的电脑上时，可以用这个工具把两端连接起来。凭据集中保存在 VPS，本机继续负责项目文件、终端和工具，VPS 无需承担构建、浏览器或视频处理的负载。
 
 ## 需要另外打开一个客户端吗？
 
-在 CodexHost 中选择 Claude VPS Bridge 即可。旧版入口名称为 Claude Code · VPS。
+不需要。在 **T3 Code** 中直接选择 **`Claude VPS`** 或 **`Claude VPS Bridge`** 即可；若使用兼容的 **CodexHost** 桌面端，选择 **Claude VPS Bridge**（旧版入口名称为 Claude Code · VPS）。
 
 ## 工作区会同步到 VPS 吗？
 
-不会整份同步。插件为选中的 Windows 项目建立远端映射，同名但路径不同的项目会分别管理。
+不会整份同步。桥接为选中的 Windows 项目建立远端映射，同名但路径不同的项目会分别管理。
 
-Claude 读取的文本、工具结果和传入的附件会发送到远端与模型服务。文件和数据的存放位置见[架构说明](ARCHITECTURE.md)。
+Claude 读取的文本、工具结果和传入的附件会发送到远端与模型服务；T3 Code 本地 HTTP MCP 地址与 Token 留在 Windows 本机。文件和数据的存放位置见[架构说明](ARCHITECTURE.md)与[T3 Code 适配说明](T3CODE.md)。
 
 ## 重开后怎么继续之前的聊天？
 
@@ -22,9 +42,9 @@ fork 会创建聊天分支，但仍共用项目文件。需要并行修改文件
 
 ## 本机规则和 Skills 会生效吗？
 
-插件会读取当前项目适用的规则、Skills 和支持的 `.claude` 配置。正常加载不再反复提示数量；规则变化或遇到兼容问题时才提示。
+桥接会读取当前项目适用的规则（`CLAUDE.md`、`AGENTS.md`、`.claude/rules`）、Skills 和支持的 `.claude` 配置。在 T3 Code ACP 模式下，本机 `.claude/{skills,commands}` 还会自动注入补全菜单并在每轮自动热刷新。
 
-本机的认证、模型和接口环境变量不会覆盖 VPS 配置。可通过工具的 `info` 操作查看配置详情。
+本机的认证、模型和接口环境变量不会覆盖 VPS 配置。可通过工具的 `info` 操作或 ACP 的 `/status` 查看配置详情。
 
 ## 必须安装 Tavily、Playwright 或 Windows SSH 服务吗？
 
@@ -34,15 +54,15 @@ Playwright 使用独立浏览器环境，网站需要单独登录。
 
 ## 额度为什么有时不更新？
 
-刷新失败时会保留上次数据。当前宿主没有显示数据更新时间；重置时间也不是订阅到期时间。
+在 T3 Code 原生 `Claude VPS` 模式下，额度通过官方 `get_usage` 与 `rate_limit_event` 实时同步；在 ACP `/usage` 或 CodexHost 模式下，刷新失败时会保留上次数据。重置时间不是订阅到期时间。
 
-## CodexHost 升级后怎么办？
+## 宿主升级后怎么办？
 
-插件跟随 CodexHost 最新正式版（最低 0.20.0），不修改宿主文件。宿主自动更新后重新运行安装脚本，VPS 端会升到官方最新版；新版本未通过兼容检查时保留当前版本，并说明原因。安装校验核对 VPS 依赖版本和官方适配器哈希，不会把旧进程当成已升级。见[升级说明](OPERATIONS.md#升级)。
+本工具不修改 T3 Code 或 CodexHost 任何程序文件。若使用 CodexHost（最低 0.20.0），宿主自动更新后重新运行安装脚本即可让 VPS 端跟上官方最新版；新版本未通过兼容检查时保留当前版本并说明原因。见[升级说明](OPERATIONS.md#升级)。
 
 ## 网络很差时会不会又卡住？
 
-0.14.0 起，大响应会拆成小块发送，同时只有少量数据交给 SSH；模型列表、健康检查等小请求可以插队，不再排在整份历史后面等。超时或放弃的请求会通知 VPS 停止发送剩余部分；历史没有变化时只传一个“未变化”标记。直连线路不稳定时，可以配置多条线路自动切换，见[配置说明](CONFIGURATION.md#ssh-线路)。
+桥接协议 3 将大响应拆成小块发送，同时只有少量数据交给 SSH；模型列表、健康检查等小请求可以插队，不再排在整份历史后面等。超时或放弃的请求会通知 VPS 停止发送剩余部分；历史没有变化时只传一个“未变化”标记。直连线路不稳定时，可以配置多条线路自动切换，见[配置说明](CONFIGURATION.md#ssh-线路)。
 
 这些措施让卡顿不再被放大，但不能让一条完全不通的线路恢复。所有线路都不可用时，桥接会明确报告不可用。
 
@@ -56,7 +76,7 @@ Playwright 使用独立浏览器环境，网站需要单独登录。
 
 ## 为什么拖入的附件不可用？
 
-插件支持宿主提供的结构化本机附件和内联图片，也兼容 Desktop 在用户请求前提供的附件清单，只发图片、图片和文档混排都能识别。只有明确附加的文件会被登记；正文中的代码示例、Markdown 链接或路径不会自动上传。项目外附件只登记精确文件，不开放整个目录。
+桥接支持宿主提供的结构化本机附件和内联图片，也兼容 Desktop 在用户请求前提供的附件清单，只发图片、图片和文档混排都能识别。只有明确附加的文件会被登记；正文中的代码示例、Markdown 链接或路径不会自动上传。项目外附件只登记精确文件，不开放整个目录。
 
 如果宿主没有提供本机路径、文件已被删除或格式不受支持，插件无法恢复图片。可以先把文件保存到项目，再让 Claude 查看；它会调用 `windows-workspace media`，无需手动输入工具命令。结构化内联图片会先原样保存到本机。旧版私有附件封装会明确报错，插件不修改宿主实现。
 
@@ -64,48 +84,29 @@ Playwright 使用独立浏览器环境，网站需要单独登录。
 
 ## Default、Auto 与实际模型是什么关系？
 
-Default 是 Claude 适配器的模型选择策略，Auto 是思考策略。指定模型或思考强度时，直接使用 CodexHost 原有的选择控件。
+Default 是 Claude 适配器的模型选择策略，Auto 是思考策略。指定模型或思考强度时，直接使用宿主原有的选择控件。
 
-插件在后台记录远端本轮返回的模型，可通过 `node .\plugin\diagnose.mjs --json` 的 `actual-models` 查看。聊天中不额外插入模型或思考标注。没有收到模型记录时，不用目录默认或历史记录代替；一轮发生模型切换时，记录可能包含多个模型。
-
-思考策略 Auto 在已核查适配器中启用 adaptive thinking、不指定固定 effort；模型和策略仍由远端 Claude 配置及用户显式选择决定。插件不会固定更贵模型或改全局设置。断线 rebind 传回当前会话已知选择；fork、原生 resume 与委派的最终继承行为还需真实环境验收。
+桥接在后台记录远端本轮返回的模型，可通过 `node .\plugin\diagnose.mjs --json` 的 `actual-models` 或 T3 ACP 的 `/usage` 查看。没有收到模型记录时，不用目录默认或历史记录代替；一轮发生模型切换时，记录可能包含多个模型。
 
 ## 子会话为什么可能出现在其他项目？
 
-旧插件在缺少父线程时会回退到全局最近会话，存在串绑风险；现已移除。委派使用当前会话绑定的父线程与项目，缺失时要求显式 `--parent-thread`，不同项目的 `--cwd` 被拒绝，受管理 worktree 单独验证。界面 `#` 提及 Agent 会引导当前 Agent 调用宿主委派命令；如果宿主提供了错误的父会话或项目元数据，需要在宿主侧修复，插件不会猜测替换。
+在 CodexHost 委派路径中，旧插件缺少父线程时会回退到全局最近会话，现已移除。委派使用当前会话绑定的父线程与项目，缺失时要求显式 `--parent-thread`，不同项目的 `--cwd` 被拒绝，受管理 worktree 单独验证。在 T3 Code 路径中，`delegate_task` 直接走 T3 原生 MCP 工具并绑定当前线程上下文。
 
 ## 如何停用或卸载？
 
-在源码目录运行 `pwsh -NoProfile -File .\install.ps1 -Disable`；`-Uninstall` 同样执行保留数据的停用。脚本仅移除启用条目，保留插件代码、会话与数据。正常重开宿主后生效。具体保留位置和可选手动清理见[维护说明](OPERATIONS.md#停用与卸载)。
+- **独立卸载 T3 Code 接入**（互不影响，保留会话数据）：
+  - `node .\t3-native\manage-native.mjs uninstall`（移除 `Claude VPS`）
+  - `node .\t3\manage.mjs uninstall`（移除 `Claude VPS Bridge`）
+- **停用或卸载 CodexHost 插件**：运行 `pwsh -NoProfile -File .\install.ps1 -Disable`（或 `-Uninstall`），仅移除启用条目并保留插件代码、会话与数据。详情见[维护说明](OPERATIONS.md)。
 
 ## 运行中可以追加指令吗？
 
-插件通过公开 `readCapabilities()` 动态读取远端会话能力。原生 Claude 确认可接收时，宿主界面的追加输入走 `turn.steer`，保留当前轮次，仍执行本机规则、提交 Hook、附件检查与后续工具权限检查。原轮次已结束、正在取消或能力不支持时会拒绝；结果未知时不会自动重新发送或创建新轮次。
-
-委派出去的子任务也可以追加指令：CodexHost 0.20.0 起，`thread send` 支持 `--steer true`，与 `--interrupt` 互斥。通过本插件委派时，追加指令沿用子任务原有的项目写入预留，不会因为子任务持有写锁而被拒绝；其他会话不能借此写入当前项目。追加结果未知时不会自动重发。界面实际行为还需安装后验收。
+支持。在 T3 Code 原生 `Claude VPS` 模式下直通官方 `stream-json` 交互；在 CodexHost 模式下，桥接通过公开 `readCapabilities()` 动态读取远端会话能力，确认可接收时走 `turn.steer` 保留当前轮次并继续执行本机规则、提交 Hook 与工具权限检查。
 
 ## 提示词缓存倒计时表示什么？
 
-这是上游 Claude 适配器提供的提示词缓存估算，不是额度更新时间，也不是服务端精确 TTL。已核查的 0.15.0 适配器以最近一次助手响应时间加 3600 秒生成 `prompt-cache.expiresAtUnix`。插件仅保存和透传这个绝对到期时间，刷新、断线恢复和重开不会重置计时。
-
-缓存指示器按上游原意处理：上游给出时间就透传，上游清除就清除。没有上游时间时保持未知，不从本机时钟新造一小时。账号额度查询失败或返回空时，保留上次可靠的额度数据，不影响缓存计时。
+这是上游 Claude 适配器提供的提示词缓存估算，不是额度更新时间，也不是服务端精确 TTL。桥接仅保存和透传上游给出的绝对到期时间，刷新、断线恢复和重开不会重置计时；在 T3 Code 原生 `Claude VPS` 模式下还支持 T3 自带的 `beforeCacheExpires` 缓存过期前自动压缩策略。
 
 ## 能按原生会话 ID 查找 CodexHost 聊天吗？
 
-当前宿主公开 CLI 不提供这项查询，插件不再读取内部 `mapping-store`。请使用明确的 CodexHost 聊天链接或原生客户端的历史入口；这是能力缺口，不表示原生聊天丢失。
-
-## T3 Code 中「Claude VPS（原生 Shim）」和「Claude VPS Bridge（ACP）」怎么选？
-
-- 日常主力推荐 **`Claude VPS`**（`t3-native/`，官方 `claudeAgent` 驱动）：原生支持顶部 5h/7d 实时额度圆环、单套原生权限、自动标题/Commit/PR（`textGeneration`）、`effort`/`ultracode`/`fastMode` 与缓存过期自动压缩。
-- 若更偏好把 `windows-workspace` 解包渲染为原生 `Read`/`Edit`(红绿 Diff)/`Grep`/`PowerShell` 工具卡片，或常用零消耗 `/usage`、`/status` 与本地 `$skill` 补全菜单，可选择 **`Claude VPS Bridge`**（`t3/`，Local ACP 适配器）。
-- 两者注册为不同的 Provider 实例，可完全共存、按会话自由切换，详见 [T3 Code 适配说明](T3CODE.md)。
-
-## 接入 T3 Code 会影响本机原生 Claude 或破坏 VPS 环境稳定性吗？
-
-不会。原生 Shim 在 T3 Code 中注册为独立的 `claude-vps` 实例并使用隔离的 `claude-home`，不改动默认 `claudeAgent` 实例、不碰本机 `~/.claude`，也不修改 T3 Code 任何程序文件。
-
-VPS 上始终运行官方原版 `claude` CLI 并由 VPS 直接访问 Anthropic，不使用反代、不注入或逆向官方二进制，对 VPS 账号环境来说与你在 VPS 终端里直接使用官方 Claude Code 一致。
-
-## 只用 T3 Code，必须安装 CodexHost 桌面端吗？
-
-不需要。使用 `python .\installer\configure.py --ssh-host <host> --t3-only` 与 `pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native` 即可独立部署运行。
+当前 CodexHost 公开 CLI 不提供这项查询，插件不再读取内部 `mapping-store`。请使用明确的聊天链接或原生客户端的历史入口；这是能力缺口，不表示原生聊天丢失。

@@ -1,6 +1,27 @@
-# 停用、升级、回滚与排障
+# 运维、诊断、升级与排障
 
-## 统一诊断
+本文档覆盖 **T3 Claude VPS（`t3-claude-vps`）** 的日常运维，包括 T3 Code 双接入方案管理、核心 Bridge 统一诊断、SSH 线路观测、日志清理、事务升级与回滚，以及上游兼容的 CodexHost 插件停用说明。
+
+## T3 Code 接入诊断、升级与独立卸载
+
+- **查看双模式状态**（不提交模型请求）：
+
+```powershell
+node .\t3-native\manage-native.mjs status   # 检查独立原生 Claude VPS (driver: claudeAgent)
+node .\t3\manage.mjs status                 # 检查 Local ACP 适配器 Claude VPS Bridge
+```
+
+- **同步升级**：在仓库根目录重新执行：
+  - 纯 T3 Code：`pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native`
+  - T3 Code + CodexHost 共存：`pwsh -NoProfile -File .\install.ps1 -WithT3 -WithT3Native`
+- **独立卸载（互不影响，不碰默认 `claudeAgent`，保留会话数据）**：
+
+```powershell
+node .\t3-native\manage-native.mjs uninstall   # 仅移除 claude-vps，保留 claude-home
+node .\t3\manage.mjs uninstall                 # 仅移除 claude-vps-bridge，保留 sessions 映射
+```
+
+## 统一诊断（核心桥接与 SSH 线路）
 
 在源码仓库或已安装插件目录运行：
 
@@ -146,23 +167,6 @@ python .\installer\deploy-transaction.py --rollback .\transactions\TRANSACTION_I
 恢复前会检查并发修改与备份哈希；发现冲突会停止，不覆盖其他工作。包含宿主文件的旧事务一律拒绝回滚，绝不恢复旧宿主备份。回滚只处理本次代码与配置，不回滚项目文件、原生聊天、任务状态和 MCP 私有凭据。完成后正常重开宿主。
 
 **保留执行安装的源码目录和事务记录，直到确认不再需要回滚。** 它们已被 Git 忽略，不应发布。
-
-## T3 Code 接入诊断、升级与卸载
-
-- **状态检查**：
-
-```powershell
-node .\t3-native\manage-native.mjs status   # 检查独立原生 Claude VPS (driver: claudeAgent)
-node .\t3\manage.mjs status                 # 检查 Local ACP 适配器 Claude VPS Bridge
-```
-
-- **同步升级**：重新运行 `pwsh -NoProfile -File .\install.ps1 -T3Only -WithT3Native`（纯 T3）或 `-WithT3 -WithT3Native`（双宿共存）。
-- **独立卸载（互不影响，保留会话数据）**：
-
-```powershell
-node .\t3-native\manage-native.mjs uninstall   # 仅移除 claude-vps，保留 claude-home
-node .\t3\manage.mjs uninstall                 # 仅移除 claude-vps-bridge，保留 sessions 映射
-```
 
 ## 常见停止点
 

@@ -1,6 +1,6 @@
 # T3 Code 适配与使用指南
 
-本仓库为 Windows 端 [T3 Code](https://github.com/pingdotgg/t3code) 提供**两种可独立并存的 VPS Claude Code 接入方案**，均与 CodexHost 共用同一套本机与 VPS 桥接基础设施，且支持**纯 T3 Code 独立安装（无需安装 CodexHost 桌面端）**：
+**T3 Claude VPS（`t3-claude-vps`）** 为 Windows 端 [T3 Code](https://github.com/pingdotgg/t3code) 提供**两种可独立并存的 VPS Claude Code 接入方案**，支持**纯 T3 Code 独立安装（无需安装 CodexHost 桌面端）**，同时也与上游 CodexHost 桥接共用同一套底层基础设施（Fork 来源与改动详见 [Fork 起源与改进说明](FORK_CHANGES.md)）：
 
 1. **官方 `claudeAgent` 原生 Shim（`t3-native/`，推荐）** — 注册独立实例 **`Claude VPS`**（`driver: claudeAgent`），通过 SSH 直通 VPS 原版 Claude Code 的官方 `stream-json` 协议。
 2. **Local ACP 适配器（`t3/`，v1.3.1）** — 注册独立实例 **`Claude VPS Bridge`**（`driver: acpRegistry`），通过 ACP v2 协议接入并深度翻译本机工具卡片与状态命令。
