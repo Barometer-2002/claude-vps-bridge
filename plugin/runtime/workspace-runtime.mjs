@@ -258,7 +258,7 @@ async function runJob(directory){
   const heartbeat=path.join(directory,'heartbeat-'+status.runnerToken);await fs.writeFile(heartbeat,'');
   const beat=setInterval(()=>{const now=new Date();void fs.utimes(heartbeat,now,now).catch(()=>{});},1000);
   let queued=false,lease;
-  try{lease=await acquireWriter(state,await writerScope(state,info.projectId,spec.parentThread),{kind:'job',requestId:spec.requestId,waitMs:24*60*60*1000,
+  try{lease=await acquireWriter(state,await writerScope(state,info.projectId,spec.parentThread),{kind:'job',requestId:spec.requestId,job:{projectId:info.projectId,runnerToken:status.runnerToken},waitMs:24*60*60*1000,
     isCancelled:()=>fs.access(path.join(directory,'cancel')).then(()=>true,()=>false),
     onWait:async()=>{if(!queued){queued=true;await atomic(path.join(directory,'status.json'),{...status,status:'queued',reason:'Waiting for the current project writer'});}}
   });}catch(e){clearInterval(beat);if(e.code==='CANCELLED'){await atomic(path.join(directory,'status.json'),{...status,status:'cancelled',completedAt:new Date().toISOString()});return;}throw e;}
@@ -270,6 +270,9 @@ async function runJob(directory){
   try{
   const out=boundedLog(path.join(directory,'stdout.log')),err=boundedLog(path.join(directory,'stderr.log'));
   const args=spec.script ? ['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from("$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $LASTEXITCODE=0; trap { [Console]::Error.WriteLine($_.ToString()); exit 1 };\n"+spec.script+"\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",'utf16le').toString('base64')] : spec.args;
+  // Record launch intent before spawn. A crashed runner with no intent for its
+  // lease token could not have started any command protected by that lease.
+  await fs.writeFile(path.join(directory,'command-launch-'+status.runnerToken),'',{flag:'wx',flush:true});
   child=spawnOwnedProcess(spec.script?pwsh:spec.executable,args,{cwd:spec.workingDirectory??info.cwd,windowsHide:true,stdio:['ignore','pipe','pipe'],env:{...cleanEnv(),...spec.environment}});
   let logError;const logDone=Promise.all([finished(out),finished(err)]).catch(async e=>{logError=e;await terminate('log-failure');});
   child.stdout.pipe(out);child.stderr.pipe(err);

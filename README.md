@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-v1.0.0-1F7A5A?style=flat-square&labelColor=1C1B18" alt="Version: v1.0.0">
+  <img src="https://img.shields.io/badge/Version-v1.0.1-1F7A5A?style=flat-square&labelColor=1C1B18" alt="Version: v1.0.1">
   <img src="https://img.shields.io/badge/VPS_Isolation-Official_Claude_CLI-D97757?style=flat-square&labelColor=1C1B18" alt="VPS Isolation: Official Claude CLI">
   <img src="https://img.shields.io/badge/Windows-Native_Local_Experience-3F3D39?style=flat-square&labelColor=1C1B18" alt="Windows: Native Local Experience">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-LGPL--3.0--only-4A4742?style=flat-square&labelColor=1C1B18" alt="License: LGPL-3.0-only"></a>

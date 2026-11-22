@@ -22,6 +22,14 @@ const MEDIA_CACHE_LIMIT = 256;
 const ACTIVE_JOB_STATUSES = new Set(['starting', 'queued', 'running', 'unresponsive', 'interrupted']);
 const PERMISSION_MODES = new Set(['default', 'plan', 'acceptEdits', 'bypassPermissions', 'dontAsk', 'auto', 'delegate']);
 const UUID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+// T3 only re-probes Claude usage after a usage-limit failure; otherwise its quota rings move only on
+// streamed rate_limit_event frames, which the CLI does not emit every turn. The shim asks the VPS CLI
+// for get_usage at the end of each turn and streams the windows T3 tracks before the result frame.
+const USAGE_SYNC_REQUEST_PREFIX = "claude-vps-usage-";
+const USAGE_SYNC_TIMEOUT_MS = 4_000;
+const USAGE_SYNC_MIN_INTERVAL_MS = 10_000;
+const USAGE_SYNC_MAX_PENDING = 16;
+const USAGE_SYNC_WINDOWS = ["five_hour", "seven_day"];
 
 function hasLocalConfig(value) {
   if (!value || typeof value !== 'object') return false;
@@ -585,6 +593,39 @@ async function runOfflineSelfTest() {
   const mediaRemapOk = outRead?.request?.input?.file_path === sampleWinPath
     && inAllow?.response?.response?.updatedInput?.file_path === sampleVpsPath;
 
+  const usageFrames = usageResponseToRateLimitEvents({
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: 54, resets_at: "2026-11-23T00:30:00.376274+00:00" },
+      seven_day: { utilization: 39, resets_at: "2026-11-27T10:00:00.376294+00:00" },
+      seven_day_opus: { utilization: 10 },
+    },
+  }, "s1");
+  const sentUsage = [];
+  const usageSync = createUsageSync({ send: frame => { sentUsage.push(frame); return true; }, minIntervalMs: 0 });
+  const syncedPromise = usageSync.fetchFrames("s1");
+  const consumed = usageSync.consumeResponseLine(JSON.stringify({
+    type: "control_response",
+    response: {
+      subtype: "success",
+      request_id: sentUsage[0]?.request_id,
+      response: { rate_limits_available: true, rate_limits: { five_hour: { utilization: 80 } } },
+    },
+  }));
+  const syncedFrames = await syncedPromise;
+  const usageSyncOk = usageFrames.length === 2
+    && usageFrames[0].rate_limit_info.rateLimitType === "five_hour"
+    && Math.abs(usageFrames[0].rate_limit_info.utilization - 0.54) < 1e-9
+    && usageFrames[0].rate_limit_info.resetsAt === 1795393800
+    && !("status" in usageFrames[0].rate_limit_info)
+    && usageFrames[1].rate_limit_info.rateLimitType === "seven_day"
+    && sentUsage[0]?.request?.subtype === "get_usage"
+    && consumed === true
+    && syncedFrames.length === 1
+    && syncedFrames[0].rate_limit_info.utilization === 0.8
+    && usageSync.consumeResponseLine(JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: "other" } })) === false
+    && usageResponseToRateLimitEvents({ rate_limits_available: false }, "s1").length === 0;
+
   let bridge = null;
   let bridgeError = null;
   try {
@@ -593,7 +634,7 @@ async function runOfflineSelfTest() {
     bridgeError = err?.message ?? String(err);
   }
 
-  const ok = rejectedBadConfig && sanitizedOk && mediaRemapOk && !bridgeError;
+  const ok = rejectedBadConfig && sanitizedOk && mediaRemapOk && usageSyncOk && !bridgeError;
   process.stdout.write(`${JSON.stringify({
     ok,
     mode: 'offline-self-test',
@@ -601,6 +642,7 @@ async function runOfflineSelfTest() {
     rejectedBadConfig,
     sanitizedOk,
     mediaRemapOk,
+    usageSyncOk,
     bridgeVersion: bridge?.version ?? null,
     ...(bridgeError ? { bridgeError } : {}),
   })}\n`);
@@ -881,6 +923,83 @@ function withBoundedTimeout(promise, ms, fallbackValue) {
   });
 }
 
+// get_usage reports 0-100 percentages and ISO reset times; streamed events use 0-1 and epoch seconds.
+// status is omitted on purpose: T3 then only refreshes its rings and never treats a synthesized
+// frame as a rejection or clears one the CLI reported itself.
+export function usageResponseToRateLimitEvents(response, sessionId) {
+  const limits = response?.rate_limits;
+  if (!response?.rate_limits_available || !limits || typeof limits !== "object") return [];
+  const frames = [];
+  for (const rateLimitType of USAGE_SYNC_WINDOWS) {
+    const window = limits[rateLimitType];
+    if (!window || typeof window.utilization !== "number" || !Number.isFinite(window.utilization)) continue;
+    const resetsMs = typeof window.resets_at === "string" ? Date.parse(window.resets_at) : NaN;
+    frames.push({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        rateLimitType,
+        utilization: Math.max(window.utilization, 0) / 100,
+        ...(Number.isFinite(resetsMs) ? { resetsAt: Math.floor(resetsMs / 1000) } : {}),
+      },
+      uuid: randomUUID(),
+      session_id: sessionId,
+    });
+  }
+  return frames;
+}
+
+// Issues shim-owned get_usage control requests to the VPS CLI. Replies are matched by request ID
+// before they reach the serialized stdout chain (which may be waiting on them) and never reach T3.
+export function createUsageSync({
+  send,
+  timeoutMs = USAGE_SYNC_TIMEOUT_MS,
+  minIntervalMs = USAGE_SYNC_MIN_INTERVAL_MS,
+  now = Date.now,
+} = {}) {
+  const pending = new Map();
+  let lastRequestAt = -Infinity;
+  return {
+    async fetchFrames(sessionId) {
+      if (now() - lastRequestAt < minIntervalMs) return [];
+      lastRequestAt = now();
+      const requestId = `${USAGE_SYNC_REQUEST_PREFIX}${randomUUID()}`;
+      while (pending.size >= USAGE_SYNC_MAX_PENDING) pending.delete(pending.keys().next().value);
+      const response = await withBoundedTimeout(new Promise(resolve => {
+        pending.set(requestId, resolve);
+        let sent = false;
+        try {
+          sent = send({
+            type: "control_request",
+            request_id: requestId,
+            request: { subtype: "get_usage", skip_behaviors: true },
+          }) !== false;
+        } catch {
+          sent = false;
+        }
+        if (!sent) resolve(null);
+      }), timeoutMs, () => null);
+      // Keep a timed-out ID so a late reply is still swallowed instead of reaching T3.
+      if (pending.get(requestId)) pending.set(requestId, null);
+      return usageResponseToRateLimitEvents(response, sessionId);
+    },
+    consumeResponseLine(line) {
+      if (typeof line !== "string" || !line.includes(USAGE_SYNC_REQUEST_PREFIX)) return false;
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        return false;
+      }
+      const id = msg?.type === "control_response" ? msg.response?.request_id : null;
+      if (typeof id !== "string" || !pending.has(id)) return false;
+      const resolve = pending.get(id);
+      pending.delete(id);
+      resolve?.(msg.response.subtype === "success" ? msg.response.response : null);
+      return true;
+    },
+  };
+}
+
 async function listRelevantLocalJobs(workspace, info, sessionId, trackedJobIds = new Set()) {
   if (!info) return [];
   try {
@@ -1018,6 +1137,14 @@ async function main() {
       // Ignore write to closed SSH pipe.
     }
   };
+
+  const usageSync = createUsageSync({
+    send: frame => {
+      if (sshExited || !activeWriter) return false;
+      sendToRelay({ type: "claude_in", line: JSON.stringify(frame) });
+      return true;
+    },
+  });
 
   async function cancelTurnWindowsJobs(turnIdToCancel) {
     if (!info) return { confirmed: true, jobs: [], error: null };
@@ -1174,6 +1301,12 @@ async function main() {
             const okText = `[Windows 任务已停止] 已确认停止本轮 Windows 后台任务：${summary}。`;
             process.stderr.write(`${okText}\n`);
             writeStdoutFrame(buildAssistantFrame(okText, lastClaudeSessionId ?? sessionId));
+          }
+        }
+        // Emitted before the result so T3 applies it to the live turn rather than buffering a wake.
+        if (turn && !turn.cancel && !probeOnly) {
+          for (const usageFrame of await usageSync.fetchFrames(lastClaudeSessionId ?? sessionId)) {
+            writeStdoutFrame(usageFrame);
           }
         }
         if (activeTurn === turn) activeTurn = null;
@@ -1387,7 +1520,7 @@ async function main() {
           return;
         }
         if (frame.type === 'claude_out' && typeof frame.line === 'string') {
-          enqueueClaudeOut(frame.line);
+          if (!usageSync.consumeResponseLine(frame.line)) enqueueClaudeOut(frame.line);
         } else if (frame.type === 'claude_err' && typeof frame.text === 'string') {
           process.stderr.write(frame.text);
         } else if (frame.type === 'local_req') {
