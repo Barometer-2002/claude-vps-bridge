@@ -1,4 +1,5 @@
 """Check candidate files or actual staged blobs without printing secret contents."""
+from hashlib import sha256
 from pathlib import Path,PurePosixPath
 import argparse,re,subprocess,sys
 
@@ -6,6 +7,8 @@ ROOT=Path(__file__).resolve().parents[1]
 FORBIDDEN_DIRS={'node_modules','transactions','runtime-context','state','run','__pycache__','.claude','.codex','.ssh'}
 FORBIDDEN_SUFFIXES={'.pem','.key','.pfx','.sqlite','.db','.log','.png','.jpg','.jpeg','.mp4','.zip','.exe'}
 PRIVATE_NAMES={'bridge-config.json','bridge-config.local.json','remote-config.json','adapter-selection.json','managed-files.json','claude-path','node-path','.env','session.json'}
+REVIEWED_SCREENSHOT='docs/assets/t3code-enhancer-demo-redacted.png'
+REVIEWED_SCREENSHOT_SHA256='77c3071cb9a8ddedab82bcad26c007de5f0bc293dd2116dfafdb1a8295c4a23d'
 PATTERNS=[
  ('private-key',re.compile(r'-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----')),
  ('anthropic-token',re.compile(r'sk-ant-(?:api\d+|oat\d+)-[A-Za-z0-9_-]{20,}')),
@@ -16,6 +19,10 @@ PATTERNS=[
 ]
 
 def inspect_file(name,data):
+    if name == REVIEWED_SCREENSHOT:
+        if sha256(data).hexdigest() != REVIEWED_SCREENSHOT_SHA256:
+            return ['screenshot-content-needs-review']
+        return []
     p=PurePosixPath(name);parts={x.lower() for x in p.parts};base=p.name.lower();issues=[]
     if parts&FORBIDDEN_DIRS or base in PRIVATE_NAMES or base.startswith(('mcp-config.private','installation-','verification-','diagnosis-','backup-')) or p.suffix.lower() in FORBIDDEN_SUFFIXES:
         issues.append('private-or-generated-path')
