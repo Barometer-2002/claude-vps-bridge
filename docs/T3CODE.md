@@ -43,7 +43,7 @@ flowchart LR
     end
 
     subgraph SSH["单条认证免密 SSH 双向复用通道"]
-        TUN["Control + Tool + Stream<br/>direct / SOCKS5 / cloudflared 自动切线<br/>零反向端口 · 零反代 · 零 T3 Token 出境"]
+        TUN["Windows 发起 SSH 连接<br/>direct / SOCKS5 / cloudflared 自动切线<br/>转发会话消息、工具请求与结果"]
     end
 
     subgraph VPS["Linux x64 VPS（官方原版 Claude Code 运行时）"]
@@ -62,10 +62,10 @@ flowchart LR
 
 ### 明确的数据与安全边界
 
-- **严格留在 VPS（不搬运到 Windows）**：Anthropic OAuth 登录凭据、VPS `~/.claude` 配置与原生会话记录；所有 Anthropic API 请求由 VPS 原版 Claude Code 直接发出（零反代、零逆向）。
-- **严格留在 Windows（不发往 VPS）**：本机环境变量中的 API Key/凭据、T3 Code 本地 `127.0.0.1` HTTP MCP 地址与 `Authorization` Bearer Token、自定义本机 MCP 配置，以及项目源码目录本身。
-- **会发往 VPS 供模型推理**：对话正文、粘贴的图片/附件、Claude 主动读取的文件片段、命令输出，以及调用 T3 / 本机 MCP 工具时的参数与返回值（例如 `t3_thread_read` 读出的文本）。
-- **本机 MCP 安全策略边界（`t3-native/mcp-policy.mjs`）**：在每次 `tools/call` 前严格执行本机当前权限模式（Plan 模式 Fail-Closed：仅放行只读白名单中的 `t3-code` 工具以及显式声明 `readOnlyHint: true` 且非破坏性的自定义本机 MCP 工具，拒绝有副作用或未知工具）、`T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与本机 `.claude/settings*.json` 的 `permissions.deny`。本机 MCP 配置在转发前经严格校验，无法识别或含非法字段的配置直接报错，杜绝 `url` / `headers` / `env` 泄漏至 VPS。
+- **VPS 端**使用 VPS 上的 Claude Code 配置和登录会话，发起模型请求并保存原生会话记录。
+- **Windows 端**执行项目读写和命令。MCP 代理用本机的 `url`、`headers` 和 `env` 配置连接 HTTP 服务或启动 Stdio 进程，VPS 端接收对应的代理入口。
+- **SSH 传输**包括对话正文、发送的附件、工具请求及返回的数据。文件内容、命令输出和 MCP 返回值（如 `t3_thread_read` 读出的文本）可能进入模型请求。
+- **MCP 调用检查**在 Windows 端进行。`t3-native/mcp-policy.mjs` 在收到 `tools/call` 时检查权限模式、`T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与项目的 `permissions.deny`。Plan 模式按只读白名单和自定义工具声明的 `readOnlyHint`、`destructiveHint` 筛选调用。
 
 ---
 

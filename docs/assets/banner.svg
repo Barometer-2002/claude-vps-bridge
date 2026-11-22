@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" fill="none" role="img" aria-labelledby="title desc">
   <title id="title">T3 Claude VPS (t3-claude-vps)</title>
-  <desc id="desc">在隔离环境下达到 Windows 本机原生使用 Claude Code 的效果：账号与网络隔离在 Linux VPS，项目源码、终端工具与本机 MCP 留在 Windows，零反代、零同步。</desc>
+  <desc id="desc">Windows 端的 T3 Code 通过 SSH 连接 VPS 上的 Claude Code。Windows 执行项目工具调用并返回结果。</desc>
   <defs>
     <linearGradient id="canvasL" x1="0" y1="0" x2="1200" y2="300" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#FCFBF8"/>
@@ -58,7 +58,7 @@
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif">
     <!-- Kicker -->
     <rect x="52" y="54" width="7" height="7" rx="2" fill="#D97757"/>
-    <text x="68" y="62" font-family="ui-monospace, 'SFMono-Regular', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace" font-size="11.5" font-weight="600" letter-spacing="1.4" fill="#7D786E">ISOLATED VPS  ×  NATIVE WINDOWS WORKSPACE</text>
+    <text x="68" y="62" font-family="ui-monospace, 'SFMono-Regular', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace" font-size="11.5" font-weight="600" letter-spacing="1.4" fill="#7D786E">VPS CLAUDE CODE  ×  WINDOWS WORKSPACE</text>
 
     <!-- Brand Mark (54x54) -->
     <g transform="translate(52 86) scale(0.84375)">
@@ -82,13 +82,13 @@
     <text x="124" y="128" font-size="44" font-weight="750" letter-spacing="-1" fill="#141413">T3 Claude VPS</text>
 
     <!-- Crisp Core Value Tagline -->
-    <text x="52" y="176" font-size="17" font-weight="500" fill="#524E47">隔离环境下，达到 Windows 本机原生使用 Claude Code 的效果</text>
+    <text x="52" y="176" font-size="17" font-weight="500" fill="#524E47">在 T3 Code 中调用 VPS 上的 Claude Code，使用 Windows 项目与工具</text>
 
     <!-- Subtle Rule & Three Minimalist Guarantees -->
     <line x1="52" y1="206" x2="612" y2="206" stroke="#E5E0D5" stroke-width="1"/>
 
     <circle cx="57" cy="236" r="3.5" fill="#D97757"/>
-    <text x="70" y="241" font-size="13.5" font-weight="600" fill="#2F2D29">账号环境隔离在 VPS</text>
+    <text x="70" y="241" font-size="13.5" font-weight="600" fill="#2F2D29">VPS 运行 Claude Code</text>
 
     <line x1="224" y1="227" x2="224" y2="245" stroke="#DDD8CC" stroke-width="1"/>
     <circle cx="244" cy="236" r="3.5" fill="#1F7A5A"/>
@@ -96,7 +96,7 @@
 
     <line x1="398" y1="227" x2="398" y2="245" stroke="#DDD8CC" stroke-width="1"/>
     <circle cx="418" cy="236" r="3.5" fill="#6F6B62"/>
-    <text x="431" y="241" font-size="13.5" font-weight="600" fill="#2F2D29">零反代 · 零代码同步</text>
+    <text x="431" y="241" font-size="13.5" font-weight="600" fill="#2F2D29">SSH 双向通道</text>
   </g>
 
   <!-- RIGHT COLUMN: Minimalist Isolation vs Local Experience Illustration -->
@@ -116,7 +116,7 @@
     <rect x="806" y="174" width="34" height="6" rx="3" fill="#D7EDE3"/>
     <line x1="704" y1="198" x2="848" y2="198" stroke="#F0EDE6" stroke-width="1"/>
     <circle cx="709" cy="215" r="3" fill="#1F7A5A"/>
-    <text x="719" y="219" font-size="11.5" font-weight="600" fill="#1F7A5A">零同步 · 直接读写构建</text>
+    <text x="719" y="219" font-size="11.5" font-weight="600" fill="#1F7A5A">项目读写 · 本机构建</text>
 
     <!-- Center Bridge Rails -->
     <path d="M866 128H952" stroke="url(#railWarmL)" stroke-width="2" marker-end="url(#arrTerraL)"/>
@@ -141,10 +141,10 @@
       <line x1="7.35" y1="-4.25" x2="-7.35" y2="4.25"/>
     </g>
     <text x="1032" y="138" font-size="14" font-weight="700" fill="#181715">官方 Claude CLI</text>
-    <text x="1032" y="157" font-size="11.5" fill="#7D786E">独立账号与网络出口</text>
-    <text x="1032" y="175" font-size="11" font-weight="600" fill="#C45D3E">原版直连 Anthropic</text>
+    <text x="1032" y="157" font-size="11.5" fill="#7D786E">在 VPS 登录</text>
+    <text x="1032" y="175" font-size="11" font-weight="600" fill="#C45D3E">从 VPS 发起请求</text>
     <line x1="976" y1="198" x2="1138" y2="198" stroke="#F4EAE5" stroke-width="1"/>
     <circle cx="981" cy="215" r="3" fill="#D97757"/>
-    <text x="991" y="219" font-size="11.5" font-weight="600" fill="#B55233">登录态隔离 · 零反代</text>
+    <text x="991" y="219" font-size="11.5" font-weight="600" fill="#B55233">Claude 登录 · 模型请求</text>
   </g>
 </svg>

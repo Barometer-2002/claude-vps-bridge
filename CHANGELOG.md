@@ -20,7 +20,7 @@
   - 原生支持顶部 **5h / 7d 实时额度圆环**（`get_usage` + `rate_limit_event`）、单套原生权限（`can_use_tool`）、原生 `textGeneration`（自动标题、Commit、PR 描述与 Review Guide）、`--resume` / `--fork-session`、`effort` / `ultracode` / `fastMode` 与缓存过期自动压缩。
   - 支持启动期多 SSH 线路自动故障切换（`SshRoutes.firstAvailable` + 启动前帧缓冲）、发送消息时自动展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS` 不劫持内置命令）、自动授权 T3 附件路径，并将 `bridge-instructions.md` 与本机项目规则合并入 `initialize.appendSystemPrompt`。
 - **本机全量 MCP 代理与安全策略（`http-mcp-client.mjs` + `mcp-policy.mjs`）**：
-  - 统一代理 T3 内置 `127.0.0.1` HTTP MCP 与本机自定义 HTTP / Stdio MCP，`url` / `headers` / `env` 等凭据严留 Windows 不出境；严格校验配置，拒绝不可识别的配置项。
+  - 在 Windows 端代理 T3 内置 `127.0.0.1` HTTP MCP 与自定义 HTTP / Stdio MCP，按本机配置的 `url`、`headers` 或 `env` 连接服务或启动进程，并校验配置字段。
   - `LocalHttpMcpClient` 支持流式逐事件解析 SSE（收到匹配 JSON-RPC `id` 即刻返回，不等待长连接 EOF）、请求与 `DELETE` 关闭超时控制，明确区分会话失效（`-32001`）与结果不明（`-32002`）且严禁盲目重放有副作用调用。
   - 在 `tools/call` 前统一按本机当前权限模式（Plan 模式 Fail-Closed 仅放行只读白名单工具及显式声明 `readOnlyHint: true` 且非破坏性的自定义工具）、`T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 及本机项目 `.claude/settings*.json` `permissions.deny` 规则拦截。
 - **远端读图 / PDF 路径双向回映射**：

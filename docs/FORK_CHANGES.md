@@ -35,13 +35,13 @@
 在 T3 Code 中直接注册独立的官方 `claudeAgent` 实例，完整获得 T3 原生 Claude 体验：
 
 - **独立实例与目录隔离**：在 T3 Code 注册为独立实例 **`claude-vps`**（显示名 **Claude VPS**，`driver: claudeAgent`）并配置独立 `homePath`（`claude-home`），完全不修改默认 `claudeAgent`、不触碰本机 `~/.claude`，也不改动 T3 Code 任何程序文件。
-- **直通官方 `stream-json` 协议（零反代、零逆向）**：Windows 轻量启动器（`claude-vps-shim.cs` → `.exe`）+ Node 代理（`claude-vps-shim.mjs`）经现有免密 SSH 通道连至 `remote/claude-stream-relay.mjs`，直接驱动 VPS 原版 `claude` CLI。
+- **通过 SSH 转发 `stream-json`**：Windows 启动器（`claude-vps-shim.cs` → `.exe`）和 Node 代理（`claude-vps-shim.mjs`）通过 SSH 连接 `remote/claude-stream-relay.mjs`，由 relay 启动 VPS 上的官方 `claude` CLI。
 - **完整支持 T3 内置 `claudeAgent` 能力**：
   - 顶部 / 账号页 **5h & 7d 实时额度圆环**（直通 `get_usage` 与 `rate_limit_event`）。
   - **单套原生权限**（T3 Supervised / Auto-accept / Full-access 直通 `can_use_tool`）。
   - **内置 `textGeneration`**（自动标题、Commit、PR 描述、PR Review Guide）。
   - 完整模型列表 + `effort` / `ultracode` / `fastMode` / `autoCompactWindow` / `beforeCacheExpires` 缓存过期前自动压缩。
-- **本机全量 MCP 代理与安全策略（凭据零出境）**：`LocalMcpHub`（`t3-native/http-mcp-client.mjs`）+ `t3-native/mcp-policy.mjs` 统一拦截 `--mcp-config` 与动态 `control_request: mcp_set_servers`，将 `t3-code` HTTP 端点（支持流式逐事件 SSE）、用户自定义本机 HTTP MCP 及 Windows 本地 Stdio MCP 全部留在 Windows 侧运行，URL/Token/本机环境变量永不发往 VPS；VPS 端通过 `mcp-local.py --server <name>` 与会话私有白名单文件（`WINDOWS_ALLOWED_MCP_FILE`，0600 权限）安全转发，并放行 `ToolSearch` 延迟加载。Plan 模式实施 Fail-Closed 硬拦截，并叠加 `T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与项目 `permissions.deny`。
+- **Windows 端 MCP 代理**：`LocalMcpHub` 和 `t3-native/mcp-policy.mjs` 处理 `--mcp-config` 与动态 `mcp_set_servers`，使用本机配置连接 T3 内置及自定义 HTTP MCP（支持 SSE），或启动 Stdio MCP。VPS 端通过 `mcp-local.py --server <name>` 和会话的 MCP 允许列表转发工具请求及结果，并支持 `ToolSearch`。Windows 端检查当前权限模式、`T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与项目 `permissions.deny`。
 - **远端读图 / PDF 路径双向回映射**：记录 Windows 侧 `media-export` 产生的 VPS `.bridge-media/<session>/<sha256>.<ext>` 与 Windows 原始路径对应关系（按 `projectId` 持久化至 `media-path-cache.json` 兼容 `--resume`），自动回映射流向 T3 Code 的原生 `Read`（分块 `stream_event`、`assistant` `tool_use`、`user` `tool_use_result`、Markdown 引用与 `can_use_tool` 审批弹窗），并在审批放行回传 `control_response.updatedInput` 时反向还原为 VPS 路径，确保 T3 Code 读图预览正常渲染。
 - **多 SSH 线路自动选路、Hook 阻断与任务取消找回**：启动期通过 `SshRoutes.firstAvailable()` 自动在 `cloudflared` / `socks5` / `direct` 线路间故障切换（自动缓冲早期 `initialize`/`mcp_set_servers` 帧不丢包）；发送用户消息时自动展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS` 不劫持内置命令）、执行 `UserPromptSubmit` 本机 Hooks（阻断时明确反馈且不锁死会话）；停止会话主动取消本机长任务，SSH 意外断线自动查回并保留原 `requestId` 防重放。
 - **原子暂存升级与自检回滚**：`manage-native.mjs` 先在独立暂存目录编译并跑完离线 `--self-test` 与远端 `--version --live` 校验后再原子热替换（支持在旧 `.exe` 运行时安全切换），失败自动回滚。
@@ -61,9 +61,9 @@
 - **`remote/claude-windows`、`remote/mcp-local.py` 与 `plugin/runtime/workspace-runtime.mjs`**：允许受控内置任务/规划/工具发现工具，支持 `mcp-local.py --server <name>` 路由转发，并增强本机轮次任务取消（`cancel-jobs`）与活动任务查询（`listProjectJobs`）。
 - **`scripts/check.py`**：扩展静态语法与受管资产校验，覆盖 `t3-native/` 全部模块。
 
-### 4. 底层兼容性承诺（为什么不改动内部 ID 与目录名）
+### 4. 沿用上游的插件标识和目录
 
-为确保从上游 `claude-vps-bridge` 迁移、或与 CodexHost 共存的用户**零成本升级、不丢失已有配置、项目映射与历史会话**，本 Fork 刻意保持以下底层技术标识不变：
+从上游 `claude-vps-bridge` 迁移或与 CodexHost 共存时，桥接器沿用以下标识：
 
 - CodexHost 插件 ID：`claude-vps`（`plugin/manifest.json`）
 - 配置文件名：`bridge-config.local.json` / `bridge-config.json` 与环境变量 `CLAUDE_VPS_CONFIG`
