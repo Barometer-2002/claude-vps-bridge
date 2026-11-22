@@ -60,7 +60,8 @@ function duplexControl(binding,action,more,lane='control'){
   if(localPending.size>=256)return Promise.reject(Object.assign(new Error('Too many local operations are pending; no operation was submitted'),{code:'LOCAL_CAPACITY'}));
   const controlId=randomUUID();
   return new Promise((resolve,reject)=>{
-    const timer=setTimeout(()=>{localPending.delete(controlId);reject(new Error('Local operation timed out; outcome unknown, no retry was sent'));},110000);
+    const timeout=action==='mcp'&&more?.server!=='playwright'?305000:110000;
+    const timer=setTimeout(()=>{localPending.delete(controlId);reject(new Error('Local operation timed out; outcome unknown, no retry was sent'));},timeout);
     localPending.set(controlId,{resolve,reject,timer});
     send({controlId,controlNo:++controlNo,controlEpoch,sessionId:binding.sessionId,lane,request:{action,...more}});
   });
@@ -271,6 +272,7 @@ async function request(method, params, signal) {
     }
     const environment=await localControl(binding,'environment');
     if(binding.duplexTools)binding.toolEnvironment=toolBridge.register(binding);
+    const mcpNames=Array.isArray(params.localMcpServers)?params.localMcpServers.filter(name=>typeof name==='string'&&/^[A-Za-z0-9._-]{1,64}$/.test(name)&&!name.includes('__')):[];
     const knownSession=input.kind==='resume'?await claimNativeSession(input.nativeRef,binding,true):false;
     const result = await adapter.open({ ...input, ...(!input.permissionModeId&&environment.defaultMode?{permissionModeId:environment.defaultMode}:{}), cwd, environment: {
       WINDOWS_PROJECT_CWD: verified.cwd,
@@ -281,6 +283,7 @@ async function request(method, params, signal) {
       CODEXHOST_CLI_PATH: agentCommand,
       WINDOWS_BRIDGE_ROOT: bridgeRoot,
       ...(params.t3Mcp === true ? { WINDOWS_T3_MCP: '1' } : {}),
+      ...(mcpNames.length ? { WINDOWS_LOCAL_MCP_SERVERS: JSON.stringify(mcpNames) } : {}),
       ...(parentThread ? { WINDOWS_PARENT_THREAD_ID: parentThread } : {}),
     } });
     if (!result.ok)return result;

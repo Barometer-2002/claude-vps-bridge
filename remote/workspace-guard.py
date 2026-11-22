@@ -26,7 +26,9 @@ def structured(command):
     raise ValueError('Unsupported command')
 
 def preflight(operation,mode):
-    result=subprocess.run([WORKSPACE_COMMAND,'--internal',json.dumps({'action':'preflight','request':operation,'permissionMode':mode})],capture_output=True,text=True,timeout=150)
+    request={'action':'preflight','request':operation}
+    if isinstance(mode,str):request['permissionMode']=mode
+    result=subprocess.run([WORKSPACE_COMMAND,'--internal',json.dumps(request)],capture_output=True,text=True,timeout=150)
     if result.returncode:raise ValueError(result.stderr[-2000:])
     return json.loads(result.stdout)
 
@@ -54,10 +56,13 @@ def permitted(command):
 def allowed_dynamic_mcp(tool_name):
     if not isinstance(tool_name, str) or not tool_name.startswith('mcp__'):
         return False
-    parts = tool_name.split('__')
-    if len(parts) < 3 or not parts[1]:
-        return False
-    server = parts[1]
+    def contains(servers):
+        return any(isinstance(item, str) and item and
+                   any(tool_name.startswith(f'mcp__{name}__') for name in (item, re.sub(r'[^A-Za-z0-9_-]', '_', item)))
+                   for item in servers)
+    exported = os.environ.get('WINDOWS_LOCAL_MCP_SERVERS')
+    if exported is not None:
+        return contains(json.loads(exported))
     allow_file = os.environ.get('WINDOWS_ALLOWED_MCP_FILE', '')
     if not allow_file:
         return False
@@ -68,12 +73,7 @@ def allowed_dynamic_mcp(tool_name):
             return False
         data = json.loads(target.read_text(encoding='utf-8'))
         servers = data.get('servers', []) if isinstance(data, dict) else []
-        for item in servers:
-            if not isinstance(item, str) or not item:
-                continue
-            normalized = re.sub(r'[^A-Za-z0-9_-]', '_', item)
-            if server == item or server == normalized:
-                return True
+        return contains(servers)
     except Exception:
         return False
     return False
@@ -114,14 +114,14 @@ if __name__ == '__main__':
             if (not target.is_relative_to(root) and not inherited) or not target.is_file() or target.suffix.lower() not in ('.png','.jpg','.jpeg','.webp','.gif','.pdf'):
                 raise ValueError('Native Read is limited to this chat\'s staged media. Use windows-workspace read for project text.')
             print('{}')
-        elif isinstance(name,str) and name.startswith(('mcp__tavily__','mcp__playwright__')):
+        elif allowed_dynamic_mcp(name) or (isinstance(name,str) and name.startswith(('mcp__tavily__','mcp__playwright__'))):
             decision=preflight({'action':'mcp-call','tool':name,'arguments':request.get('tool_input',{})},request.get('permission_mode'))
             output={'hookEventName':'PreToolUse'}
             if decision['decision'] in ('deny','ask','allow'):
                 output.update(permissionDecision=decision['decision'],permissionDecisionReason=decision['reason'])
             if decision.get('additionalContext'):output['additionalContext']=decision['additionalContext']
             print(json.dumps({'hookSpecificOutput':output}))
-        elif (isinstance(name,str) and name.startswith('mcp__t3-code__') and os.environ.get('WINDOWS_T3_MCP')=='1') or allowed_dynamic_mcp(name):
+        elif isinstance(name,str) and name.startswith('mcp__t3-code__') and os.environ.get('WINDOWS_T3_MCP')=='1':
             print('{}')
         elif name in ('AskUserQuestion', 'WebSearch', 'WebFetch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ExitPlanMode', 'EnterPlanMode', 'ToolSearch'):
             print('{}')

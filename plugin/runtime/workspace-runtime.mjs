@@ -36,6 +36,7 @@ async function json(file) { return JSON.parse(await fs.readFile(file, 'utf8')); 
 // Writes to one file run in call order; a retried replacement must never let
 // an older status land after a newer one.
 const writeChains = new Map();
+const cancelledTurns = new Map();
 async function atomic(file, value) {
   const write = async () => {
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -83,6 +84,7 @@ export async function bindSession(sessionId, info, parentThread) {
 export async function setTurn(sessionId, turnId) {
   const file = path.join(state, 'sessions', safeId(sessionId) + '.json');
   const value = await json(file); value.turnId = turnId; delete value.modelObservation; await atomic(file, value);
+  if (cancelledTurns.get(sessionId) !== turnId) cancelledTurns.delete(sessionId);
 }
 async function setMode(sessionId,mode){const file=path.join(state,'sessions',safeId(sessionId)+'.json');const value=await json(file);value.permissionMode=mode;await atomic(file,value);}
 async function contextFor(request, info) {
@@ -175,7 +177,7 @@ async function artifact(info, ctx, file) {
   return value;
 }
 async function jobStatus(directory,{includeLogs=true}={}) {
-  const value = await json(path.join(directory,'status.json')).catch(e=>e.code==='ENOENT'?{status:'starting'}:Promise.reject(e));
+  const value = await json(path.join(directory,'status.json')).catch(e=>e.code==='ENOENT'?{requestId:path.basename(directory),status:'starting'}:Promise.reject(e));
   if (['running','queued'].includes(value.status) && value.runnerPid) {
     // OpenSSH logons can deny PROCESS_TERMINATE even for signal 0. EPERM is
     // not proof of exit. A runner-owned heartbeat also prevents PID reuse from
@@ -192,6 +194,11 @@ async function jobStatus(directory,{includeLogs=true}={}) {
   return {...value,...logs,logs:{stdout:path.join(directory,'stdout.log'),stderr:path.join(directory,'stderr.log')},nextAction:uncertain?'Inspect this task and its output files; do not resubmit':logs.output?.stdout.truncated||logs.output?.stderr.truncated?'Output is a preview only. Use job operation=output with stream and offset=0, then nextOffset, to read the saved output without rerunning. New jobs retain the entire stream; legacy rotated jobs may have missing history.':value.status==='succeeded'?'Open artifacts or read output':['running','starting','queued'].includes(value.status)?'Query or cancel this same requestId':'Read output before deciding on a new task'};
 }
 async function projectJobs(info){const root=path.join(state,'jobs',info.projectId),ids=await fs.readdir(root).catch(e=>e.code==='ENOENT'?[]:Promise.reject(e));const result=[];for(let i=0;i<ids.length;i+=20)result.push(...await Promise.all(ids.slice(i,i+20).map(id=>jobStatus(path.join(root,id),{includeLogs:false}))));return result;}
+export async function listProjectJobs(request) {
+  const info = await verifyProject(request.cwd, request.projectId);
+  await contextFor(request, info);
+  return projectJobs(info);
+}
 // Conservatively protect the whole project: durable jobs outlive their chat.
 // No log bodies are read and an uncertain job must not be treated as idle.
 export async function workspaceHasBackgroundWork(info){return (await projectJobs(info)).some(job=>!['succeeded','failed','cancelled'].includes(job.status));}
@@ -205,8 +212,9 @@ async function launchJob(directory,id){
     fail('LOCAL_RUNNER_UNAVAILABLE',error.message+'. The command was not started.'+retry);
   }
 }
-async function startJob(info,ctx,request) {
+async function startJob(info,ctx,request,signal) {
   const id=safeId(request.requestId), directory=path.join(state,'jobs',info.projectId,id);
+  const turnCancelled=()=>signal?.aborted||(ctx.turnId&&cancelledTurns.get(ctx.sessionId)===ctx.turnId);
   const environment=await projectEnvironment(info.cwd);
   const workingDirectory=await projectPath(info,request.workingDirectory??'.');
   const spec={project:info,sessionId:ctx.sessionId,parentThread:ctx.parentThread,turnId:ctx.turnId,requestId:id,script:request.script,executable:request.executable,args:request.args,artifacts:request.artifacts ?? [],workingDirectory,environment:environment.env};
@@ -221,14 +229,17 @@ async function startJob(info,ctx,request) {
   if(created){
     await atomic(path.join(directory,'request.json'),{...spec,fingerprint});
     await atomic(path.join(directory,'status.json'),{requestId:id,status:'starting',cwd:info.cwd});
-    await launchJob(directory,id);
+    if(turnCancelled()){
+      await fs.writeFile(path.join(directory,'cancel'),'cancel');
+      await atomic(path.join(directory,'status.json'),{requestId:id,status:'cancelled',cwd:info.cwd,completedAt:new Date().toISOString()});
+    }else await launchJob(directory,id);
   }else{
     const saved=await json(path.join(directory,'request.json')).catch(()=>fail('JOB_START_UNKNOWN','Job reservation exists; inspect status instead of resubmitting'));
     if(saved.fingerprint!==fingerprint)fail('REQUEST_ID_CONFLICT','Request ID already belongs to different work');
     // A reservation the runner never accepted is launched now; the broker's
     // exclusive launch claim keeps this from ever starting the job twice.
     const current=await json(path.join(directory,'status.json')).catch(()=>({status:'starting'}));
-    if(current.status==='starting'&&!await launchClaimed(directory))await launchJob(directory,id);
+    if(current.status==='starting'&&!turnCancelled()&&!await launchClaimed(directory))await launchJob(directory,id);
   }
   const deadline=Date.now()+Math.min(Math.max(Number(request.waitMs)||0,0),30000);
   let result;
@@ -284,20 +295,31 @@ async function runJob(directory){
 }
 export async function cancelSessionJobs(sessionId,turnId){
   const ctx=await json(path.join(state,'sessions',safeId(sessionId)+'.json'));
-  const root=path.join(state,'jobs',ctx.projectId), cancelled=[];
+  if(turnId)cancelledTurns.set(sessionId,turnId);
+  const root=path.join(state,'jobs',ctx.projectId), cancelled=[], unconfirmed=[];
   const ids=await fs.readdir(root).catch(e=>e.code==='ENOENT'?[]:Promise.reject(e));
-  for(const id of ids){const directory=path.join(root,id),spec=await json(path.join(directory,'request.json'));if(spec.sessionId!==sessionId||(turnId&&spec.turnId!==turnId))continue;const before=await jobStatus(directory);if(['running','starting','queued','unresponsive'].includes(before.status)){await fs.writeFile(path.join(directory,'cancel'),'cancel');cancelled.push(id);}}
+  for(const id of ids){
+    const directory=path.join(root,id),spec=await json(path.join(directory,'request.json')).catch(e=>e.code==='ENOENT'?null:Promise.reject(e));
+    if(!spec||spec.sessionId!==sessionId||(turnId&&spec.turnId!==turnId))continue;
+    const before=await jobStatus(directory,{includeLogs:false});
+    if(['running','starting','queued','unresponsive'].includes(before.status)){
+      await fs.writeFile(path.join(directory,'cancel'),'cancel');cancelled.push(id);
+    }else if(before.status==='interrupted'||before.cancellationWarning)unconfirmed.push(id);
+  }
   const deadline=Date.now()+12000;
-  while(cancelled.length&&Date.now()<deadline){const states=await Promise.all(cancelled.map(id=>jobStatus(path.join(root,id))));if(states.every(s=>!['running','starting','queued','unresponsive'].includes(s.status)))return states;await sleep(150);}
-  const states=await Promise.all(cancelled.map(id=>jobStatus(path.join(root,id))));
-  if(states.some(s=>['running','starting','queued','unresponsive'].includes(s.status)))fail('CANCEL_UNCONFIRMED','Some Windows jobs have not confirmed cancellation');
+  const uncertain=s=>['running','starting','queued','unresponsive','interrupted'].includes(s.status)||s.cancellationWarning;
+  const readStates=()=>Promise.all(cancelled.map(id=>jobStatus(path.join(root,id),{includeLogs:false})));
+  let states=await readStates();
+  while(states.some(uncertain)&&Date.now()<deadline){await sleep(150);states=await readStates();}
+  unconfirmed.push(...states.filter(uncertain).map(s=>s.requestId));
+  if(unconfirmed.length)fail('CANCEL_UNCONFIRMED','Some Windows jobs have not confirmed cancellation: '+unconfirmed.join(', '));
   return states;
 }
-export async function handle(request){
+export async function handle(request,{signal}={}){
   validateRequest(request);
   if(request.action==='batch'){
     const requests=readBatch(request);
-    return {bridge:'windows-workspace-v1',ok:true,data:await Promise.all(requests.map(r=>handle({...r,cwd:request.cwd,projectId:request.projectId,sessionId:request.sessionId})))};
+    return {bridge:'windows-workspace-v1',ok:true,data:await Promise.all(requests.map(r=>handle({...r,cwd:request.cwd,projectId:request.projectId,sessionId:request.sessionId},{signal})))};
   }
   const info=await verifyProject(request.cwd||process.cwd(),request.projectId),ctx=await contextFor(request,info);
   const environment=await projectEnvironment(info.cwd);
@@ -317,7 +339,7 @@ export async function handle(request){
     case 'search': {const root=await projectPath(info,request.path);data=await searchWorkspace({state,info,environment,mode:ctx.permissionMode??environment.defaultMode,root},request);break;}
     case 'write': case 'edit': data=await withWriter(state,await writerScope(state,info.projectId,ctx.parentThread),{kind:request.action,requestId:request.requestId},()=>saveFile(info,ctx,request));break;
     case 'artifact': data=await artifact(info,ctx,request.path);break;
-    case 'run': data=await startJob(info,ctx,request);break;
+    case 'run': data=await startJob(info,ctx,request,signal);break;
     case 'job': {
       if(!['status','cancel','output'].includes(request.operation??'status'))fail('INVALID_JOB_OPERATION','Use status, cancel or output');
       const directory=path.join(state,'jobs',info.projectId,safeId(request.requestId));

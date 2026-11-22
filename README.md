@@ -26,7 +26,7 @@
 |---|---|---|
 | **目标宿主** | CodexHost 桌面端插件 | **T3 Code 优先**（双引擎接入 + 纯 T3 独立安装），同时 **100% 兼容 CodexHost** |
 | **T3 Code 官方原生接入** | 无 | 新增 `t3-native/`（**`Claude VPS`**，`driver: claudeAgent`）：直通 VPS 官方 `stream-json`，解锁**顶部 5h/7d 实时额度圆环**、单套原生权限、`textGeneration`、`effort`/`ultracode`/`fastMode`、缓存过期自动压缩、隔离 `claude-home` |
-| **T3 Code Local ACP 适配** | 无 | 新增 `t3/` v1.3.1（**`Claude VPS Bridge`**，`driver: acpRegistry`）：原生 `Read`/`List`/`Grep`/`Edit`(红绿 Diff)/`PowerShell` 卡片、可读审批弹窗、跨轮 Plan 面板、`ExitPlanMode`、零消耗 `/usage` & `/status`、热刷新 `$skill`/`/command` |
+| **T3 Code Local ACP 适配** | 无 | 新增 `t3/`（**`Claude VPS Bridge`**，`driver: acpRegistry`）：原生 `Read`/`List`/`Grep`/`Edit`(红绿 Diff)/`PowerShell` 卡片、可读审批弹窗、跨轮 Plan 面板、`ExitPlanMode`、零消耗 `/usage` & `/status`、热刷新 `$skill`/`/command` |
 | **T3 内置 MCP 生态直通** | 无 | 双路径均打通 `mcp__t3-code__*`（`preview_*`、`html_render`、`delegate_task`、`t3_thread_*` 等）；T3 本地 `127.0.0.1` URL 与 Bearer Token 严格留在 Windows，ACP 侧带会话精确隔离与 Plan 模式 Fail-Closed 只读白名单 |
 | **纯 T3 独立安装** | 需依赖 CodexHost 安装目录 | 新增 `--t3-only` / `-T3Only` / `-WithT3` / `-WithT3Native`，无需安装 CodexHost 桌面端即可运行 |
 | **VPS 守卫与并发体验** | 简写命令走 `updatedInput` 改写 | 移除全部 `updatedInput` 改写修复 `auto` 模式并发拒批；放行 `ToolSearch`、任务工具与 `ExitPlanMode`；过滤 PowerShell CLIXML 噪音 |
@@ -42,7 +42,7 @@
 | 方案 | T3 内显示名 | 驱动类型 | 核心特点与推荐场景 |
 |---|---|---|---|
 | **官方 `claudeAgent` 原生 Shim**（`t3-native/`，推荐主力） | **`Claude VPS`** | `claudeAgent` | 直通 VPS 原版 Claude Code 标准 `stream-json`：顶部 5h/7d 实时额度圆环、单套原生权限（`can_use_tool`）、自动标题/Commit/PR（`textGeneration`）、`effort`/`ultracode`/`fastMode`、缓存过期自动压缩、支持 `ToolSearch` 延迟加载全部 T3 MCP 工具。 |
-| **Local ACP 适配器**（`t3/`，v1.3.1） | **`Claude VPS Bridge`** | `acpRegistry` | 将 `windows-workspace` 自动解包并翻译为原生 `Read`/`List`/`Grep`/`Edit`（红绿 Diff）/`PowerShell` 卡片与可读审批弹窗；支持零消耗 `/usage` & `/status`、本机 `.claude/{skills,commands}` 补全热刷新与真执行、Plan 模式 Fail-Closed MCP 白名单。 |
+| **Local ACP 适配器**（`t3/`） | **`Claude VPS Bridge`** | `acpRegistry` | 将 `windows-workspace` 自动解包并翻译为原生 `Read`/`List`/`Grep`/`Edit`（红绿 Diff）/`PowerShell` 卡片与可读审批弹窗；支持零消耗 `/usage` & `/status`、本机 `.claude/{skills,commands}` 补全热刷新与真执行、Plan 模式 Fail-Closed MCP 白名单。 |
 
 详细能力对比、架构图与可选安全环境变量见 [T3 Code 适配与使用指南](docs/T3CODE.md)。
 
@@ -135,7 +135,7 @@ pwsh -NoProfile -File .\install.ps1
 
 ```text
 t3-native/     [Fork 新增] T3 Code 官方 claudeAgent 原生 Shim（C# 启动器、Node 代理、本地 HTTP MCP 客户端与注册工具）
-t3/            [Fork 新增] T3 Code Local ACP v2 适配器（v1.3.1，工具卡片翻译、MCP-over-ACP、Plan 面板与管理工具）
+t3/            [Fork 新增] T3 Code Local ACP v2 适配器（工具卡片翻译、MCP-over-ACP、Plan 面板与管理工具）
 remote/        VPS 端运行时（含 Fork 新增 claude-stream-relay.mjs，以及上游 remote-server / tool-bridge / workspace-guard / mcp-local）
 plugin/        Windows 本机核心桥接与 CodexHost 插件运行时（SSH 协议 3 多路传输、工作区执行、项目环境、Hooks、诊断）
 installer/     配置（支持 --t3-only）、依赖准备、事务式部署/回滚与停用脚本

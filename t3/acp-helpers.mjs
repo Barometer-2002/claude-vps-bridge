@@ -201,59 +201,12 @@ export function extractPlanEntries(item, taskMap, outcome) {
   return null;
 }
 
-// Fail-closed read-only allowlist for T3 MCP tools while in Plan mode.
-// Any mutating, launching, cancelling, or newly added T3 tool is blocked in Plan mode.
-const PLAN_MODE_ALLOWED_T3_TOOLS = new Set([
-  't3_environment_read',
-  'orchestrator_capabilities',
-  't3_thread_list',
-  't3_thread_read',
-  't3_thread_search',
-  't3_project_list',
-  't3_project_read',
-  't3_worktree_status',
-  't3_worktree_list',
-  'list_scheduled_tasks',
-  'list_thread_pull_requests',
-  'read_pull_request_guide',
-  'list_issues',
-  'read_issue',
-  'list_thread_issues',
-  'device_list',
-  'device_screenshot',
-  'preview_status',
-  'preview_snapshot',
-  't3_preview_list',
-  't3_theme_read',
-  'html_preview',
-  'html_render',
-  'send_to_user',
-  'task_status',
-]);
-
-function parseCsvSet(value) {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  const items = value.split(',').map(s => s.trim()).filter(Boolean);
-  return items.length ? new Set(items) : null;
-}
-
-export function parseT3McpPolicy(env = process.env) {
-  return {
-    allow: parseCsvSet(env?.T3_MCP_ALLOW_TOOLS),
-    deny: parseCsvSet(env?.T3_MCP_DENY_TOOLS),
-  };
-}
-
-export function isT3McpToolAllowed(toolName, policy, { permissionModeId, enforceMode = false } = {}) {
-  if (typeof toolName !== 'string' || !toolName.trim()) return false;
-  const name = toolName.trim();
-  if (policy?.deny?.has(name)) return false;
-  if (policy?.allow && !policy.allow.has(name)) return false;
-  if (enforceMode && permissionModeId === 'plan' && !PLAN_MODE_ALLOWED_T3_TOOLS.has(name)) {
-    return false;
-  }
-  return true;
-}
+// Re-export shared T3 MCP policy so ACP and Native Shim enforce identical allow/deny & Plan-mode rules.
+export {
+  PLAN_MODE_ALLOWED_T3_TOOLS,
+  parseT3McpPolicy,
+  isT3McpToolAllowed,
+} from './mcp-policy.mjs';
 
 export function normalizeThinkingOption(entry, catalogThinkingMap) {
   if (typeof entry === 'string') {

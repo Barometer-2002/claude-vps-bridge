@@ -80,10 +80,13 @@ export function createHarnessAdapter(context) {
       const started=performance.now();
       const request={...frame.request,cwd:binding.cwd,projectId:binding.projectId,sessionId:frame.sessionId,parentThread:binding.parentThread,bridgeRequestId:frame.controlId};
       timing({phase:'local-operation-start',action:request.action,lane:frame.lane??'control'});
+      const proxyMcp=request.action==='mcp'&&(binding.localMcpServers.includes(request.server)||(request.server==='t3-code'&&binding.t3Mcp));
+      const proxyPreflight=request.action==='preflight'&&request.request?.action==='mcp-call'&&binding.localMcpServers.some(name=>
+        [name,name.replace(/[^A-Za-z0-9_-]/g,'_')].some(alias=>request.request.tool?.startsWith('mcp__'+alias+'__')));
       const value=await (
         frame.lane==='tool'&&request.action!=='media-export'
           ? handle(request)
-          : (request.action==='mcp'&&request.server==='t3-code'&&binding.t3Mcp===true&&typeof context.onMcpRequest==='function'
+          : ((proxyMcp||proxyPreflight)&&typeof context.onMcpRequest==='function'
               ? context.onMcpRequest({...request,acpSessionId:binding.acpSessionId})
               : control(request))
       );
@@ -173,12 +176,14 @@ export function createHarnessAdapter(context) {
           await exec(getBridgeConfig().pwshExecutable,['-NoLogo','-NoProfile','-File',EXPORT],{env:{...env,CODEX_THREAD_ID:parent},windowsHide:true,timeout:15000});
         }
         sessionId=randomUUID();channel=new SessionChannel(reason=>faultSession(sessionId,reason)); channels.set(sessionId,channel);
-        const {environment,signal,t3Mcp,acpSessionId,...safeInput}=input;
+        const {environment,signal,t3Mcp,acpSessionId,localMcpServers,...safeInput}=input;
         const enableT3Mcp=t3Mcp===true&&typeof context.onMcpRequest==='function';
         const safeAcpSessionId=typeof acpSessionId==='string'&&acpSessionId.length>0?acpSessionId:undefined;
         const workspace=await projectInfo(input.cwd);
-        localBindings.set(sessionId,{cwd:workspace.cwd,projectId:workspace.projectId,parentThread:parent,t3Mcp:enableT3Mcp,acpSessionId:safeAcpSessionId,requests:new SessionRequests(),readLifetime:new AbortController()});
-        const opened=await rpc('open',{sessionId,input:safeInput,localCwd:input.cwd,parentThread:parent,workspace,t3Mcp:enableT3Mcp,localFeatures:['prepare-turn'],localControl:health.capabilities.includes('duplex-control'),localTools:health.capabilities.includes('duplex-tools')},input.kind==='fork'?180000:60000,options?.signal??signal);
+        const mcpNames=typeof context.onMcpRequest==='function'&&Array.isArray(localMcpServers)
+          ?localMcpServers.filter(name=>typeof name==='string'&&/^[A-Za-z0-9._-]{1,64}$/.test(name)&&!name.includes('__')):[];
+        localBindings.set(sessionId,{cwd:workspace.cwd,projectId:workspace.projectId,parentThread:parent,t3Mcp:enableT3Mcp,localMcpServers:mcpNames,acpSessionId:safeAcpSessionId,requests:new SessionRequests(),readLifetime:new AbortController()});
+        const opened=await rpc('open',{sessionId,input:safeInput,localCwd:input.cwd,parentThread:parent,workspace,t3Mcp:enableT3Mcp,localMcpServers:mcpNames,localFeatures:['prepare-turn'],localControl:health.capabilities.includes('duplex-control'),localTools:health.capabilities.includes('duplex-tools')},input.kind==='fork'?180000:60000,options?.signal??signal);
         if(!opened.ok){channel.end();channels.delete(sessionId);localBindings.delete(sessionId);return opened;}
         const metadata=opened.value;
         const binding=localBindings.get(sessionId);binding.nativeState??=metadata.initialState;
@@ -226,7 +231,7 @@ export function createHarnessAdapter(context) {
           if(!binding.rebinding)binding.rebinding=(async()=>{
             const nativeRef=remap(binding.nativeState?.nativeRef??metadata.nativeWriterRef,'claude-code',ID);
             if(!nativeRef)throw new Error('The previous native session identity is unknown; no replacement conversation was created');
-            const restored=await rpc('open',{sessionId,rebind:true,t3Mcp:binding.t3Mcp===true,input:{kind:'resume',cwd:input.cwd,nativeRef,model:binding.nativeState?.effectiveModel??input.model,thinkingOptionId:binding.nativeState?.effectiveThinkingOptionId??input.thinkingOptionId,permissionModeId:binding.nativeState?.effectivePermissionModeId??input.permissionModeId},localCwd:input.cwd,parentThread:binding.parentThread,workspace,localFeatures:['prepare-turn'],localControl:true,localTools:true});
+            const restored=await rpc('open',{sessionId,rebind:true,t3Mcp:binding.t3Mcp===true,localMcpServers:binding.localMcpServers,input:{kind:'resume',cwd:input.cwd,nativeRef,model:binding.nativeState?.effectiveModel??input.model,thinkingOptionId:binding.nativeState?.effectiveThinkingOptionId??input.thinkingOptionId,permissionModeId:binding.nativeState?.effectivePermissionModeId??input.permissionModeId},localCwd:input.cwd,parentThread:binding.parentThread,workspace,localFeatures:['prepare-turn'],localControl:true,localTools:true});
             if(!restored.ok)throw new Error(restored.error.message);binding.capabilities=restored.value.capabilities;if(restored.value.initialUsage)channel.push({kind:'event',event:{type:'session.usage.changed',usage:restored.value.initialUsage}});binding.needsRebind=false;timing({phase:'native-session-restored',nativeSessionId:nativeRef.nativeSessionId});
           })().finally(()=>{binding.rebinding=null;});
           return binding.rebinding;

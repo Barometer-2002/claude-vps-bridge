@@ -28,6 +28,8 @@ for name in re.findall(r"'([^']+)'", t3_assets.group(1)):
 for name in ('claude-vps-shim.cs', 'claude-vps-shim.mjs', 'http-mcp-client.mjs', 'manage-native.mjs'):
     if not (T3_NATIVE / name).is_file():
         raise SystemExit('Missing T3 native shim file: t3-native/' + name)
+if not (T3 / 'mcp-policy.mjs').is_file():
+    raise SystemExit('Missing shared MCP policy file: t3/mcp-policy.mjs')
 
 manifest = json.loads((PLUGIN / 'manifest.json').read_text(encoding='utf-8'))
 for field in ('entry', 'icon'):

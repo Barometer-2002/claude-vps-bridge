@@ -45,7 +45,7 @@
 - **多 SSH 线路自动选路与本机能力补齐**：启动阶段通过 `SshRoutes.firstAvailable()` 自动在 `cloudflared` / `socks5` / `direct` 线路间故障切换（自动缓冲早期 `initialize`/`mcp_set_servers` 帧不丢包）；发送用户消息时自动展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS` 且不劫持 Claude 内置斜杠命令）、执行 `UserPromptSubmit` 本机 Hooks，并自动授权 T3 附件目录中的图片/PDF 路径供 `windows-workspace media` 导出读取。
 - **系统规则自动合并与全场景真机验收**：`remote/claude-stream-relay.mjs` 将 `bridge-instructions.md` 与本机项目上下文合并注入 `initialize.appendSystemPrompt`；已完成 `textGeneration`、多 SSH 线路切换、自定义 HTTP+Stdio MCP、本地 Skill 展开、图片/媒体传输、`--resume`/`--fork-session`、`Supervised` 审批（拒绝+放行）及真实 T3 `claudeAgent` 会话的全链路真机验证。
 
-### 2. 新增 T3 Code Local ACP v2 适配器（`t3/`，v1.1.0 → v1.3.1）
+### 2. 新增 T3 Code Local ACP v2 适配器（`t3/`）
 
 提供独立实例 **`claude-vps-bridge`**（显示名 **Claude VPS Bridge**，`driver: acpRegistry`），适合偏爱原生本地工具卡片、红绿 Diff 与零消耗诊断命令的场景：
 

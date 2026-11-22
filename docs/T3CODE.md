@@ -3,7 +3,7 @@
 **T3 Claude VPS（`t3-claude-vps`）** 为 Windows 端 [T3 Code](https://github.com/pingdotgg/t3code) 提供**两种可独立并存的 VPS Claude Code 接入方案**，支持**纯 T3 Code 独立安装（无需安装 CodexHost 桌面端）**，同时也与上游 CodexHost 桥接共用同一套底层基础设施（Fork 来源与改动详见 [Fork 起源与改进说明](FORK_CHANGES.md)）：
 
 1. **官方 `claudeAgent` 原生 Shim（`t3-native/`，推荐）** — 注册独立实例 **`Claude VPS`**（`driver: claudeAgent`），通过 SSH 直通 VPS 原版 Claude Code 的官方 `stream-json` 协议。
-2. **Local ACP 适配器（`t3/`，v1.3.1）** — 注册独立实例 **`Claude VPS Bridge`**（`driver: acpRegistry`），通过 ACP v2 协议接入并深度翻译本机工具卡片与状态命令。
+2. **Local ACP 适配器（`t3/`）** — 注册独立实例 **`Claude VPS Bridge`**（`driver: acpRegistry`），通过 ACP v2 协议接入并深度翻译本机工具卡片与状态命令。
 
 两者均**不修改 T3 Code 默认 `claudeAgent` 实例、不修改本机 `~/.claude`、不修改 T3 Code 任何程序文件**，可与本机原生 Claude 账号完全并行共存。
 
@@ -18,7 +18,7 @@
 | **权限体系** | **单套原生权限**（T3 Supervised / Auto-accept / Full-access 直通 `can_use_tool`） | 两套叠加（T3 审批开关 + `Claude Mode` 下拉，可隐藏后者） |
 | **内置 `textGeneration`** | **原生解锁**（自动标题、Commit、PR 描述、PR Review Guide） | T3 对 `acpRegistry` 硬编码关闭 |
 | **模型与高级参数** | 完整 14 模型 + `effort` / `ultracode` / `fastMode` / `autoCompactWindow` / `beforeCacheExpires` + `--resume` / `--fork-session` | 完整模型目录 + 按模型过滤 `Thinking` 档位 |
-| **T3 与本机自定义 MCP 直通** | **支持全部本机 MCP**（`LocalMcpHub` 统一拦截 `--mcp-config` / `mcp_set_servers`，将 `t3-code` 及用户自定义本机 HTTP & Stdio MCP 全部留在 Windows 代理执行，支持 `ToolSearch` 延迟加载） | **支持 `t3-code`**（MCP-over-ACP，按 `acpSessionId` 严格隔离，Plan 模式 Fail-Closed 只读白名单） |
+| **T3 与本机自定义 MCP** | 通过 `--mcp-config` 和 `mcp_set_servers` 接入在 Windows 运行的 Streamable HTTP 和 stdio 服务，支持 `ToolSearch` 延迟加载 | 接入 MCP-over-ACP、Streamable HTTP 和 stdio 服务，按 ACP 会话隔离 |
 | **本机工具卡片展示** | 原生 `Bash`（`windows-workspace`）+ 完整 PreToolUse 守卫、本机 Hooks 与 `windows-workspace media` 图片/PDF 传输 | 自动解包并翻译为原生 `Read` / `List` / `Grep` / `Edit`(红绿 Diff) / `PowerShell` / `Batch` 卡片与可读审批弹窗 |
 | **Plan 任务面板与审批** | 原生 `TaskCreate` / `TaskUpdate` / `TodoWrite` / `ExitPlanMode` | 全量同步至 ACP `plan` 面板（跨轮持久 + `session/load` 重建）与 `elicitation/create` |
 | **本机 Skills / Commands** | 发送 `/skill`、`$skill` 或 `/command` 时自动识别并展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS`，不劫持内置命令） | 自动扫描 `~/.claude` 与 `.claude/{skills,commands}` 注入 T3 补全菜单，每轮自动热刷新，点击 `$skill` / `/command` 真执行 |
@@ -39,7 +39,7 @@ flowchart LR
             SHIM["t3-native/claude-vps-shim.exe + .mjs<br/>拦截 --mcp-config / mcp_set_servers<br/>本机 LocalHttpMcpClient"]
         end
 
-        subgraph ACP["路径 2：Local ACP 适配器 (v1.3.1)"]
+        subgraph ACP["路径 2：Local ACP 适配器"]
             ACPA["t3/claude-vps-acp.mjs<br/>Read/Edit Diff 卡片 · MCP-over-ACP<br/>Plan 白名单 · /usage /status"]
             PLUG["plugin/plugin.mjs (Bridge 0.14.1)"]
             ACPA <--> PLUG
@@ -82,7 +82,7 @@ flowchart LR
 - **严格留在 VPS（不搬运到 Windows）**：Anthropic OAuth 登录凭据、VPS `~/.claude` 配置与原生会话记录；所有 Anthropic API 请求由 VPS 原版 Claude Code 直接发出（零反代、零逆向）。
 - **严格留在 Windows（不发往 VPS）**：本机环境变量中的 API Key/凭据、T3 Code 本地 `127.0.0.1` HTTP MCP 地址与 `Authorization` Bearer Token、以及项目源码目录本身。
 - **会发往 VPS 供模型推理**：对话正文、粘贴的图片/附件、Claude 主动读取的文件片段、命令输出，以及调用 T3 MCP 工具时的参数与返回值（例如 `t3_thread_read` 读出的文本）。
-- **ACP 模式的 T3 MCP 策略边界**：`mcp__t3-code__*` 不经过 Windows 工作区 `preflight`，由本机 ACP 适配器执行 **Plan 模式 Fail-Closed 只读白名单**（默认拦截所有变更/启动/取消类及未来新增工具）与可选 `T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS`，再叠加 Claude/T3 审批。ACP 通道支持 Claude → T3 的请求与通知，不反向推送服务端主动通知（如 `tools/list_changed`），连接中断后自动重连。
+- **共享 T3 / 本机 MCP 策略边界（原生 Shim 与 ACP 统一生效）**：两端共用 `t3/mcp-policy.mjs`，在每次 `tools/call` 前严格执行本机当前权限模式（Plan 模式 Fail-Closed：仅放行只读白名单中的 `t3-code` 工具以及显式声明 `readOnlyHint: true` 且非破坏性的自定义本机 MCP 工具，拒绝有副作用或未知工具）、`T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与本机 `.claude/settings*.json` 的 `permissions.deny`。本机 MCP 配置在转发前经严格校验，无法识别或含非法字段的配置直接报错，杜绝 `url` / `headers` / `env` 泄漏至 VPS。ACP 通道支持 Claude → T3 的请求与通知，不反向推送服务端主动通知（如 `tools/list_changed`），连接中断后自动重连。
 
 ---
 
@@ -159,8 +159,8 @@ node .\t3\manage.mjs uninstall
 | `T3CODE_HOME` | 两者 | 自定义 T3 Code 数据目录（默认 `%USERPROFILE%\.t3`）。 |
 | `CLAUDE_VPS_NODE` | 原生 Shim | 显式指定 `claude-vps-shim.exe` 调用的 `node.exe` 路径。 |
 | `T3_CLAUDE_HIDE_MODE_OPTION=1` | ACP 适配器 | 隐藏 `Claude Mode` 下拉项，仅保留 T3 自带 Plan 开关。 |
-| `T3_MCP_ALLOW_TOOLS` | ACP 适配器 | 逗号分隔的 T3 MCP 工具白名单（设置后仅暴露并放行列表内工具）。 |
-| `T3_MCP_DENY_TOOLS` | ACP 适配器 | 逗号分隔的 T3 MCP 工具黑名单（例如 `request_secret,schedule_task`）。 |
+| `T3_MCP_ALLOW_TOOLS` | 两者 | 逗号分隔的 `t3-code` MCP 工具白名单（设置后仅暴露并放行列表内工具，原生 Shim 与 ACP 统一生效）。 |
+| `T3_MCP_DENY_TOOLS` | 两者 | 逗号分隔的 `t3-code` MCP 工具黑名单（例如 `request_secret,schedule_task`，原生 Shim 与 ACP 统一生效）。 |
 
 ---
 

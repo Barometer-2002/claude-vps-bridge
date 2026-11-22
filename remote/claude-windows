@@ -8,9 +8,9 @@ if [[ -n "${WINDOWS_PROJECT_CWD:-}" ]]; then
   export CODEXHOST_CLI_PATH="$bridge_root/windows-agent"
   instructions=$(cat "$bridge_root/bridge-instructions.md")
   mcp_config="$bridge_root/mcp-config.private.json"
-  if [[ "${WINDOWS_T3_MCP:-}" == "1" ]]; then
+  if [[ -n "${WINDOWS_LOCAL_MCP_SERVERS:-}" || "${WINDOWS_T3_MCP:-}" == "1" ]]; then
     mcp_config=$(python3 -c '
-import json, pathlib, sys
+import json, pathlib, re, sys
 cfg_path = pathlib.Path(sys.argv[1])
 bridge_root = sys.argv[2]
 data = {}
@@ -22,17 +22,20 @@ if cfg_path.is_file():
     except Exception:
         data = {}
 servers = dict(data.get("mcpServers") or {})
-servers["t3-code"] = {
-    "type": "stdio",
-    "command": "python3",
-    "args": [bridge_root + "/mcp-local.py", "--server", "t3-code"],
-}
+for name in json.loads(sys.argv[3]):
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name) or "__" in name:
+        raise ValueError("Invalid local MCP server name")
+    servers[name] = {
+        "type": "stdio",
+        "command": "python3",
+        "args": [bridge_root + "/mcp-local.py", "--server", name],
+    }
 data["mcpServers"] = servers
 print(json.dumps(data, ensure_ascii=False))
-' "$mcp_config" "$bridge_root")
+' "$mcp_config" "$bridge_root" "${WINDOWS_LOCAL_MCP_SERVERS:-[\"t3-code\"]}")
   elif [[ ! -r "$mcp_config" ]]; then
     mcp_config='{"mcpServers":{}}'
   fi
-  exec "$claude_command" --append-system-prompt "$instructions" --system-prompt-snapshot off --tools Bash,Read,AskUserQuestion,WebSearch,WebFetch,TodoWrite,TaskCreate,TaskUpdate,TaskList,TaskGet,ExitPlanMode,EnterPlanMode --strict-mcp-config --mcp-config "$mcp_config" --settings "$bridge_root/workspace-settings.json" "$@"
+  exec "$claude_command" --append-system-prompt "$instructions" --system-prompt-snapshot off --tools Bash,Read,AskUserQuestion,WebSearch,WebFetch,TodoWrite,TaskCreate,TaskUpdate,TaskList,TaskGet,ExitPlanMode,EnterPlanMode,ToolSearch --strict-mcp-config --mcp-config "$mcp_config" --settings "$bridge_root/workspace-settings.json" "$@"
 fi
 exec "$claude_command" "$@"

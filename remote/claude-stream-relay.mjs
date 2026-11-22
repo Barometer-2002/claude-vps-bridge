@@ -28,45 +28,50 @@ let child = null;
 let childReady = false;
 let bridgeSystemPrompt = '';
 let allowedMcpFile = null;
-const initialMcpServers = new Set();
-const allowedMcpServers = new Set();
+let allowedMcpServers = [];
+let pendingMcpUpdate = null;
 const queuedStdinLines = [];
 
-async function writeAllowedMcpFile() {
+async function writeAllowedMcpFile(servers) {
   if (!allowedMcpFile) return;
+  const tmp = `${allowedMcpFile}.${randomUUID()}.tmp`;
   try {
-    const tmp = `${allowedMcpFile}.${randomUUID()}.tmp`;
-    await writeFile(tmp, JSON.stringify({ servers: [...allowedMcpServers] }), { mode: 0o600 });
+    await writeFile(tmp, JSON.stringify({ servers }), { mode: 0o600 });
     await rename(tmp, allowedMcpFile);
-  } catch {
-    // Best-effort update; guard fails closed if file is missing.
+  } finally {
+    await unlink(tmp).catch(() => {});
   }
 }
 
 function extractProxiedServersFromControl(msg) {
   if (msg?.type !== 'control_request' || msg.request?.subtype !== 'mcp_set_servers') return null;
   const servers = msg.request?.servers;
-  if (!servers || typeof servers !== 'object') return null;
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('Invalid MCP server map');
   const names = [];
   for (const [name, cfg] of Object.entries(servers)) {
-    if (!SERVER_NAME_RE.test(name) || !cfg || typeof cfg !== 'object') continue;
-    if (cfg.type === 'stdio' && Array.isArray(cfg.args) && cfg.args.some(a => typeof a === 'string' && a.endsWith('mcp-local.py'))) {
-      names.push(name);
-    }
+    if (!SERVER_NAME_RE.test(name) || !cfg || cfg.type !== 'stdio' || cfg.command !== 'python3'
+        || Object.keys(cfg).length !== 3 || !Array.isArray(cfg.args)
+        || cfg.args.length !== 3 || cfg.args[0] !== path.join(bridgeRoot, 'mcp-local.py')
+        || cfg.args[1] !== '--server' || cfg.args[2] !== name) throw new Error('Invalid MCP proxy stub');
+    names.push(name);
   }
   return names;
 }
 
 async function prepareOutgoingStdinLine(line) {
-  let outLine = line;
+  let msg;
   try {
-    const msg = JSON.parse(line);
+    msg = JSON.parse(line);
+  } catch {
+    return line;
+  }
+  try {
     const dynamicServers = extractProxiedServersFromControl(msg);
     if (dynamicServers !== null) {
-      allowedMcpServers.clear();
-      for (const name of initialMcpServers) allowedMcpServers.add(name);
-      for (const name of dynamicServers) allowedMcpServers.add(name);
-      await writeAllowedMcpFile();
+      if (pendingMcpUpdate) throw new Error('An MCP update is already in progress');
+      await writeAllowedMcpFile(dynamicServers);
+      pendingMcpUpdate = { id: msg.request_id, previous: allowedMcpServers };
+      allowedMcpServers = dynamicServers;
     }
     if (bridgeSystemPrompt && msg?.type === 'control_request' && msg.request?.subtype === 'initialize') {
       const existing = msg.request.appendSystemPrompt;
@@ -78,7 +83,7 @@ async function prepareOutgoingStdinLine(line) {
       } else {
         merged = bridgeSystemPrompt;
       }
-      outLine = JSON.stringify({
+      return JSON.stringify({
         ...msg,
         request: {
           ...msg.request,
@@ -86,10 +91,13 @@ async function prepareOutgoingStdinLine(line) {
         },
       });
     }
-  } catch {
-    // Non-JSON line; forward verbatim.
+  } catch (error) {
+    send({ type: 'claude_out', line: JSON.stringify({
+      type: 'control_response', response: { subtype: 'error', request_id: msg.request_id, error: error.message },
+    }) });
+    return null;
   }
-  return outLine;
+  return line;
 }
 
 function duplexLocal(request, lane = 'control') {
@@ -161,11 +169,8 @@ async function startClaude(params) {
       (Array.isArray(localMcpServers) ? localMcpServers : []).filter(n => typeof n === 'string' && SERVER_NAME_RE.test(n)),
     );
     if (t3Mcp) initialServers.add('t3-code');
-    for (const name of initialServers) {
-      initialMcpServers.add(name);
-      allowedMcpServers.add(name);
-    }
-    await writeAllowedMcpFile();
+    allowedMcpServers = [...initialServers];
+    await writeAllowedMcpFile(allowedMcpServers);
 
     const bridgeInstructions = await readFile(path.join(bridgeRoot, 'bridge-instructions.md'), 'utf8');
     const baseBridgeParts = [bridgeInstructions.trim()];
@@ -223,7 +228,7 @@ async function startClaude(params) {
       WINDOWS_BRIDGE_ROOT: bridgeRoot,
       CODEXHOST_CLI_PATH: agentCommand,
       ...toolEnv,
-      WINDOWS_T3_MCP: '1',
+      WINDOWS_T3_MCP: '0',
       WINDOWS_ALLOWED_MCP_FILE: allowedMcpFile,
     };
   }
@@ -240,12 +245,29 @@ async function startClaude(params) {
   child.stdin.on('error', () => {});
   for (const line of queuedStdinLines.splice(0)) {
     const outLine = await prepareOutgoingStdinLine(line);
-    if (child?.stdin?.writable) child.stdin.write(`${outLine}\n`);
+    if (outLine !== null && child?.stdin?.writable) child.stdin.write(`${outLine}\n`);
   }
 
   const outRl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  let outChain = Promise.resolve();
   outRl.on('line', line => {
-    send({ type: 'claude_out', line });
+    outChain = outChain.then(async () => {
+      if (pendingMcpUpdate) {
+        let msg;
+        try { msg = JSON.parse(line); } catch {}
+        if (msg?.type === 'control_response' && msg.response?.request_id === pendingMcpUpdate.id) {
+          if (msg.response.subtype !== 'success') {
+            await writeAllowedMcpFile(pendingMcpUpdate.previous);
+            allowedMcpServers = pendingMcpUpdate.previous;
+          }
+          pendingMcpUpdate = null;
+        }
+      }
+      send({ type: 'claude_out', line });
+    }).catch(error => {
+      send({ type: 'claude_err', text: `Claude VPS MCP allow-list update failed: ${error.message}\n` });
+      void shutdown(1);
+    });
   });
 
   child.stderr.setEncoding('utf8');
@@ -259,7 +281,8 @@ async function startClaude(params) {
     void shutdown(1);
   });
 
-  child.on('close', (code, signal) => {
+  child.on('close', async (code, signal) => {
+    await outChain;
     send({ type: 'exit', code: code ?? 0, signal: signal ?? null });
     void shutdown(code ?? 0);
   });
@@ -291,12 +314,17 @@ async function shutdown(code = 0) {
   } catch {
     // Ignore allow-file cleanup error.
   }
-  const timer = setTimeout(() => process.exit(code), 1500);
-  timer.unref();
   try {
-    writer.dispose();
+    const finished = new Promise(resolve => process.stdout.once('finish', resolve));
+    writer.end();
+    let timer;
+    try {
+      await Promise.race([finished, new Promise(resolve => { timer = setTimeout(resolve, 1500); })]);
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
-    // Ignore stream dispose error.
+    // The SSH consumer may have closed its pipe.
   }
   process.exit(code);
 }
@@ -317,7 +345,7 @@ readJsonLines(process.stdin, frame => {
     stdinWriteChain = stdinWriteChain.then(async () => {
       if (childReady && child?.stdin?.writable) {
         const outLine = await prepareOutgoingStdinLine(frame.line);
-        if (child?.stdin?.writable) child.stdin.write(`${outLine}\n`);
+        if (outLine !== null && child?.stdin?.writable) child.stdin.write(`${outLine}\n`);
       } else {
         queuedStdinLines.push(frame.line);
       }

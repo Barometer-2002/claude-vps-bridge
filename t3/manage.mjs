@@ -6,7 +6,9 @@ import { parseArgs } from 'node:util';
 import { inspectBridge } from './bridge-installation.mjs';
 
 const providerId = 'claude-vps-bridge';
-const assets = ['bridge-installation.mjs', 'acp-helpers.mjs', 'claude-vps-acp.mjs'];
+const assets = ['bridge-installation.mjs', 'mcp-policy.mjs', 'acp-helpers.mjs', 'claude-vps-acp.mjs'];
+const assetSources = new Map(assets.map(name => [name, new URL(name, import.meta.url)]));
+assetSources.set('http-mcp-client.mjs', new URL('../t3-native/http-mcp-client.mjs', import.meta.url));
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const normalizePath = value => path.normalize(value).toLowerCase();
 
@@ -75,9 +77,9 @@ async function status(home, adapter) {
   } catch (error) {
     bridge = { error: error.message };
   }
-  const bridgeFiles = await Promise.all(assets.map(async name => {
+  const bridgeFiles = await Promise.all([...assetSources].map(async ([name, sourceUrl]) => {
     const installed = await readOptional(path.join(path.dirname(adapter), name));
-    const source = await readFile(new URL(name, import.meta.url));
+    const source = await readFile(sourceUrl);
     return [name, installed?.equals(source) ?? false];
   }));
   const executable = owns && typeof provider.config.commandPath === 'string'
@@ -106,10 +108,10 @@ async function install(home, directory, adapter) {
 
   const changes = [];
   try {
-    for (const asset of assets) {
+    for (const [asset, sourceUrl] of assetSources) {
       const file = path.join(directory, asset);
       const before = await readOptional(file);
-      const after = await readFile(new URL(asset, import.meta.url));
+      const after = await readFile(sourceUrl);
       if (before?.equals(after)) continue;
       if (before && !prior) throw new Error(`安装目录已有同名文件，请先核对其来源。${file}`);
       await writeAtomic(file, after, before);
@@ -163,11 +165,11 @@ async function uninstall(home, directory, adapter) {
     delete providers[providerId];
     await saveSettings(settings);
   }
-  for (const name of assets) {
+  for (const [name, sourceUrl] of assetSources) {
     const file = path.join(directory, name);
     const installed = await readOptional(file);
     if (!installed) continue;
-    if (registered || installed.equals(await readFile(new URL(name, import.meta.url)))) await rm(file);
+    if (registered || installed.equals(await readFile(sourceUrl))) await rm(file);
   }
   console.log('Claude VPS Bridge 已从 T3 取消注册。会话映射与现有远端会话仍可用于重新安装后续聊。');
 }

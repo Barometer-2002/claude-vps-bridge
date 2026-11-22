@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inspectBridge } from './bridge-installation.mjs';
+import { evaluateLocalMcpToolCall, isLocalMcpServerName, normalizeMcpName, resolveLocalMcpTool } from './mcp-policy.mjs';
 import {
   ADAPTER_VERSION,
   AVAILABLE_COMMANDS,
@@ -24,7 +26,6 @@ import {
   formatPromptResponseUsage,
   formatStatusReport,
   formatUsageReport,
-  isT3McpToolAllowed,
   mapElicitationAnswers,
   parseT3McpPolicy,
   parseWorkspaceCommand,
@@ -33,6 +34,8 @@ import {
   resolveThinkingOptionsForModel,
 } from './acp-helpers.mjs';
 
+const localMcpClientUrl = new URL('./http-mcp-client.mjs', import.meta.url);
+const { LocalMcpHub } = await import(existsSync(localMcpClientUrl) ? localMcpClientUrl : new URL('../t3-native/http-mcp-client.mjs', import.meta.url));
 const stateDir = fileURLToPath(new URL('./sessions/', import.meta.url));
 const UUID_RE = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 const BRIDGE_NOTICE_PREFIXES = [
@@ -72,7 +75,7 @@ async function ensureT3McpConnection(localConnId, request, session) {
   const inflight = mcpConnecting.get(localConnId);
   if (inflight) return inflight;
   const task = (async () => {
-    const serverId = session?.t3Mcp?.serverId ?? 't3-code';
+    const serverId = session.acpMcpServers.get(request.server);
     const connected = await askClient('mcp/connect', { serverId }, processAbort.signal);
     if (typeof connected?.connectionId !== 'string' || !connected.connectionId) {
       throw new Error('T3 Code MCP connect did not return a connectionId');
@@ -84,7 +87,7 @@ async function ensureT3McpConnection(localConnId, request, session) {
       serverId,
     };
     mcpConnections.set(localConnId, entry);
-    if (session?.t3Mcp) {
+    if (request.server === 't3-code') {
       session.t3Mcp.connected = true;
       session.t3Mcp.lastError = null;
     }
@@ -111,43 +114,70 @@ async function disconnectT3McpConnection(localConnId) {
 }
 
 async function handleT3McpRequest(request) {
-  if (request?.server !== 't3-code') {
-    throw new Error(`Unsupported T3 MCP server: ${String(request?.server)}`);
+  const session = resolveSessionForMcp(request);
+  if (!session) throw new Error('Unknown or unauthorized T3 MCP session');
+  const permissions = async () => {
+    if (!loadProjectEnvironment) throw new Error('Local MCP project policy is unavailable');
+    return (await loadProjectEnvironment(session.cwd)).permissions;
+  };
+  if (request.action === 'preflight') {
+    const tool = resolveLocalMcpTool(session.mcpNames, request.request?.tool);
+    if (!tool) return { decision: 'deny', reason: 'Local MCP server is not registered for this session' };
+    const decision = evaluateLocalMcpToolCall({
+      ...tool, t3Policy: mcpPolicy, projectPermissions: await permissions(),
+    });
+    if (!decision.allowed) return { decision: 'deny', reason: decision.reason };
+    if (request.permissionMode) session.mcpPermissionMode = request.permissionMode;
+    return decision.approval ? { decision: 'ask', reason: decision.approval } : { decision: 'inherit' };
   }
   const localConnId = request.connectionId;
   if (typeof localConnId !== 'string' || !localConnId) {
     throw new Error('Missing MCP connectionId');
   }
+  const frame = request.frame;
+  const currentMode = () => session.currentPermissionModeId === 'plan' || session.mcpPermissionMode === 'plan'
+    ? 'plan' : session.currentPermissionModeId ?? session.mcpPermissionMode ?? 'plan';
+  const permissionMode = currentMode();
+  let projectPermissions = request.close || !['tools/list', 'tools/call'].includes(frame?.method) ? null : await permissions();
+  if (session.localMcpHub.has(request.server)) {
+    return session.localMcpHub.handle(request, { permissionMode, t3Policy: mcpPolicy, projectPermissions });
+  }
+  if (!session.acpMcpServers.has(request.server)) throw new Error('Local MCP server is not registered for this session');
+  const connectionKey = JSON.stringify([session.id, request.server, localConnId]);
   if (request.close) {
-    await disconnectT3McpConnection(localConnId);
+    await disconnectT3McpConnection(connectionKey);
+    session.mcpCatalogs.delete(connectionKey);
     return {};
   }
-  const frame = request.frame;
   if (!frame || typeof frame !== 'object' || typeof frame.method !== 'string') {
     throw new Error('Invalid MCP JSON-RPC frame');
   }
-  const session = resolveSessionForMcp(request);
-  if (!session || !session.t3Mcp?.enabled) {
-    throw new Error('Unknown or unauthorized T3 MCP session');
-  }
+  if (frame.method === 'initialize') session.mcpCatalogs.delete(connectionKey);
   const isNotification = frame.id === undefined || frame.id === null;
+  const decide = (toolName, mode) => evaluateLocalMcpToolCall({
+    server: request.server, toolName, permissionMode: mode, t3Policy: mcpPolicy, projectPermissions,
+    toolMeta: session.mcpCatalogs.get(connectionKey)?.get(toolName),
+  });
   if (frame.method === 'tools/call') {
-    const toolName = frame.params?.name;
-    if (!isT3McpToolAllowed(toolName, mcpPolicy, { permissionModeId: session.currentPermissionModeId, enforceMode: true })) {
+    const decision = decide(frame.params?.name, permissionMode);
+    if (!decision.allowed) {
       return {
         jsonrpc: '2.0',
         id: frame.id,
         error: {
           code: -32602,
-          message: session.currentPermissionModeId === 'plan'
-            ? `T3 MCP tool "${String(toolName)}" is not on the read-only Plan mode allowlist. Switch mode before mutating or launching external work.`
-            : `T3 MCP tool "${String(toolName)}" is blocked by T3_MCP_ALLOW_TOOLS / T3_MCP_DENY_TOOLS policy.`,
+          message: decision.reason,
         },
       };
     }
   }
   try {
-    const entry = await ensureT3McpConnection(localConnId, request, session);
+    const entry = await ensureT3McpConnection(connectionKey, request, session);
+    if (frame.method === 'tools/call') {
+      projectPermissions = await permissions();
+      const latest = decide(frame.params.name, currentMode());
+      if (!latest.allowed) return { jsonrpc: '2.0', id: frame.id, error: { code: -32602, message: latest.reason } };
+    }
     const payload = {
       connectionId: entry.acpConnId,
       method: frame.method,
@@ -159,21 +189,32 @@ async function handleT3McpRequest(request) {
     }
     let result = await askClient('mcp/message', payload, processAbort.signal);
     if (frame.method === 'tools/list' && Array.isArray(result?.tools)) {
-      const filteredTools = result.tools.filter(tool => isT3McpToolAllowed(tool?.name, mcpPolicy));
+      const catalog = (frame.params?.cursor && session.mcpCatalogs.get(connectionKey)) || new Map();
+      for (const tool of result.tools) {
+        if (typeof tool?.name !== 'string') continue;
+        catalog.set(tool.name, {
+          known: true,
+          readOnlyHint: tool.annotations?.readOnlyHint === true,
+          destructiveHint: tool.annotations?.destructiveHint !== undefined && tool.annotations.destructiveHint !== false,
+        });
+      }
+      session.mcpCatalogs.set(connectionKey, catalog);
+      const filteredTools = result.tools.filter(tool => decide(tool?.name, 'default').allowed);
       result = { ...result, tools: filteredTools };
-      session.t3Mcp.connected = true;
-      session.t3Mcp.toolCount = filteredTools.length;
-      session.t3Mcp.lastError = null;
-    } else {
-      session.t3Mcp.lastError = null;
+      if (request.server === 't3-code') {
+        session.t3Mcp.connected = true;
+        session.t3Mcp.toolCount = filteredTools.length;
+      }
     }
+    if (request.server === 't3-code') session.t3Mcp.lastError = null;
     return { jsonrpc: '2.0', id: frame.id, result: result ?? {} };
   } catch (err) {
     if (isMcpConnectionError(err)) {
-      mcpConnections.delete(localConnId);
-      session.t3Mcp.connected = false;
+      mcpConnections.delete(connectionKey);
+      session.mcpCatalogs.delete(connectionKey);
+      if (request.server === 't3-code') session.t3Mcp.connected = false;
     }
-    session.t3Mcp.lastError = err?.message ?? 'T3 MCP request failed';
+    if (request.server === 't3-code') session.t3Mcp.lastError = err?.message ?? 'T3 MCP request failed';
     if (isNotification) return {};
     return {
       jsonrpc: '2.0',
@@ -432,6 +473,7 @@ async function syncSessionState(session, state) {
   }
   if (typeof state.effectivePermissionModeId === 'string' && state.effectivePermissionModeId !== session.currentPermissionModeId) {
     session.currentPermissionModeId = state.effectivePermissionModeId;
+    session.mcpPermissionMode = undefined;
     configChanged = true;
     modeChanged = true;
   }
@@ -836,13 +878,39 @@ async function resolveForkCheckpoint(source, sourceSaved, localCwd) {
   }
 }
 
-function detectT3McpServer(mcpServers) {
-  if (!Array.isArray(mcpServers)) return null;
-  return mcpServers.find(
-    server => server?.type === 'acp'
-      && typeof server.serverId === 'string'
-      && (server.serverId === 't3-code' || server.name === 't3-code'),
-  ) ?? null;
+function parseMcpServers(mcpServers = [], cwd) {
+  if (!Array.isArray(mcpServers)) throw error(-32602, 'MCP servers must be an array');
+  const names = new Map();
+  const acpMcpServers = new Map();
+  const local = Object.create(null);
+  const stringMap = (pairs, label) => {
+    if (pairs === undefined) return undefined;
+    if (!Array.isArray(pairs) || !pairs.every(p => typeof p?.name === 'string' && typeof p.value === 'string')) {
+      throw error(-32602, `Invalid MCP ${label}`);
+    }
+    return Object.fromEntries(pairs.map(({ name, value }) => [name, value]));
+  };
+  for (const item of mcpServers) {
+    const name = item?.type === 'acp' && item.serverId === 't3-code' ? 't3-code' : item?.name;
+    if (!isLocalMcpServerName(name)) throw error(-32602, 'Invalid MCP server name');
+    const normalized = normalizeMcpName(name);
+    if (names.has(normalized)) throw error(-32602, 'Duplicate or ambiguous MCP server name');
+    names.set(normalized, name);
+    if (item.type === 'acp') {
+      if (typeof item.serverId !== 'string' || !item.serverId || ['url', 'env', 'headers', 'command', 'args', 'cwd'].some(key => Object.hasOwn(item, key))) {
+        throw error(-32602, 'Invalid ACP MCP server configuration');
+      }
+      acpMcpServers.set(name, item.serverId);
+    } else {
+      const { name: _name, ...config } = item;
+      if (Object.hasOwn(config, 'headers')) config.headers = stringMap(config.headers, 'headers');
+      if (Object.hasOwn(config, 'env')) config.env = stringMap(config.env, 'env');
+      local[name] = config;
+    }
+  }
+  const localMcpHub = new LocalMcpHub();
+  try { localMcpHub.registerServers(local, '/unused', cwd); } catch (err) { throw error(-32602, err.message); }
+  return { mcpNames: [...names.values()], acpMcpServers, localMcpHub, mcpCatalogs: new Map() };
 }
 
 async function openSession({ cwd, sessionId, forkFromSessionId, mcpServers }) {
@@ -853,15 +921,16 @@ async function openSession({ cwd, sessionId, forkFromSessionId, mcpServers }) {
   const id = forkFromSessionId ? randomUUID() : (sessionId ?? randomUUID());
   if (!forkFromSessionId && sessions.has(id)) return sessions.get(id).opening;
 
-  const t3McpServer = detectT3McpServer(mcpServers);
+  const mcp = parseMcpServers(mcpServers, localCwd);
   const session = {
+    ...mcp,
     id,
     cwd: localCwd,
     observedModels: [],
     latestUsage: null,
     t3Mcp: {
-      enabled: Boolean(t3McpServer),
-      serverId: t3McpServer?.serverId ?? null,
+      enabled: mcp.mcpNames.includes('t3-code'),
+      serverId: mcp.acpMcpServers.get('t3-code') ?? null,
       connected: false,
       toolCount: null,
       lastError: null,
@@ -921,8 +990,8 @@ async function openSession({ cwd, sessionId, forkFromSessionId, mcpServers }) {
       };
     }
 
-    if (t3McpServer) {
-      openInput = { ...openInput, t3Mcp: true, acpSessionId: id };
+    if (session.mcpNames.length) {
+      openInput = { ...openInput, t3Mcp: session.t3Mcp.enabled, localMcpServers: session.mcpNames, acpSessionId: id };
     }
 
     const [inspection, openedNative] = await Promise.all([
@@ -975,6 +1044,7 @@ async function openSession({ cwd, sessionId, forkFromSessionId, mcpServers }) {
     sessions.delete(id);
     session.closing = true;
     await session.native?.close().catch(() => {});
+    await session.localMcpHub.closeAll();
     throw failure;
   }
 }
@@ -1035,6 +1105,7 @@ async function setPermissionMode(session, modeId, inspection) {
   if (modeId !== session.currentPermissionModeId) {
     unwrap(await session.native.execute({ type: 'permissionMode.select', permissionModeId: modeId }));
     session.currentPermissionModeId = modeId;
+    session.mcpPermissionMode = undefined;
     await persistSession(session);
   }
 }
@@ -1195,6 +1266,9 @@ async function closeSession({ sessionId }) {
   session.closing = true;
   sessions.delete(sessionId);
   await session.native?.close().catch(() => {});
+  const keys = [...mcpConnections].filter(([, connection]) => connection.acpSessionId === sessionId).map(([key]) => key);
+  await Promise.allSettled(keys.map(key => disconnectT3McpConnection(key)));
+  await session.localMcpHub.closeAll();
   return {};
 }
 
@@ -1253,6 +1327,7 @@ const methods = {
         loadSession: true,
         mcpCapabilities: {
           acp: true,
+          http: true,
         },
         promptCapabilities: {
           image: true,
@@ -1348,6 +1423,6 @@ lines.on('close', async () => {
   for (const request of pendingRequests.values()) request.reject(new Error('ACP client disconnected'));
   for (const session of sessions.values()) session.closing = true;
   await closeAllT3Mcp();
-  await Promise.allSettled([...sessions.values()].map(session => session.native?.close()));
+  await Promise.allSettled([...sessions.values()].flatMap(session => [session.native?.close(), session.localMcpHub.closeAll()]));
   await bridge.close();
 });

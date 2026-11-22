@@ -1,27 +1,28 @@
 # 更新记录
 
-本记录分为两部分：上方为 **T3 Claude VPS（`t3-claude-vps`）** 基于上游 `vv-get-ti/claude-vps-bridge@0.14.1`（`0acd8a0`）之后的 Fork 变更；下方完整保留上游历史发布记录。完整改进对比见 [docs/FORK_CHANGES.md](docs/FORK_CHANGES.md)。
+本记录分为两部分：上方 `Unreleased` 为 **T3 Claude VPS（`t3-claude-vps`）** 首个正式大版本开发周期内的未发布变更（基于上游 `vv-get-ti/claude-vps-bridge@0.14.1` / `0acd8a0`，尚未正式定版或打 Git Tag）；下方完整保留上游历史发布记录。完整改进对比见 [docs/FORK_CHANGES.md](docs/FORK_CHANGES.md)。
 
 ---
 
-## T3 Claude VPS（Fork 变更记录）
+## Unreleased
 
-### T3 Claude VPS（`t3-claude-vps`）· 2026-11-22
-
-基于上游 `vv-get-ti/claude-vps-bridge@0.14.1`（LGPL-3.0-only）独立维护并更名为 **T3 Claude VPS（`t3-claude-vps`）**，在保持对 CodexHost 0.20.0+ 及现有配置/数据目录完全兼容的基础上，面向 T3 Code 新增双引擎接入与独立安装模式：
+当前处于 **T3 Claude VPS（`t3-claude-vps`）** 首个正式大版本开发周期（遵循 LGPL-3.0-only，保留上游 `0.14.1` 核心桥接协议与运行标识不变）：
 
 **官方 `claudeAgent` 原生 Shim（`t3-native/`）**
 
 - 新增独立的 `claude-vps`（显示名 **Claude VPS**，`driver: claudeAgent`）实例与专属 `claude-home`，不修改默认 `claudeAgent` 与本机 `~/.claude`。
 - 新增 Windows 轻量启动器（`claude-vps-shim.cs` → `.exe`）、Node 代理（`claude-vps-shim.mjs`）、多协议本机 MCP 代理中心（`http-mcp-client.mjs`，同时支持 Streamable HTTP 与本机 Stdio MCP）及 VPS 直通中继（`remote/claude-stream-relay.mjs`）。
 - 完整直通 VPS 原版 Claude Code 标准 `stream-json` 协议：解锁顶部 5h/7d 实时额度圆环（`get_usage` + `rate_limit_event`）、单套原生权限（`can_use_tool`）、原生 `textGeneration`、`--resume`/`--fork-session`、`effort`/`ultracode`/`fastMode` 与缓存过期自动压缩。
-- 在 Windows 本机统一拦截 `--mcp-config` 与动态 `control_request: mcp_set_servers`，将 `t3-code` 与用户自定义本机 HTTP/Stdio MCP 严格留在 Windows 侧代理执行（URL、Token 与本机进程不出境）；VPS 端通过 `mcp-local.py --server <name>` 与会话私有 `WINDOWS_ALLOWED_MCP_FILE`（0600）白名单安全放行，并支持 `ToolSearch` 延迟加载。
-- 接入启动期多 SSH 线路自动故障切换（`SshRoutes.firstAvailable` + 启动前帧缓冲）、移除默认模式 `probeOnly` 误判边界、支持发送消息时自动展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS`）、运行本机 `UserPromptSubmit` Hooks、自动授权 T3 附件路径供 `windows-workspace media` 导出，并将 `bridge-instructions.md` 与本机项目规则合并入 `initialize.appendSystemPrompt`。
+- **P0 本机 Hook 拒绝与共享 MCP 策略**：与 ACP 共用 `t3/mcp-policy.mjs`；`UserPromptSubmit` 返回 `HOOK_BLOCKED` 等阻断错误时立即终止提交并向 T3 返回明确原因且保持会话可继续；在 `tools/call` 前统一按本机会话绑定、当前模式（Plan 模式 Fail-Closed 拒绝有副作用或未知工具）、`T3_MCP_ALLOW_TOOLS`/`T3_MCP_DENY_TOOLS` 及本机项目 `permissions.deny` 规则拦截；严格校验本机 MCP 配置，拒绝无法识别的配置，杜绝将 `url`/`headers`/`env` 误发往 VPS。
+- **P1 HTTP MCP 逐事件 SSE 与可靠性**：`LocalHttpMcpClient` 改为流式逐事件解析 SSE（收到匹配回复立即返回，不阻塞等待长连接 EOF），严格匹配 JSON-RPC `id`（错 ID 或无回复明确失败），为请求和 `DELETE` 关闭设置超时，区分会话失效（`-32001`）与结果不明（`-32002`）且严禁盲目重放有副作用调用。
+- **P1 主动停止与断线任务找回**：`control_request: interrupt` 与 `SIGINT`/`SIGTERM` 接入本机 `cancel-jobs` 轮次任务取消并等待确认后向 T3 反馈已停止或未确认状态；SSH 中途意外断线时查询并保留原 Windows 任务 `requestId` 与状态，明确提示通过 `windows-workspace job` 查询原结果，并在后续/续接会话上下文中自动带出活动或不确定任务 ID，禁止盲目重放。
+- **P2 原子暂存升级、回滚与状态区分**：`manage-native.mjs` 支持 `.manage.lock`、Provider 归属检查、保留用户自定义配置、先在独立暂存目录编译并执行离线 `--self-test` 与实时 `--version --live` 校验后再原子切换与并发修改检测，失败自动回滚不破坏旧入口；`status` 明确区分 `cachedVersion`、`liveCheck` 与 `offlineSelfTest`。
+- 接入启动期多 SSH 线路自动故障切换（`SshRoutes.firstAvailable` + 启动前帧缓冲）、修复默认模式 `probeOnly` 误判、支持发送消息时自动展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS`）、自动授权 T3 附件路径供 `windows-workspace media` 导出，并将 `bridge-instructions.md` 与本机项目规则合并入 `initialize.appendSystemPrompt`。
 
-**Local ACP 适配器（`t3/`，v1.1.0 → v1.3.1）**
+**Local ACP 适配器（`t3/`）**
 
 - 支持完整模型目录、按模型过滤的推理深度（`thought_level` + `_meta.reasoningEfforts`）、`Claude Mode` 与 Plan 开关联动（可选 `T3_CLAUDE_HIDE_MODE_OPTION=1`）、上下文 `usage_update`、零消耗 `/usage` 与 `/status`、≥90% 额度通知、`/compact` 压缩、交互式提问与计划审批、图片附件及 `new`/`load`/`resume`/`fork`/`list`/`close`/`delete` 全生命周期。
-- 接入 MCP-over-ACP（`mcpCapabilities.acp = true`），严格按 `acpSessionId` 隔离多会话，Plan 模式采用 Fail-Closed 只读白名单，支持 `T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与断线自动重连。
+- 接入 MCP-over-ACP（`mcpCapabilities.acp = true`），共用 `t3/mcp-policy.mjs`，严格按 `acpSessionId` 隔离多会话，Plan 模式采用 Fail-Closed 只读白名单，支持 `T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与断线自动重连。
 - 将 `windows-workspace` 调用自动解包并翻译为原生 `Read` / `List` / `Grep` / `Edit`(红绿 Diff) / `Write` / `PowerShell` / `Batch` 卡片与可点击 Windows 绝对路径 `locations`，同步优化权限审批弹窗可读性并过滤 PowerShell 进度 CLIXML 噪音。
 - 放行 `TodoWrite`、`TaskCreate`、`TaskUpdate`、`TaskList`、`TaskGet`、`ExitPlanMode`、`EnterPlanMode`，实现跨轮持久的 T3 Plan 任务进度面板与历史会话重建。
 - 自动扫描本机 `.claude/{skills,commands}` 注入 T3 补全菜单并支持每轮热刷新；远端同步支持 `$skill` 与 `/command`（含 `<user_request>` 包裹）大小写不敏感匹配与 `$ARGUMENTS` 注入执行。
@@ -29,7 +30,7 @@
 
 **安装、校验与文档重构**
 
-- `installer/configure.py` 与 `install.ps1` 新增 `--t3-only` / `-T3Only` / `-WithT3` / `-WithT3Native` 支持；`scripts/check.py` 扩展校验 `t3/` 与 `t3-native/` 源码及文件清单。
+- `installer/configure.py` 与 `install.ps1` 新增 `--t3-only` / `-T3Only` / `-WithT3` / `-WithT3Native` 支持；`scripts/check.py` 扩展校验 `t3/`、`t3/mcp-policy.mjs` 与 `t3-native/` 源码及文件清单。
 - 以 T3 Code 优先视角重构 `README.md` 与全套文档，新增 [docs/FORK_CHANGES.md](docs/FORK_CHANGES.md) 与 [docs/T3CODE.md](docs/T3CODE.md)，并在 `THIRD_PARTY_NOTICES.md` 明确列出上游基线与 LGPL-3.0-only 许可声明。
 
 ---
