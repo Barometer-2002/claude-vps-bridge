@@ -15,7 +15,7 @@
 
 Claude VPS Bridge 同时支持 [CodexHost](https://github.com/BytePioneer-AI/codex-host) 与 [T3 Code](https://github.com/pingdotgg/t3code)（通过 Local ACP 适配器）。Claude Code 在 VPS 上运行并保存登录凭据，你在 Windows 本机选择项目、发送消息，使用本机文件和开发工具完成任务。
 
-> **使用 T3 Code？** 支持模型切换、按模型推理深度（Thinking）、权限/Plan 模式、上下文用量、`/usage` 账号 5h/7d 额度查询、`/compact` 压缩、交互式提问与计划审批、图片附件与原生 Fork，且支持**无需安装 CodexHost 桌面端的独立安装模式**。详见 [T3 Code 适配说明](docs/T3CODE.md)。
+> **使用 T3 Code？** 支持模型切换、按模型推理深度（Thinking）、权限/Plan 模式、**T3 原生 MCP 工具透传（Preview 浏览器 / HTML 渲染 / 多模型 Delegate / PR & 定时任务等）**、本地 Skills/Commands 补全、Plan 任务面板、流式工具输出、上下文用量、`/usage` 账号 5h/7d 额度查询、`/compact` 压缩、交互式提问与计划审批、图片附件与原生 Fork，且支持**无需安装 CodexHost 桌面端的独立安装模式**。详见 [T3 Code 适配说明](docs/T3CODE.md)。
 
 ## 功能
 

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const ADAPTER_VERSION = '1.1.0';
+export const ADAPTER_VERSION = '1.2.0';
 export const DEFAULT_MODEL_ID = 'default';
 export const DEFAULT_MODEL = { modelId: DEFAULT_MODEL_ID, name: 'Claude VPS default' };
 
@@ -17,9 +17,120 @@ export const AVAILABLE_COMMANDS = [
   },
   {
     name: 'status',
-    description: '查看 Claude VPS Bridge 连接、模型、推理深度、权限模式与会话状态',
+    description: '查看 Claude VPS Bridge 连接、SSH 路由、T3 MCP、模型、推理深度与会话状态',
   },
 ];
+
+export function buildAvailableCommands(projectEnv) {
+  const commands = AVAILABLE_COMMANDS.map(cmd => ({ ...cmd }));
+  const seenCommands = new Set(commands.map(cmd => cmd.name.toLowerCase()));
+  const seenSkills = new Set();
+  let localCommandCount = 0;
+  let localSkillCount = 0;
+
+  const capabilities = Array.isArray(projectEnv?.capabilities) ? projectEnv.capabilities : [];
+  for (const cap of capabilities) {
+    if (!cap || typeof cap.name !== 'string') continue;
+    const rawName = cap.name.trim().replace(/^[/$]+/, '');
+    if (!rawName || /\s/.test(rawName)) continue;
+    const desc = typeof cap.description === 'string' && cap.description.trim()
+      ? cap.description.trim().slice(0, 200)
+      : undefined;
+
+    if (cap.kind === 'command') {
+      const key = rawName.toLowerCase();
+      if (seenCommands.has(key)) continue;
+      seenCommands.add(key);
+      localCommandCount++;
+      commands.push({
+        name: rawName,
+        description: desc ?? 'Local project command',
+      });
+    } else if (cap.kind === 'skill') {
+      const key = rawName.toLowerCase();
+      if (seenSkills.has(key)) continue;
+      seenSkills.add(key);
+      localSkillCount++;
+      commands.push({
+        name: `$${rawName}`,
+        description: desc ?? 'Local project skill',
+      });
+    }
+  }
+
+  return { commands, localSkillCount, localCommandCount };
+}
+
+function normalizePlanStatus(status) {
+  const s = typeof status === 'string' ? status.trim().toLowerCase() : '';
+  if (s === 'in_progress' || s === 'in-progress' || s === 'running' || s === 'active') return 'in_progress';
+  if (s === 'completed' || s === 'done' || s === 'finished') return 'completed';
+  return 'pending';
+}
+
+function normalizePlanPriority(priority) {
+  const p = typeof priority === 'string' ? priority.trim().toLowerCase() : '';
+  if (p === 'high' || p === 'medium' || p === 'low') return p;
+  return 'medium';
+}
+
+export function extractPlanEntries(item, taskMap) {
+  const toolName = String(item?.toolName ?? item?.tool ?? '').trim();
+  const args = item?.arguments;
+  if (!args || typeof args !== 'object') return null;
+
+  if (toolName === 'TodoWrite' && Array.isArray(args.todos)) {
+    const entries = [];
+    for (const todo of args.todos) {
+      if (!todo || typeof todo !== 'object') continue;
+      const content = String(todo.content ?? todo.activeForm ?? todo.title ?? '').trim();
+      if (!content) continue;
+      entries.push({
+        content,
+        priority: normalizePlanPriority(todo.priority),
+        status: normalizePlanStatus(todo.status),
+      });
+    }
+    return entries.length ? entries : null;
+  }
+
+  if (toolName === 'TaskCreate' && taskMap instanceof Map) {
+    const content = String(args.subject ?? args.description ?? args.activeForm ?? '').trim();
+    if (!content) return null;
+    const key = String(args.taskId ?? args.id ?? item.itemId ?? (taskMap.size + 1));
+    taskMap.set(key, {
+      content,
+      priority: normalizePlanPriority(args.priority),
+      status: normalizePlanStatus(args.status),
+    });
+    return [...taskMap.values()];
+  }
+
+  if (toolName === 'TaskUpdate' && taskMap instanceof Map) {
+    const key = args.taskId !== undefined ? String(args.taskId) : null;
+    if (!key) return null;
+    const rawStatus = typeof args.status === 'string' ? args.status.trim().toLowerCase() : '';
+    if (rawStatus === 'deleted') {
+      taskMap.delete(key);
+      return [...taskMap.values()];
+    }
+    const existing = taskMap.get(key) ?? {
+      content: String(args.subject ?? args.description ?? `Task ${key}`).trim(),
+      priority: 'medium',
+      status: 'pending',
+    };
+    taskMap.set(key, {
+      content: typeof args.subject === 'string' && args.subject.trim()
+        ? args.subject.trim()
+        : (typeof args.description === 'string' && args.description.trim() ? args.description.trim() : existing.content),
+      priority: args.priority ? normalizePlanPriority(args.priority) : existing.priority,
+      status: args.status ? normalizePlanStatus(args.status) : existing.status,
+    });
+    return [...taskMap.values()];
+  }
+
+  return null;
+}
 
 export function normalizeThinkingOption(entry, catalogThinkingMap) {
   if (typeof entry === 'string') {
@@ -71,11 +182,12 @@ export function findCatalogModel(inspection, modelId) {
   return (inspection?.catalog?.models ?? []).find(m => m?.ref?.id === modelId) ?? null;
 }
 
-export function buildSessionConfiguration(session, inspection) {
+export function buildSessionConfiguration(session, inspection, options = {}) {
   const catalog = inspection?.catalog ?? {};
   const catalogModels = (catalog.models ?? []).filter(m => typeof m?.ref?.id === 'string');
   const defaultThinkingId = catalog.defaultThinkingOptionId ?? 'auto';
   const permissionModes = (inspection?.permissionModes?.modes ?? []).filter(m => typeof m?.id === 'string');
+  const hideModeOption = options.hideModeOption ?? (process.env.T3_CLAUDE_HIDE_MODE_OPTION === '1');
 
   const modelChoices = catalogModels.map(m => ({
     value: m.ref.id,
@@ -159,15 +271,17 @@ export function buildSessionConfiguration(session, inspection) {
     if (!modeOptions.some(m => m.value === currentModeId)) {
       modeOptions.push({ value: currentModeId, name: currentModeId });
     }
-    configOptions.push({
-      id: 'mode',
-      name: 'Mode',
-      description: 'Claude Code permission mode',
-      category: 'mode',
-      type: 'select',
-      currentValue: currentModeId,
-      options: modeOptions,
-    });
+    if (!hideModeOption) {
+      configOptions.push({
+        id: 'mode',
+        name: 'Claude Mode',
+        description: '远端 Claude Code 权限模式（与 T3 审批开关叠加生效）',
+        category: 'mode',
+        type: 'select',
+        currentValue: currentModeId,
+        options: modeOptions,
+      });
+    }
     modes = {
       currentModeId,
       availableModes: modeOptions.map(m => ({
@@ -565,7 +679,17 @@ export function formatUsageReport({ session, inspection, account, credits, bridg
   return lines.join('\n');
 }
 
-export function formatStatusReport({ session, inspection, account, credits, bridgeVersion, nowMs = Date.now() }) {
+export function formatStatusReport({
+  session,
+  inspection,
+  account,
+  credits,
+  bridgeVersion,
+  sshRoute,
+  t3Mcp,
+  localCapabilities,
+  nowMs = Date.now(),
+}) {
   const catalogModel = findCatalogModel(inspection, session.currentModelId);
   const resolvedLabel = session.resolvedModelLabel ?? catalogModel?.resolvedModelLabel;
   const thinkingObj = (session.availableThinkingOptions ?? []).find(o => o.id === session.currentThinkingId);
@@ -584,8 +708,33 @@ export function formatStatusReport({ session, inspection, account, credits, brid
     `- **当前模型**：${catalogModel?.label ?? session.currentModelId}${resolvedLabel ? `（\`${resolvedLabel}\`）` : ''}`,
     ...(session.observedModels?.length ? [`- **实测响应模型**：\`${session.observedModels.join(', ')}\``] : []),
     `- **推理深度**：${thinkingObj?.label ?? session.currentThinkingId ?? '默认'}`,
-    `- **权限模式**：${modeObj?.label ?? session.currentPermissionModeId ?? 'default'}`,
+    `- **Claude 权限模式**：${modeObj?.label ?? session.currentPermissionModeId ?? 'default'}`,
   ];
+
+  if (sshRoute && typeof sshRoute === 'object' && sshRoute.route) {
+    const routeParts = [`\`${sshRoute.route}\``];
+    if (sshRoute.routeType && sshRoute.routeType !== sshRoute.route) routeParts.push(sshRoute.routeType);
+    if (sshRoute.state) routeParts.push(`状态：${sshRoute.state}`);
+    if (sshRoute.ingress?.kind && sshRoute.ingress.kind !== 'unknown') {
+      routeParts.push(`入口：${sshRoute.ingress.process ? `${sshRoute.ingress.kind}/${sshRoute.ingress.process}` : sshRoute.ingress.kind}`);
+    }
+    lines.push(`- **SSH 路由**：${routeParts.join(' · ')}`);
+  }
+
+  if (t3Mcp) {
+    if (t3Mcp.enabled) {
+      const mcpDetail = t3Mcp.connected
+        ? `已连通${typeof t3Mcp.toolCount === 'number' ? ` · ${t3Mcp.toolCount} 个 T3 工具` : ''}`
+        : '已开启（等待 VPS Claude 首次握手）';
+      lines.push(`- **T3 MCP 桥接**：${mcpDetail}`);
+    } else {
+      lines.push('- **T3 MCP 桥接**：未启用（当前客户端未注入 ACP MCP 服务）');
+    }
+  }
+
+  if (localCapabilities && (localCapabilities.skills > 0 || localCapabilities.commands > 0)) {
+    lines.push(`- **本机项目扩展**：${localCapabilities.skills} 个 Skills · ${localCapabilities.commands} 个 Commands（已同步至补全菜单）`);
+  }
 
   if (Number.isInteger(usage.contextUsedTokens) && Number.isInteger(usage.contextWindowTokens) && usage.contextWindowTokens > 0) {
     const pct = usage.contextUsagePercent ?? (usage.contextUsedTokens / usage.contextWindowTokens) * 100;
@@ -610,7 +759,7 @@ export function formatStatusReport({ session, inspection, account, credits, brid
     lines.push(`- **账号额度**：${parts.join(' · ')}`);
   }
 
-  lines.push('- **已适配能力**：模型切换、按模型推理深度、权限模式/Plan 模式、上下文用量、`/usage` 额度查询、`/compact` 压缩、图片附件、交互式提问与计划审批、会话恢复与分支（Fork）。');
+  lines.push('- **已适配能力**：模型切换、按模型推理深度、权限模式/Plan 模式、上下文用量、`/usage` 额度查询、`/compact` 压缩、图片附件、交互式提问与计划审批、会话恢复与分支（Fork）、T3 原生 MCP 工具透传（Preview/HTML/Delegate 等）、本地 Skills/Commands 自动补全、Plan 任务面板与流式工具输出。');
   return lines.join('\n');
 }
 

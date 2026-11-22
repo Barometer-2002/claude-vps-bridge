@@ -92,6 +92,8 @@ if __name__ == '__main__':
                 output.update(permissionDecision=decision['decision'],permissionDecisionReason=decision['reason'])
             if decision.get('additionalContext'):output['additionalContext']=decision['additionalContext']
             print(json.dumps({'hookSpecificOutput':output}))
+        elif isinstance(name,str) and name.startswith('mcp__t3-code__') and os.environ.get('WINDOWS_T3_MCP')=='1':
+            print('{}')
         elif name in ('AskUserQuestion', 'WebSearch', 'WebFetch'):
             print('{}')
         else:

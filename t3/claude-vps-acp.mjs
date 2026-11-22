@@ -10,11 +10,13 @@ import {
   AVAILABLE_COMMANDS,
   DEFAULT_MODEL_ID,
   accumulateTurnUsage,
+  buildAvailableCommands,
   buildQuestionElicitation,
   buildSessionConfiguration,
   buildUsageUpdate,
   convertPromptBlocks,
   extractFileChangePresentation,
+  extractPlanEntries,
   extractSessionTitle,
   extractSlashCommand,
   findCatalogModel,
@@ -37,7 +39,140 @@ const BRIDGE_NOTICE_PREFIXES = [
   'windows-presentation-warning-',
 ];
 
-async function loadBridge() {
+const sessions = new Map();
+const pendingRequests = new Map();
+const processAbort = new AbortController();
+const mcpConnections = new Map();
+const mcpConnecting = new Map();
+const clientCaps = {
+  elicitationForm: false,
+  compaction: false,
+  notices: false,
+  clientName: '',
+};
+
+function findT3McpServerId(cwd) {
+  for (const session of sessions.values()) {
+    if (session.t3Mcp?.enabled && (!cwd || session.cwd === cwd)) {
+      return session.t3Mcp.serverId ?? 't3-code';
+    }
+  }
+  for (const session of sessions.values()) {
+    if (session.t3Mcp?.enabled) return session.t3Mcp.serverId ?? 't3-code';
+  }
+  return 't3-code';
+}
+
+function updateT3McpStats(cwd, patch) {
+  let matched = false;
+  for (const session of sessions.values()) {
+    if (session.t3Mcp?.enabled && cwd && session.cwd === cwd) {
+      Object.assign(session.t3Mcp, patch);
+      matched = true;
+    }
+  }
+  if (!matched) {
+    for (const session of sessions.values()) {
+      if (session.t3Mcp?.enabled) Object.assign(session.t3Mcp, patch);
+    }
+  }
+}
+
+async function ensureT3McpConnection(localConnId, bridgeSessionId, cwd) {
+  const existing = mcpConnections.get(localConnId);
+  if (existing) return existing;
+  const inflight = mcpConnecting.get(localConnId);
+  if (inflight) return inflight;
+  const task = (async () => {
+    const serverId = findT3McpServerId(cwd);
+    const connected = await askClient('mcp/connect', { serverId }, processAbort.signal);
+    if (typeof connected?.connectionId !== 'string' || !connected.connectionId) {
+      throw new Error('T3 Code MCP connect did not return a connectionId');
+    }
+    const entry = { acpConnId: connected.connectionId, bridgeSessionId, serverId, cwd };
+    mcpConnections.set(localConnId, entry);
+    updateT3McpStats(cwd, { connected: true });
+    return entry;
+  })().finally(() => {
+    mcpConnecting.delete(localConnId);
+  });
+  mcpConnecting.set(localConnId, task);
+  return task;
+}
+
+async function disconnectT3McpConnection(localConnId) {
+  const inflight = mcpConnecting.get(localConnId);
+  if (inflight) await inflight.catch(() => {});
+  const entry = mcpConnections.get(localConnId);
+  if (!entry) return;
+  mcpConnections.delete(localConnId);
+  if (!processAbort.signal.aborted) {
+    await withTimeout(
+      askClient('mcp/disconnect', { connectionId: entry.acpConnId }, processAbort.signal),
+      3000,
+    ).catch(() => {});
+  }
+}
+
+async function handleT3McpRequest(request) {
+  if (request?.server !== 't3-code') {
+    throw new Error(`Unsupported T3 MCP server: ${String(request?.server)}`);
+  }
+  const localConnId = request.connectionId;
+  if (typeof localConnId !== 'string' || !localConnId) {
+    throw new Error('Missing MCP connectionId');
+  }
+  if (request.close) {
+    await disconnectT3McpConnection(localConnId);
+    return {};
+  }
+  const frame = request.frame;
+  if (!frame || typeof frame !== 'object' || typeof frame.method !== 'string') {
+    throw new Error('Invalid MCP JSON-RPC frame');
+  }
+  const isNotification = frame.id === undefined || frame.id === null;
+  try {
+    const entry = await ensureT3McpConnection(localConnId, request.sessionId, request.cwd);
+    const payload = {
+      connectionId: entry.acpConnId,
+      method: frame.method,
+      ...(frame.params !== undefined ? { params: frame.params } : {}),
+    };
+    if (isNotification) {
+      send({ method: 'mcp/notification', params: payload });
+      return {};
+    }
+    const result = await askClient('mcp/message', payload, processAbort.signal);
+    if (frame.method === 'tools/list' && Array.isArray(result?.tools)) {
+      updateT3McpStats(request.cwd, { connected: true, toolCount: result.tools.length });
+    }
+    return { jsonrpc: '2.0', id: frame.id, result: result ?? {} };
+  } catch (err) {
+    if (isNotification) return {};
+    return {
+      jsonrpc: '2.0',
+      id: frame.id,
+      error: { code: -32603, message: err?.message ?? 'T3 MCP request failed' },
+    };
+  }
+}
+
+function closeT3McpForSession(bridgeSessionId) {
+  const targets = [];
+  for (const [localConnId, entry] of mcpConnections.entries()) {
+    if (entry.bridgeSessionId === bridgeSessionId) targets.push(localConnId);
+  }
+  for (const localConnId of targets) {
+    void disconnectT3McpConnection(localConnId);
+  }
+}
+
+async function closeAllT3Mcp() {
+  const ids = [...mcpConnections.keys()];
+  await Promise.allSettled(ids.map(id => disconnectT3McpConnection(id)));
+}
+
+async function loadBridge(bridgeContext) {
   const info = await inspectBridge();
   const { root, entry } = info;
   // The installation stamp belongs to the CodexHost background process.
@@ -52,21 +187,25 @@ async function loadBridge() {
   });
   try {
     const { createHarnessAdapter } = await import(pathToFileURL(entry));
-    return { adapter: createHarnessAdapter({}), info };
+    let loadProjectEnvironment = null;
+    try {
+      const envMod = await import(pathToFileURL(path.join(root, 'runtime', 'project-environment.mjs')));
+      if (typeof envMod?.projectEnvironment === 'function') {
+        loadProjectEnvironment = envMod.projectEnvironment;
+      }
+    } catch {
+      // Optional: local skills/commands autocomplete degrades cleanly if unavailable.
+    }
+    return { adapter: createHarnessAdapter(bridgeContext), info, loadProjectEnvironment };
   } finally {
     hook.deregister();
   }
 }
 
-const { adapter: bridge, info: bridgeInfo } = await loadBridge();
-const sessions = new Map();
-const pendingRequests = new Map();
-const clientCaps = {
-  elicitationForm: false,
-  compaction: false,
-  notices: false,
-  clientName: '',
-};
+const { adapter: bridge, info: bridgeInfo, loadProjectEnvironment } = await loadBridge({
+  onMcpRequest: handleT3McpRequest,
+  onMcpSessionClosed: closeT3McpForSession,
+});
 
 const text = value => ({ type: 'text', text: value });
 const send = value => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...value })}\n`);
@@ -285,6 +424,10 @@ async function syncSessionState(session, state) {
 }
 
 function toolTitle(item) {
+  if (item.type === 'subagentDelegation') {
+    const first = Array.isArray(item.subagents) ? item.subagents[0] : null;
+    return first?.description ?? first?.title ?? item.title ?? 'Subagent';
+  }
   return item.command ?? item.toolName ?? item.tool ?? item.type;
 }
 
@@ -384,8 +527,19 @@ function displayItem(session, turn, item, outcome) {
       ...(content.length ? { content } : {}),
     });
   } else {
+    const planEntries = extractPlanEntries(item, turn.tasks);
+    if (planEntries) {
+      const planKey = JSON.stringify(planEntries);
+      if (planKey !== turn.lastPlanKey) {
+        turn.lastPlanKey = planKey;
+        update(session, { sessionUpdate: 'plan', entries: planEntries });
+      }
+    }
     const content = toolContent(item);
     const locations = toolLocations(item);
+    const rawName = typeof item.toolName === 'string' && item.toolName.trim()
+      ? item.toolName.trim()
+      : (typeof item.tool === 'string' && item.tool.trim() ? item.tool.trim() : undefined);
     const status = outcome ? (outcome.status === 'succeeded' ? 'completed' : 'failed') : 'in_progress';
     update(session, {
       sessionUpdate: previous ? 'tool_call_update' : 'tool_call',
@@ -393,7 +547,9 @@ function displayItem(session, turn, item, outcome) {
       title: toolTitle(item),
       kind: toolKind(item),
       status,
+      ...(rawName ? { name: rawName } : {}),
       ...(item.arguments === undefined ? {} : { rawInput: item.arguments }),
+      ...(outcome && item.output !== undefined ? { rawOutput: item.output } : {}),
       ...(locations ? { locations } : {}),
       ...(content.length ? { content } : {}),
     });
@@ -510,7 +666,34 @@ async function consume(session) {
             displayItem(session, turn, { ...item, text: (item.text ?? '') + event.update.text });
           } else if (item && event.update?.type === 'output.append' && typeof event.update.text === 'string') {
             const nextOutput = typeof item.output === 'string' ? item.output + event.update.text : event.update.text;
-            displayItem(session, turn, { ...item, output: nextOutput });
+            turn.items.set(event.itemId, { ...item, output: nextOutput });
+            if (event.update.text.length > 0) {
+              update(session, {
+                sessionUpdate: 'tool_call_content_chunk',
+                toolCallId: item.itemId,
+                content: { type: 'content', content: text(event.update.text) },
+              });
+            }
+          }
+        }
+        if (event.type === 'subagent.state.changed') {
+          const targetId = event.itemId ?? event.subagentId;
+          const item = targetId ? turn.items.get(targetId) : null;
+          if (item) {
+            const nextStatus = event.state === 'completed' || event.state === 'succeeded'
+              ? 'completed'
+              : event.state === 'failed' || event.state === 'error'
+                ? 'failed'
+                : 'in_progress';
+            const summary = typeof event.summary === 'string' && event.summary.trim()
+              ? [{ type: 'content', content: text(event.summary.trim()) }]
+              : undefined;
+            update(session, {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: item.itemId,
+              status: nextStatus,
+              ...(summary ? { content: summary } : {}),
+            });
           }
         }
         if (event.type === 'item.completed') displayItem(session, turn, event.snapshot.item, event.snapshot.outcome);
@@ -539,12 +722,27 @@ async function consume(session) {
 }
 
 function schedulePostOpenNotifications(session) {
-  setImmediate(() => {
+  setImmediate(async () => {
     if (!sessions.has(session.id) || session.closing) return;
     session.initialized = true;
+    let availableCommands = AVAILABLE_COMMANDS;
+    if (typeof loadProjectEnvironment === 'function') {
+      try {
+        const projectEnv = await loadProjectEnvironment(session.cwd);
+        const built = buildAvailableCommands(projectEnv);
+        availableCommands = built.commands;
+        session.localCapabilities = {
+          skills: built.localSkillCount,
+          commands: built.localCommandCount,
+        };
+      } catch {
+        // Fallback to built-in commands if project environment cannot be parsed.
+      }
+    }
+    if (!sessions.has(session.id) || session.closing) return;
     update(session, {
       sessionUpdate: 'available_commands_update',
-      availableCommands: AVAILABLE_COMMANDS,
+      availableCommands,
     });
     if (session.latestUsage) {
       emitUsageIfChanged(session, session.latestUsage);
@@ -588,7 +786,16 @@ async function resolveForkCheckpoint(source, sourceSaved, localCwd) {
   }
 }
 
-async function openSession({ cwd, sessionId, forkFromSessionId }) {
+function detectT3McpServer(mcpServers) {
+  if (!Array.isArray(mcpServers)) return null;
+  return mcpServers.find(
+    server => server?.type === 'acp'
+      && typeof server.serverId === 'string'
+      && (server.serverId === 't3-code' || server.name === 't3-code'),
+  ) ?? null;
+}
+
+async function openSession({ cwd, sessionId, forkFromSessionId, mcpServers }) {
   if (typeof cwd !== 'string' || !path.win32.isAbsolute(cwd)) {
     throw error(-32602, 'Select a local Windows project in T3 Code');
   }
@@ -596,11 +803,19 @@ async function openSession({ cwd, sessionId, forkFromSessionId }) {
   const id = forkFromSessionId ? randomUUID() : (sessionId ?? randomUUID());
   if (!forkFromSessionId && sessions.has(id)) return sessions.get(id).opening;
 
+  const t3McpServer = detectT3McpServer(mcpServers);
   const session = {
     id,
     cwd: localCwd,
     observedModels: [],
     latestUsage: null,
+    t3Mcp: {
+      enabled: Boolean(t3McpServer),
+      serverId: t3McpServer?.serverId ?? null,
+      connected: false,
+      toolCount: null,
+    },
+    localCapabilities: null,
     initialized: false,
     closing: false,
   };
@@ -651,6 +866,10 @@ async function openSession({ cwd, sessionId, forkFromSessionId }) {
         ...(saved.thinkingOptionId ? { thinkingOptionId: saved.thinkingOptionId } : {}),
         ...(saved.permissionModeId ? { permissionModeId: saved.permissionModeId } : {}),
       };
+    }
+
+    if (t3McpServer) {
+      openInput = { ...openInput, t3Mcp: true };
     }
 
     const [inspection, openedNative] = await Promise.all([
@@ -797,13 +1016,25 @@ async function selectMode({ sessionId, modeId }) {
   return {};
 }
 
+async function readSshRouteState() {
+  try {
+    const raw = await readFile(path.join(bridgeInfo.root, 'runtime', 'state', 'ssh-route.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 async function handleLocalSlashCommand(session, command) {
   const inspection = await getInspection().catch(() => ({}));
-  const [accountRes] = await Promise.allSettled([
+  const [accountRes, sshRouteRes] = await Promise.allSettled([
     withTimeout(bridge.inspectAccount(), 8000),
+    command.name === 'status' ? readSshRouteState() : Promise.resolve(null),
     session.native.refreshUsage ? withTimeout(session.native.refreshUsage(), 4000) : Promise.resolve(),
   ]);
   const account = accountRes.status === 'fulfilled' ? accountRes.value : null;
+  const sshRoute = sshRouteRes.status === 'fulfilled' ? sshRouteRes.value : null;
   const credits = bridge.credits?.() ?? null;
 
   if (session.latestUsage) {
@@ -811,7 +1042,16 @@ async function handleLocalSlashCommand(session, command) {
   }
 
   const report = command.name === 'status'
-    ? formatStatusReport({ session, inspection, account, credits, bridgeVersion: bridgeInfo.version })
+    ? formatStatusReport({
+        session,
+        inspection,
+        account,
+        credits,
+        bridgeVersion: bridgeInfo.version,
+        sshRoute,
+        t3Mcp: session.t3Mcp,
+        localCapabilities: session.localCapabilities,
+      })
     : formatUsageReport({ session, inspection, account, credits, bridgeVersion: bridgeInfo.version });
 
   update(session, { sessionUpdate: 'agent_message_chunk', content: text(report) });
@@ -834,13 +1074,27 @@ async function prompt({ sessionId, prompt }) {
     const title = extractSessionTitle(prompt);
     if (title) {
       session.title = title;
+      update(session, {
+        sessionUpdate: 'session_info_update',
+        title,
+        updatedAt: new Date().toISOString(),
+      });
       void persistSession(session).catch(() => {});
     }
   }
 
   const { promise, resolve, reject } = Promise.withResolvers();
   void promise.catch(() => {});
-  const turn = { id: randomUUID(), items: new Map(), interactions: new Map(), usage: null, resolve, reject };
+  const turn = {
+    id: randomUUID(),
+    items: new Map(),
+    interactions: new Map(),
+    tasks: new Map(),
+    lastPlanKey: null,
+    usage: null,
+    resolve,
+    reject,
+  };
   session.turn = turn;
 
   if (slash?.name === 'compact') {
@@ -944,6 +1198,9 @@ const methods = {
       agentInfo: { name: 'claude-vps-bridge', version: ADAPTER_VERSION, title: 'Claude VPS Bridge' },
       agentCapabilities: {
         loadSession: true,
+        mcpCapabilities: {
+          acp: true,
+        },
         promptCapabilities: {
           image: true,
           audio: false,
@@ -960,12 +1217,16 @@ const methods = {
       authMethods: [],
     };
   },
-  'session/new': params => openSession({ cwd: params.cwd }),
+  'session/new': params => openSession({ cwd: params.cwd, mcpServers: params.mcpServers }),
   'session/resume': async params => {
     const { configOptions, models, modes } = await openSession(params);
     return { configOptions, models, ...(modes ? { modes } : {}) };
   },
-  'session/fork': params => openSession({ cwd: params.cwd, forkFromSessionId: params.sessionId }),
+  'session/fork': params => openSession({
+    cwd: params.cwd,
+    forkFromSessionId: params.sessionId,
+    mcpServers: params.mcpServers,
+  }),
   'session/load': async params => {
     const { configOptions, models, modes } = await openSession(params);
     const session = getSession(params.sessionId);
@@ -1019,8 +1280,10 @@ async function receive(line) {
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on('line', line => { if (line.trim()) void receive(line); });
 lines.on('close', async () => {
+  processAbort.abort(new Error('ACP client disconnected'));
   for (const request of pendingRequests.values()) request.reject(new Error('ACP client disconnected'));
   for (const session of sessions.values()) session.closing = true;
+  await closeAllT3Mcp();
   await Promise.allSettled([...sessions.values()].map(session => session.native?.close()));
   await bridge.close();
 });

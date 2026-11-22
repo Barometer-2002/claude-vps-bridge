@@ -233,7 +233,7 @@ async function releaseOpening(sessionId,opening){
   });return opening.releasing;
 }
 async function request(method, params, signal) {
-  if(method==='health')return {protocol:BRIDGE_PROTOCOL,ingress,bridgeVersion,dependencyVersion,capabilities:['project-context','local-policy','local-hooks','media-cache','agent-context','job-recovery','native-fork','duplex-control','live-reverse-probe','duplex-tools','context-delta','local-mcp','account-usage'],adapterSha256};
+  if(method==='health')return {protocol:BRIDGE_PROTOCOL,ingress,bridgeVersion,dependencyVersion,capabilities:['project-context','local-policy','local-hooks','media-cache','agent-context','job-recovery','native-fork','duplex-control','live-reverse-probe','duplex-tools','context-delta','local-mcp','account-usage','t3-mcp'],adapterSha256};
   if(method==='account')return inspectAccount();
   if(method==='reverse-health'){
     const legacy=remoteConfig.legacy;if(!legacy?.enabled)return false;
@@ -280,6 +280,7 @@ async function request(method, params, signal) {
       ...binding.toolEnvironment,
       CODEXHOST_CLI_PATH: agentCommand,
       WINDOWS_BRIDGE_ROOT: bridgeRoot,
+      ...(params.t3Mcp === true ? { WINDOWS_T3_MCP: '1' } : {}),
       ...(parentThread ? { WINDOWS_PARENT_THREAD_ID: parentThread } : {}),
     } });
     if (!result.ok)return result;
