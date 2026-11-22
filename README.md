@@ -51,10 +51,6 @@
 
 Windows 用户可单独安装 [T3 Code Enhancer](https://github.com/Barometer-2002/t3code-enhancer)，使用明暗主题、工作过程折叠、模型与思考深度面板，以及用量和上下文统计。项目 README 提供安装说明、版本兼容性和[界面预览](https://github.com/Barometer-2002/t3code-enhancer#界面预览)。
 
-<p align="center">
-  <img src="docs/assets/t3code-enhancer-demo-redacted.png" alt="启用界面增强后的 T3 Code 会话，展示工作过程和输入框底栏" width="720">
-</p>
-
 ---
 
 ## 快速开始
@@ -88,6 +84,10 @@ pwsh -NoProfile -File .\install.ps1 -T3Only
 ```text
 请确认当前 Windows 项目路径、读取 README.md 前 10 行，并调用 t3_environment_read 检查 T3 MCP 连通性，不要修改任何文件。
 ```
+
+<p align="center">
+  <img src="docs/assets/t3code-enhancer-demo-redacted.png" alt="启用界面增强后的 T3 Code 会话，展示工作过程和输入框底栏" width="720">
+</p>
 
 ---
 
