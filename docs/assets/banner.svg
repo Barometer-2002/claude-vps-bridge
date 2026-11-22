@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+  <title id="title">T3 Claude VPS (t3-claude-vps)</title>
+  <desc id="desc">让 Linux VPS 上的官方 Claude Code 原生接入 Windows 端 T3 Code：零反代、零逆向、凭据留 VPS、代码与 T3 Token 留本机。</desc>
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1200" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0E1B22"/>
+      <stop offset="55%" stop-color="#142933"/>
+      <stop offset="100%" stop-color="#192A30"/>
+    </linearGradient>
+    <radialGradient id="glowWarm" cx="0.16" cy="0.5" r="0.34">
+      <stop offset="0%" stop-color="#E07B59" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#E07B59" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowTeal" cx="0.86" cy="0.35" r="0.38">
+      <stop offset="0%" stop-color="#2DD4BF" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#2DD4BF" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#8FB3C0" fill-opacity="0.12"/>
+    </pattern>
+    <linearGradient id="iconBg" x1="0" y1="0" x2="120" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1A323D"/>
+      <stop offset="100%" stop-color="#0E1C23"/>
+    </linearGradient>
+    <linearGradient id="clawdFill" x1="12" y1="4" x2="12" y2="21" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F09270"/>
+      <stop offset="100%" stop-color="#D96D4B"/>
+    </linearGradient>
+    <linearGradient id="bridgeLine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2DD4BF"/>
+      <stop offset="100%" stop-color="#38BDF8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="300" rx="22" fill="url(#canvas)"/>
+  <rect width="1200" height="300" rx="22" fill="url(#dots)"/>
+  <rect width="1200" height="300" rx="22" fill="url(#glowWarm)"/>
+  <rect width="1200" height="300" rx="22" fill="url(#glowTeal)"/>
+  <rect x="1" y="1" width="1198" height="298" rx="21" fill="none" stroke="#2A4A57" stroke-width="1.5"/>
+
+  <!-- Left Emblem -->
+  <g transform="translate(64 78)">
+    <rect width="144" height="144" rx="30" fill="url(#iconBg)" stroke="#2E5463" stroke-width="1.8"/>
+    <rect x="4" y="4" width="136" height="136" rx="26" fill="none" stroke="#FFFFFF" stroke-opacity="0.06"/>
+    <g transform="translate(21.5 6) scale(4.2)">
+      <path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z" fill="url(#clawdFill)" fill-rule="evenodd"/>
+    </g>
+    <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="19" y="102" width="31" height="24" rx="5" fill="#17303B" stroke="#7FA4B0" stroke-width="2.4"/>
+      <path d="m26 109.5 5 4.5-5 4.5m9 0h7.5" stroke="#E8F6FA" stroke-width="2.4"/>
+      <path d="M56 109.8h31l-5-4.8M88 118.2H57l5 4.8" stroke="url(#bridgeLine)" stroke-width="2.8"/>
+      <rect x="94" y="101" width="31" height="26" rx="5" fill="#17303B" stroke="#7FA4B0" stroke-width="2.4"/>
+      <path d="M94 114h31" stroke="#7FA4B0" stroke-width="2.2"/>
+      <circle cx="102.5" cy="107.5" r="2.1" fill="#2DD4BF"/>
+      <circle cx="102.5" cy="120.5" r="2.1" fill="#38BDF8"/>
+      <path d="M109.5 107.5h8.5M109.5 120.5h8.5" stroke="#B6D2DC" stroke-width="2.2"/>
+    </g>
+  </g>
+
+  <!-- Title & Copy -->
+  <g font-family="Segoe UI, Microsoft YaHei, PingFang SC, Noto Sans CJK SC, sans-serif">
+    <text x="246" y="114" font-size="48" font-weight="800" fill="#F4FAFC" letter-spacing="-0.5">T3 Claude VPS</text>
+    <rect x="596" y="80" width="166" height="36" rx="18" fill="#1D3A46" stroke="#2F5B6C" stroke-width="1.2"/>
+    <text x="679" y="103" text-anchor="middle" font-family="Consolas, JetBrains Mono, monospace" font-size="16" font-weight="600" fill="#5EEAD4">t3-claude-vps</text>
+
+    <text x="248" y="158" font-size="20" fill="#B9D3DC">让 Linux VPS 上的官方 Claude Code 原生接入 Windows 端 T3 Code</text>
+    <text x="248" y="188" font-size="16" fill="#82A4B1">零反代 · 零逆向 · Anthropic 登录态留 VPS · 代码、工具与 T3 Token 严格留 Windows</text>
+
+    <!-- Feature Pills (symmetrical breathing room) -->
+    <g transform="translate(248 214)">
+      <rect width="250" height="36" rx="10" fill="#16313C" stroke="#2B5768"/>
+      <circle cx="18" cy="18" r="4.5" fill="#2DD4BF"/>
+      <text x="32" y="23" font-size="14" font-weight="600" fill="#DCF4F2">原生 claudeAgent · 5h/7d 圆环</text>
+
+      <rect x="262" width="218" height="36" rx="10" fill="#16313C" stroke="#2B5768"/>
+      <circle cx="280" cy="18" r="4.5" fill="#38BDF8"/>
+      <text x="294" y="23" font-size="14" font-weight="600" fill="#DBEFFE">Local ACP · 红绿 Diff 卡片</text>
+
+      <rect x="492" width="232" height="36" rx="10" fill="#16313C" stroke="#2B5768"/>
+      <circle cx="510" cy="18" r="4.5" fill="#E98A68"/>
+      <text x="524" y="23" font-size="14" font-weight="600" fill="#FCE7DE">全量本机 MCP · Plan 硬拦截</text>
+
+      <rect x="736" width="160" height="36" rx="10" fill="#16313C" stroke="#2B5768"/>
+      <circle cx="754" cy="18" r="4.5" fill="#A78BFA"/>
+      <text x="768" y="23" font-size="14" font-weight="600" fill="#EDE9FE">CodexHost 兼容</text>
+    </g>
+  </g>
+</svg>

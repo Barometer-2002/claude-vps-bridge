@@ -21,7 +21,7 @@ CodexHost 适配器通过独立依赖目录安装；本仓库不复制其完整�
 
 ## Clawd 图形
 
-图标中的 Clawd 轮廓来自 [LobeHub Icons](https://github.com/lobehub/lobe-icons)，保留原路径和比例。本机终端、VPS 和连接线为上游项目组合设计。Clawd 角色属于 Anthropic。
+`plugin/icon.svg` 与 `docs/assets/banner.svg` 中的 Clawd 轮廓来自 [LobeHub Icons](https://github.com/lobehub/lobe-icons)，保留原路径和比例。本机终端、VPS 与双向 SSH 连接图形为本项目及上游组合设计。Clawd 角色属于 Anthropic。
 
 MIT License
 
