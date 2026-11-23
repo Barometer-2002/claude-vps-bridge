@@ -1,6 +1,6 @@
 # 更新记录
 
-本记录分为两部分：上方为 **T3 Claude VPS（`t3-claude-vps`）** 正式发布版本（基于上游 `vv-get-ti/claude-vps-bridge@0.14.1` / `0acd8a0`）；下方完整保留上游历史发布记录。完整改进对比见 [docs/FORK_CHANGES.md](docs/FORK_CHANGES.md)。
+本项目 fork 自 `vv-get-ti/claude-vps-bridge`，基线 `0.14.1`（`0acd8a0`）。本记录分两部分：上方是本 fork 的发布版本（从 `1.0.0` 起独立编号）；下方保留 fork 之前的上游发布记录，仅供查阅。与上游的差异见 [docs/FORK_CHANGES.md](docs/FORK_CHANGES.md)。
 
 ---
 

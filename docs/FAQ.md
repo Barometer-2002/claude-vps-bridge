@@ -1,8 +1,22 @@
 # 常见问题
 
+## 这个项目到底是做什么的？
+
+让你在 Windows 的 T3 Code 里使用 VPS 上的官方 Claude Code。模型会话、登录状态在 VPS；项目文件、命令和 MCP 工具在 Windows 执行。T3 里会多出一个名为 `Claude VPS` 的 Provider，选中即可使用。
+
 ## T3 Claude VPS 与上游 `claude-vps-bridge` 是什么关系？
 
-**T3 Claude VPS（`t3-claude-vps`）** 是基于上游 [`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge)（基线 `0.14.1`）开发的 **LGPL-3.0-only** 增强分支。它在完整保留上游 SSH 协议 3 多路复用传输、Windows 本机工作区运行时与 CodexHost 插件兼容性的前提下，面向 T3 Code 新增了官方 `claudeAgent` 原生 Shim（`t3-native/`）、本机 MCP 代理与安全策略层、读图路径回映射与纯 T3 独立安装模式。详细差异见 [Fork 起源与改进说明](FORK_CHANGES.md)。
+本项目 fork 自 [`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge)，基线 `0.14.1`，许可证同为 LGPL-3.0-only。
+
+上游是 CodexHost 插件；本 fork 沿用它的核心桥接（SSH 传输、Windows 工作区运行时、事务部署），新增 T3 Code 接入（`t3-native/`）、Windows 端 MCP 代理、读图路径映射和只装 T3 的安装模式，并保留 CodexHost 插件。差异清单见 [Fork 说明](FORK_CHANGES.md)。
+
+## 我已经在用上游，能直接换过来吗？
+
+可以。插件 ID、配置文件名（`bridge-config.local.json`）和 VPS 目录都没有改，用本仓库重新运行安装脚本即可。不加参数时只装 CodexHost 插件，行为与上游一致；加 `-WithT3` 会同时注册 T3 的 `Claude VPS`。
+
+## 问题应该报给上游还是这里？
+
+T3 接入相关的问题（`Claude VPS` 实例、`t3-native/`、`claude-stream-relay.mjs`、MCP 代理、读图预览）请在本仓库反馈。如果问题在 CodexHost 模式下也能复现，且与 T3 无关，通常来自上游代码，也可以向上游反馈。
 
 ## 接入 T3 Code 会影响本机原生 Claude 或破坏 VPS 环境稳定性吗？
 
@@ -88,8 +102,7 @@ Default 是 Claude 适配器的模型选择策略，Auto 是思考策略。指�
 
 ## 如何停用或卸载？
 
-- **独立卸载 T3 Code 接入**（不影响默认 `claudeAgent`，保留 `claude-home` 会话数据）：
-  - `node .\t3-native\manage-native.mjs uninstall`（移除 `Claude VPS`）
+- **卸载 T3 Code 接入**（不影响默认 `claudeAgent`，保留 `claude-home` 会话数据和共享桥接）：先结束正在运行的 Claude VPS 会话，再运行 `pwsh -NoProfile -File .\uninstall.ps1`，等同于 `node .\t3-native\manage-native.mjs uninstall`。
 - **停用或卸载 CodexHost 插件**：运行 `pwsh -NoProfile -File .\install.ps1 -Disable`（或 `-Uninstall`），仅移除启用条目并保留插件代码、会话与数据。详情见[维护说明](OPERATIONS.md)。
 
 ## 运行中可以追加指令吗？

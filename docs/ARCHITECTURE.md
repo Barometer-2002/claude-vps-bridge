@@ -1,6 +1,6 @@
 # 架构与数据边界
 
-**T3 Claude VPS（`t3-claude-vps`）** 基于上游 `vv-get-ti/claude-vps-bridge` 的核心 SSH 双向通道与 Windows 工作区运行时构建，面向 **T3 Code 原生 `claudeAgent` Shim（`t3-native/`）**，并完整保留 **上游兼容的 CodexHost 插件（`plugin/`）**。T3 Code 数据流图见 [T3 Code 适配与使用指南](T3CODE.md)，相对上游的改动清单见 [Fork 起源与改进说明](FORK_CHANGES.md)。
+本文描述桥接的模块划分、恢复机制和数据去向。大部分内容（SSH 双向通道、协议 3、Windows 工作区运行时、CodexHost 插件）沿用上游 `vv-get-ti/claude-vps-bridge`；本 fork 新增的是 T3 Code 接入层（`t3-native/` 与 `remote/claude-stream-relay.mjs`），它复用同一套通道和运行时。T3 接入的数据流图见 [T3 Code 指南](T3CODE.md)，与上游的差异见 [Fork 说明](FORK_CHANGES.md)。
 
 ## 模块职责
 

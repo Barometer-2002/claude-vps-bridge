@@ -1,6 +1,6 @@
 # 安装与 VPS 登录
 
-本指南以 **T3 Code 优先** 的流程介绍如何完成 **T3 Claude VPS（`t3-claude-vps`）** 的双端准备、SSH 配置、VPS Claude 登录与部署；文末附与上游 CodexHost 共存或单独安装 CodexHost 的方法。
+本指南介绍如何安装 **T3 Claude VPS（`t3-claude-vps`）**：准备 Windows 和 VPS 两端环境、配置免密 SSH、在 VPS 登录 Claude Code，然后部署。默认按只用 T3 Code 的方式安装；第 4 步也列出了与 CodexHost 共存，以及只装 CodexHost 插件（与上游 `claude-vps-bridge` 相同）的方法。
 
 ---
 

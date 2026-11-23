@@ -1,8 +1,8 @@
 # T3 Code 适配与使用指南
 
-**T3 Claude VPS（`t3-claude-vps`）** 为 Windows 端 [T3 Code](https://github.com/pingdotgg/t3code) 提供**官方 `claudeAgent` 原生 Shim（`t3-native/`）**，支持**纯 T3 Code 独立安装（无需安装 CodexHost 桌面端）**，同时也与上游 CodexHost 桥接共用同一套底层基础设施（Fork 来源与改动详见 [Fork 起源与改进说明](FORK_CHANGES.md)）。
+T3 Code 接入是本 fork 相对上游 [`claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge) 新增的部分（见 [Fork 说明](FORK_CHANGES.md)）。它让 Windows 上的 [T3 Code](https://github.com/pingdotgg/t3code) 直接使用 VPS 上的官方 Claude Code，项目文件和工具留在 Windows，不需要安装 CodexHost。
 
-它在 T3 Code 中注册独立实例 **`Claude VPS`**（`id: claude-vps`，`driver: claudeAgent`）并配置独立 `homePath`（`claude-home`），**不修改默认 `claudeAgent` 实例、不触碰本机 `~/.claude`、不修改 T3 Code 任何程序文件**，可与本机原生 Claude 账号完全并行共存。
+安装后，T3 Code 中会多出一个独立实例 **`Claude VPS`**（`id: claude-vps`，`driver: claudeAgent`），使用单独的 `homePath`（`claude-home`）。它不修改默认 `claudeAgent` 实例，不碰本机 `~/.claude`，不修改 T3 Code 的程序文件，可以和本机自带的 Claude 同时使用。底层的 SSH 传输和 Windows 工作区运行时与 CodexHost 模式共用，来自上游。
 
 ---
 
