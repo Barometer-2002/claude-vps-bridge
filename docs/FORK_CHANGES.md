@@ -1,84 +1,110 @@
-# Fork 起源与改进说明
+# Fork 说明
 
-本文档清晰说明 **T3 Claude VPS（`t3-claude-vps`）** 的上游来源、开源许可证合规声明、保留的上游能力，以及本 Fork 新增与改进的全部内容。
+**T3 Claude VPS（`t3-claude-vps`）fork 自 [`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge)。** 上游让 CodexHost 使用 VPS 上的 Claude Code；本 fork 用同一套桥接，让 **T3 Code** 也能这样用，并且可以不装 CodexHost。
 
----
-
-## 一、上游来源与许可证声明
-
-- **上游项目**：[`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge)
-- **分叉基线**：`0.14.1`（上游提交 `0acd8a0`）
-- **本 Fork 品牌名**：**T3 Claude VPS**（`t3-claude-vps`）
-- **首个正式版本**：`v1.0.0`（`2026-11-23`）
-- **许可证**：严格沿用上游 **[LGPL-3.0-only](../LICENSE)**（随附 [GPL-3.0 全文](../LICENSE-GPL-3.0)），完整保留上游版权与 [第三方声明](../THIRD_PARTY_NOTICES.md)。
-- **为什么新建并重命名本 Fork**：上游 `claude-vps-bridge` 专注于 CodexHost 桌面端插件；本 Fork 在完整复用并兼容上游核心桥接与 CodexHost 插件的基础上，将其扩展为面向 **[T3 Code](https://github.com/pingdotgg/t3code)** 的官方 `claudeAgent` 原生远程 VPS Claude Code 方案，并支持脱离 CodexHost 独立安装。
+本文说明 fork 的基线、原因、与上游的差异，以及许可证义务。
 
 ---
 
-## 二、完整保留并致敬的上游核心底座
+## 上游与基线
 
-本 Fork 完整继承了上游 `vv-get-ti/claude-vps-bridge`（`0.14.1`）的全部核心工程能力，并未破坏任何原有 CodexHost 路径：
+| 项目 | 内容 |
+|---|---|
+| 上游仓库 | [`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge) |
+| fork 基线 | `0.14.1`（上游提交 `0acd8a0`） |
+| 本 fork 名称 | T3 Claude VPS（仓库名 `t3-claude-vps`） |
+| 本 fork 版本 | 从 `v1.0.0` 起独立编号，当前 `v1.0.1`，见 [CHANGELOG](../CHANGELOG.md) |
+| 许可证 | 与上游相同，[LGPL-3.0-only](../LICENSE)（随附 [GPL-3.0 全文](../LICENSE-GPL-3.0)） |
 
-- **桥接协议 3 与 SSH 双向复用传输**：分块流控、按字节确认、小请求插队、断线按游标恢复与请求去重。
-- **多线路自动选路**：支持 `direct`、本机 SOCKS5 代理与 `cloudflared` 自动切换及入口一致性观测。
-- **Windows 本机工作区运行时**：本机文件读写、ripgrep 搜索快照分页、独立长任务执行器（命名管道）、写入协作锁与 Git worktree 支持。
-- **本机项目环境与附件能力**：`CLAUDE.md`、`AGENTS.md`、`.claude/rules`、Hooks、权限预检、图片/PDF 哈希缓存与媒体导出。
-- **原子事务式部署与回滚**：两端文件清单校验、依赖版本与 SHA256 验证、保留数据停用与统一诊断（`diagnose.mjs`）。
-- **CodexHost 0.20.0+ 完整兼容**：原有 CodexHost 插件入口（`plugin/plugin.mjs`、`remote/remote-server.mjs`）及会话续接行为保持兼容。
+跟进上游新版本时，会在 CHANGELOG 中注明新的基线版本和提交。
 
----
+## 为什么要 fork
 
-## 三、本 Fork 的四大核心改进
+上游的定位是 CodexHost 桌面端插件：宿主接口、安装流程和文档都以 CodexHost 为前提。
 
-### 1. 新增 T3 Code 官方 `claudeAgent` 原生 Shim（`t3-native/` + `remote/claude-stream-relay.mjs`）
-
-在 T3 Code 中直接注册独立的官方 `claudeAgent` 实例，完整获得 T3 原生 Claude 体验：
-
-- **独立实例与目录隔离**：在 T3 Code 注册为独立实例 **`claude-vps`**（显示名 **Claude VPS**，`driver: claudeAgent`）并配置独立 `homePath`（`claude-home`），完全不修改默认 `claudeAgent`、不触碰本机 `~/.claude`，也不改动 T3 Code 任何程序文件。
-- **通过 SSH 转发 `stream-json`**：Windows 启动器（`claude-vps-shim.cs` → `.exe`）和 Node 代理（`claude-vps-shim.mjs`）通过 SSH 连接 `remote/claude-stream-relay.mjs`，由 relay 启动 VPS 上的官方 `claude` CLI。
-- **完整支持 T3 内置 `claudeAgent` 能力**：
-  - 顶部 / 账号页 **5h & 7d 实时额度圆环**（直通 `get_usage` 与 `rate_limit_event`）。
-  - **单套原生权限**（T3 Supervised / Auto-accept / Full-access 直通 `can_use_tool`）。
-  - **内置 `textGeneration`**（自动标题、Commit、PR 描述、PR Review Guide）。
-  - 完整模型列表 + `effort` / `ultracode` / `fastMode` / `autoCompactWindow` / `beforeCacheExpires` 缓存过期前自动压缩。
-- **Windows 端 MCP 代理**：`LocalMcpHub` 和 `t3-native/mcp-policy.mjs` 处理 `--mcp-config` 与动态 `mcp_set_servers`，使用本机配置连接 T3 内置及自定义 HTTP MCP（支持 SSE），或启动 Stdio MCP。VPS 端通过 `mcp-local.py --server <name>` 和会话的 MCP 允许列表转发工具请求及结果，并支持 `ToolSearch`。Windows 端检查当前权限模式、`T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与项目 `permissions.deny`。
-- **远端读图 / PDF 路径双向回映射**：记录 Windows 侧 `media-export` 产生的 VPS `.bridge-media/<session>/<sha256>.<ext>` 与 Windows 原始路径对应关系（按 `projectId` 持久化至 `media-path-cache.json` 兼容 `--resume`），自动回映射流向 T3 Code 的原生 `Read`（分块 `stream_event`、`assistant` `tool_use`、`user` `tool_use_result`、Markdown 引用与 `can_use_tool` 审批弹窗），并在审批放行回传 `control_response.updatedInput` 时反向还原为 VPS 路径，确保 T3 Code 读图预览正常渲染。
-- **多 SSH 线路自动选路、Hook 阻断与任务取消找回**：启动期通过 `SshRoutes.firstAvailable()` 自动在 `cloudflared` / `socks5` / `direct` 线路间故障切换（自动缓冲早期 `initialize`/`mcp_set_servers` 帧不丢包）；发送用户消息时自动展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS` 不劫持内置命令）、执行 `UserPromptSubmit` 本机 Hooks（阻断时明确反馈且不锁死会话）；停止会话主动取消本机长任务，SSH 意外断线自动查回并保留原 `requestId` 防重放。
-- **原子暂存升级与自检回滚**：`manage-native.mjs` 先在独立暂存目录编译并跑完离线 `--self-test` 与远端 `--version --live` 校验后再原子热替换（支持在旧 `.exe` 运行时安全切换），失败自动回滚。
-
-### 2. 新增纯 T3 独立安装模式与灵活组合开关
-
-- `installer/configure.py` 新增 `--t3-only`，允许在未安装 CodexHost 桌面端的 Windows 机器上生成配置。
-- `install.ps1` 新增 `-T3Only` 与 `-WithT3`（并兼容 `-WithT3Native`），支持：
-  - 纯 T3 Code 部署（`-T3Only`）
-  - T3 Code + CodexHost 双宿共存（`-WithT3`）
-  - 仅 CodexHost（无附加参数，与上游完全一致）
-- 提供独立管理工具 `t3-native/manage-native.mjs`，支持单独执行 `install` / `status` / `uninstall`，互不干扰且保留会话数据。
-
-### 3. 核心桥接与 VPS 守卫加固（向后兼容）
-
-- **`remote/workspace-guard.py` 零改写设计**：移除全部 `updatedInput` 命令改写（JSON 含未转义单引号时直接拒绝并提示 `\u0027`），彻底修复 Claude Code `auto` 模式下简写与 JSON 并发调用触发分类器拒批的问题，并补齐 `ToolSearch`、任务工具、`ExitPlanMode` / `EnterPlanMode` 与 `WINDOWS_ALLOWED_MCP_FILE` 动态本地 MCP 放行名单。
-- **`remote/claude-windows`、`remote/mcp-local.py` 与 `plugin/runtime/workspace-runtime.mjs`**：允许受控内置任务/规划/工具发现工具，支持 `mcp-local.py --server <name>` 路由转发，并增强本机轮次任务取消（`cancel-jobs`）与活动任务查询（`listProjectJobs`）。
-- **`scripts/check.py`**：扩展静态语法与受管资产校验，覆盖 `t3-native/` 全部模块。
-
-### 4. 沿用上游的插件标识和目录
-
-从上游 `claude-vps-bridge` 迁移或与 CodexHost 共存时，桥接器沿用以下标识：
-
-- CodexHost 插件 ID：`claude-vps`（`plugin/manifest.json`）
-- 配置文件名：`bridge-config.local.json` / `bridge-config.json` 与环境变量 `CLAUDE_VPS_CONFIG`
-- VPS 远端部署根目录默认仍兼容 `~/.codexhost/windows-bridge`（可通过 `--remote-root` 自定义）
+本 fork 要解决的是另一个场景：**主力客户端是 T3 Code，希望在 T3 里直接选一个 Provider 就能用 VPS 上的 Claude Code，不额外安装 CodexHost。** T3 Code 的接入方式和 CodexHost 完全不同（T3 直接启动 Claude Code CLI 并通过 `stream-json` 通信），需要新增一层 Shim 和 VPS 端中继，还要处理 T3 特有的 MCP、读图预览和 Provider 注册。这些改动超出了上游插件的范围，所以单独维护为 fork。
 
 ---
 
-## 四、相对上游基线（`0acd8a0`）的文件变更总览
+## 与上游的差异
 
-| 路径 | 变更类型 | 说明 |
+### 新增
+
+**1. T3 Code 原生 Shim（`t3-native/` + `remote/claude-stream-relay.mjs`）**
+
+- 在 T3 Code 中注册独立实例 `claude-vps`（显示名 **Claude VPS**，`driver: claudeAgent`），使用单独的 `homePath`（`claude-home`）。不改默认 `claudeAgent` 实例，不碰本机 `~/.claude`，不改 T3 Code 程序文件。
+- Windows 启动器（`claude-vps-shim.cs` 编译为 `.exe`）和 Node 代理（`claude-vps-shim.mjs`）通过 SSH 连接 VPS 上的 `claude-stream-relay.mjs`，由 relay 启动官方 `claude` CLI 并转发 `stream-json`。
+- 因为走的是官方协议，T3 自带的 Claude 功能可以直接使用：5 小时 / 7 天额度（`get_usage`、`rate_limit_event`）、权限审批（`can_use_tool`）、`textGeneration`（自动标题、Commit、PR 描述）、`--resume` / `--fork-session`、`effort` / `fastMode` 等模型参数，以及缓存过期前自动压缩。
+
+**2. 只装 T3 的安装模式**
+
+- `installer/configure.py --t3-only`：没有 CodexHost 的机器也能生成配置。
+- `install.ps1` 增加 `-T3Only`（只装 T3 接入）和 `-WithT3`（T3 与 CodexHost 共存，兼容旧参数 `-WithT3Native`）；不加参数时与上游行为一致，只装 CodexHost 插件。
+- `t3-native/manage-native.mjs` 单独管理 T3 接入：`install`、`status`、`uninstall`。安装先在暂存目录编译，通过离线 `--self-test` 和远端 `--version --live` 检查后再切换，失败时回滚。`uninstall.ps1` 是 `install.ps1 -T3Only -Uninstall` 的简写。
+
+**3. Windows 端 MCP 代理与权限检查（`http-mcp-client.mjs`、`mcp-policy.mjs`）**
+
+- 接管 `--mcp-config` 和运行中的 `mcp_set_servers`，在 Windows 本机连接 T3 内置 MCP 和自定义 HTTP MCP（支持 SSE），或启动 Stdio MCP。VPS 端通过 `mcp-local.py --server <name>` 转发调用，支持 `ToolSearch` 延迟加载。
+- 每次 `tools/call` 前，在 Windows 端检查当前权限模式、`T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 和项目 `.claude/settings*.json` 的 `permissions.deny`。Plan 模式下只放行只读白名单，以及声明了 `readOnlyHint: true` 且非破坏性的自定义工具。
+- T3 的本地 MCP 地址和 Token 只留在 Windows。
+- 会话失效（`-32001`）与结果不明（`-32002`）分开报告，有副作用的调用不会自动重放。
+
+**4. 读图 / PDF 路径映射**
+
+- 图片和 PDF 经 `media-export` 传到 VPS 后，路径变成 `.bridge-media/<session>/<sha256>.<ext>`。Shim 记录这个路径与 Windows 原始路径的对应关系（按 `projectId` 保存在 `media-path-cache.json`，`--resume` 后仍有效）。
+- 发给 T3 的 `Read` 调用、结果、Markdown 引用和审批弹窗里的路径会换回 Windows 路径，T3 的读图卡片因此能正常显示；审批通过后回传的 `updatedInput` 再换回 VPS 路径。
+
+**5. 会话体验**
+
+- 启动时在 `sshRoutes` 配置的多条线路（`cloudflared` / `socks5` / `direct`）之间自动选择，并缓存选路期间收到的早期帧。
+- 发送 `/skill`、`$skill`、`/command` 时展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS`，不覆盖内置命令）。
+- 执行本机 `UserPromptSubmit` Hook；被阻断时向 T3 返回原因，会话仍可继续。
+- 停止会话时取消本机长任务并等待确认；SSH 意外断线后查询原任务状态并保留 `requestId`，不盲目重放。
+- 自动授权 T3 附件目录中的图片 / PDF；把 `bridge-instructions.md` 与本机项目规则合并进 `initialize.appendSystemPrompt`。
+
+### 修改（向后兼容）
+
+- **`remote/workspace-guard.py`**：不再改写 `updatedInput`。JSON 中出现未转义单引号时直接拒绝并提示写成 `\u0027`，修复 Claude Code `auto` 模式下并发调用被分类器拒绝的问题；放行 `ToolSearch`、任务工具、`EnterPlanMode` / `ExitPlanMode`，并支持 `WINDOWS_ALLOWED_MCP_FILE` 动态放行本机 MCP。
+- **`remote/claude-windows`、`remote/mcp-local.py`、`remote/tool-bridge.mjs`、`remote/bridge-instructions.md`**：配合上面的放行规则和 `--server <name>` 路由；补充读图路径的使用约束。
+- **`plugin/runtime/*`、`plugin/diagnose.mjs`**：支持在没有 CodexHost 的情况下运行和诊断；新增轮次任务取消（`cancel-jobs`）和活动任务查询（`listProjectJobs`）；1.0.1 起可在确认安全时回收已停止执行器留下的写锁。
+- **`scripts/check.py`**：语法与受管文件检查覆盖 `t3-native/`。
+
+### 保持不变
+
+以下部分沿用上游，不改变行为：
+
+- 桥接协议 3：SSH 双向复用、分块与按字节确认、小请求插队、断线按游标恢复、请求去重。
+- 多线路选路（`direct` / SOCKS5 / `cloudflared`）与入口观测。
+- Windows 工作区运行时：文件读写、ripgrep 搜索快照、独立长任务执行器、写入协作锁、Git worktree。
+- 项目环境：`CLAUDE.md`、`AGENTS.md`、`.claude/rules`、Hooks、权限预检、图片 / PDF 缓存。
+- 事务式部署与回滚、统一诊断（`diagnose.mjs`）。
+- CodexHost 0.20.0+ 插件入口（`plugin/plugin.mjs`、`remote/remote-server.mjs`）及会话续接行为。
+- 标识与目录：插件 ID `claude-vps`、配置文件 `bridge-config.local.json` / `bridge-config.json`、环境变量 `CLAUDE_VPS_CONFIG`、VPS 默认目录 `~/.codexhost/windows-bridge`（可用 `--remote-root` 修改）。从上游迁移时不需要改配置。
+
+### 已移除
+
+- 开发过程中试验过的 Local ACP 适配器（`t3/`）已在 `v1.0.0` 移除，由 `t3-native/` 取代。它从未出现在上游中。
+
+---
+
+## 文件变更清单（相对 `0acd8a0`）
+
+| 路径 | 类型 | 说明 |
 |---|---|---|
-| `t3-native/*` | **Fork 新增** | `claude-vps-shim.cs`、`claude-vps-shim.mjs`、`http-mcp-client.mjs`、`mcp-policy.mjs`、`bridge-installation.mjs`、`manage-native.mjs` |
-| `remote/claude-stream-relay.mjs` | **Fork 新增** | 供 `t3-native/` 直通 VPS 原版 Claude Code `stream-json` 的轻量中继 |
-| `docs/T3CODE.md`、`docs/FORK_CHANGES.md` | **Fork 新增** | T3 Code 原生接入指南与本 Fork 改进说明文档 |
-| `install.ps1`、`installer/*` | **Fork 增强** | `--t3-only` / `-T3Only` / `-WithT3` 与新远端文件受管部署 |
-| `plugin/diagnose.mjs`、`plugin/runtime/*` | **Fork 增强** | 无 CodexHost 独立运行支持、轮次任务取消与活动任务查询 |
-| `remote/workspace-guard.py`、`remote/claude-windows`、`remote/mcp-local.py`、`remote/tool-bridge.mjs`、`remote/bridge-instructions.md` | **Fork 增强** | 零改写并发修复、任务/规划/`ToolSearch` 放行、动态本机 MCP 转发与读图路径约束 |
-| `scripts/check.py`、`README.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`docs/*` | **Fork 增强** | 项目更名重构为 **T3 Claude VPS**，补全校验、全套文档与深浅色矢量图示 |
+| `t3-native/*` | 新增 | `claude-vps-shim.cs`、`claude-vps-shim.mjs`、`http-mcp-client.mjs`、`mcp-policy.mjs`、`bridge-installation.mjs`、`manage-native.mjs` |
+| `remote/claude-stream-relay.mjs` | 新增 | T3 Shim 使用的 VPS 端 `stream-json` 中继 |
+| `uninstall.ps1` | 新增 | 卸载 T3 接入的简写入口 |
+| `docs/T3CODE.md`、`docs/FORK_CHANGES.md` | 新增 | T3 接入指南与本文 |
+| `install.ps1`、`installer/*` | 修改 | `--t3-only` / `-T3Only` / `-WithT3`，以及新增远端文件的受管部署 |
+| `plugin/diagnose.mjs`、`plugin/runtime/*` | 修改 | 无 CodexHost 运行、轮次任务取消、活动任务查询、写锁回收 |
+| `remote/workspace-guard.py`、`remote/claude-windows`、`remote/mcp-local.py`、`remote/tool-bridge.mjs`、`remote/bridge-instructions.md` | 修改 | 不改写输入的并发修复、任务 / 规划 / `ToolSearch` 放行、本机 MCP 转发、读图路径约束 |
+| `plugin/manifest.json` | 修改 | 版本号改为本 fork 的版本 |
+| `README.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`docs/*`、`docs/assets/*` | 修改 | 更名为 T3 Claude VPS，重写文档与图示 |
+
+---
+
+## 许可证义务
+
+- 本 fork 与上游一样采用 LGPL-3.0-only，保留上游版权声明，上游来源和第三方依赖列在 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
+- 相对上游修改过的文件列在上方清单中。
+- 本仓库不分发 Claude Code、T3 Code 或 CodexHost 的二进制文件、账号或凭据，它们各自的条款不受本仓库许可证影响。

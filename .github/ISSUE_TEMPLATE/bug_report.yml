@@ -9,7 +9,7 @@ body:
     id: versions
     attributes:
       label: 运行环境
-      description: 插件、CodexHost、Claude Code、Windows、Linux 与 PowerShell 的版本；注明是否启用了可选 MCP。
+      description: 本项目版本（t3-claude-vps）、使用方式（只装 T3 / T3 与 CodexHost 共存 / 只装 CodexHost）、T3 Code 或 CodexHost 版本、Claude Code、Windows、Linux 与 PowerShell 的版本；注明是否启用了可选 MCP。
     validations:
       required: true
   - type: textarea
