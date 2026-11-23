@@ -184,3 +184,7 @@ python .\scripts\check-public.py --staged
 
 - 本项目采用 **[LGPL-3.0-only](LICENSE)**（随附 [GPL-3.0 全文](LICENSE-GPL-3.0)），第三方依赖与上游来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - 致谢上游项目 **[vv-get-ti/claude-vps-bridge](https://github.com/vv-get-ti/claude-vps-bridge)**（`0.14.1`）、**[T3 Code](https://github.com/pingdotgg/t3code)** 与 **[CodexHost](https://github.com/BytePioneer-AI/codex-host)**。
+
+## 友情链接
+
+- [LINUX DO](https://linux.do/)
