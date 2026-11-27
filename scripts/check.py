@@ -25,7 +25,7 @@ for name in re.findall(r"name:\s*'([^']+)'", assets_block.group(1)):
     if not (SHIM / name).is_file():
         raise SystemExit('Shim installer copies a missing file: shim/' + name)
 
-for name in ('claude-vps-shim.cs', 'claude-vps-shim.mjs', 'http-mcp-client.mjs', 'manage-shim.mjs', 'bridge-installation.mjs', 'mcp-policy.mjs'):
+for name in ('claude-vps-shim.cs', 'claude-vps-shim.mjs', 'http-mcp-client.mjs', 'manage-shim.mjs', 'bridge-installation.mjs', 'mcp-policy.mjs', 'stream-presenter.mjs'):
     if not (SHIM / name).is_file():
         raise SystemExit('Missing neutral shim file: shim/' + name)
 if not (T3_NATIVE / 'manage-native.mjs').is_file():
@@ -94,7 +94,7 @@ if sys.platform == 'win32':
         raise SystemExit('Windows .NET csc.exe not found; cannot verify C# launcher compilation')
     with tempfile.TemporaryDirectory(prefix='claude-vps-shim-check-') as tmp:
         tmp_dir = Path(tmp)
-        for asset in ('bridge-installation.mjs', 'mcp-policy.mjs', 'http-mcp-client.mjs', 'claude-vps-shim.mjs'):
+        for asset in ('bridge-installation.mjs', 'mcp-policy.mjs', 'http-mcp-client.mjs', 'stream-presenter.mjs', 'claude-vps-shim.mjs'):
             shutil.copy2(SHIM / asset, tmp_dir / asset)
         (tmp_dir / 'node-path.txt').write_text(str(Path(node).resolve()) + '\n', encoding='utf-8')
         exe = tmp_dir / 'claude-vps-shim.exe'

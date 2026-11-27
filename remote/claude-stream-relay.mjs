@@ -9,6 +9,7 @@ import { prepareWorkspace } from './workspace-map.mjs';
 import { createToolBridge } from './tool-bridge.mjs';
 import { BRIDGE_PROTOCOL } from './bridge-protocol.mjs';
 import { bridgeRoot, workspaceRoot, agentCommand } from './remote-config.mjs';
+import { mergeInitializeAppendPrompt } from './initialize-prompt.mjs';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TOOLS_LIST = ['Bash', 'Read', 'AskUserQuestion', 'WebSearch', 'WebFetch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ExitPlanMode', 'EnterPlanMode', 'ToolSearch'];
@@ -83,6 +84,7 @@ let allowedMcpServers = [];
 let pendingMcpUpdate = null;
 const sessionTempFiles = [];
 const queuedStdinLines = [];
+let initializePromptParts = null;
 
 async function writeSessionTempFile(runDir, prefix, ext, content) {
   await mkdir(runDir, { recursive: true, mode: 0o700 });
@@ -154,6 +156,10 @@ async function prepareOutgoingStdinLine(line) {
       type: 'control_response', response: { subtype: 'error', request_id: msg.request_id, error: error.message },
     }) });
     return null;
+  }
+  if (initializePromptParts) {
+    const merged = mergeInitializeAppendPrompt(msg, initializePromptParts);
+    if (merged !== msg) return JSON.stringify(merged);
   }
   return line;
 }
@@ -263,6 +269,7 @@ async function startClaude(params) {
     const bridgeSystemPrompt = baseBridgeParts.join('\n\n');
 
     const mergedPromptParts = [bridgeSystemPrompt];
+    initializePromptParts = { bridgePrompt: bridgeSystemPrompt, hostCliPrompt: appendSystemPrompt };
     if (typeof appendSystemPrompt === 'string' && appendSystemPrompt.trim()) {
       mergedPromptParts.push(appendSystemPrompt.trim());
     }

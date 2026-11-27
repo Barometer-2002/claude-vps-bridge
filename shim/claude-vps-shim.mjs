@@ -9,6 +9,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { LocalMcpHub } from './http-mcp-client.mjs';
 import { inspectBridge } from './bridge-installation.mjs';
 import { evaluateLocalMcpToolCall, parseT3McpPolicy, resolveLocalMcpTool } from './mcp-policy.mjs';
+import { createWorkspaceStreamPresenter, parseApprovedWorkspaceCommand } from './stream-presenter.mjs';
+export { parseApprovedWorkspaceCommand };
 
 const shimDir = path.dirname(fileURLToPath(import.meta.url));
 const versionCachePath = path.join(shimDir, 'vps-version-cache.json');
@@ -791,6 +793,63 @@ async function runOfflineSelfTest({ pure = false } = {}) {
     && usageSync.consumeResponseLine(JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: "other" } })) === false
     && usageResponseToRateLimitEvents({ rate_limits_available: false }, "s1").length === 0;
 
+  const presenter = createWorkspaceStreamPresenter({ cwd: 'C:\\example' });
+  const editCmd = `windows-workspace '{"action":"edit","path":"src/app.ts","oldText":"const a = 1;","newText":"const a = 2;","expectedHash":"h1"}'`;
+  presenter.recordLocalResult(
+    { action: 'edit', path: 'src/app.ts', expectedHash: 'h1' },
+    {
+      ok: true,
+      data: {
+        path: 'C:\\example\\src\\app.ts',
+        change: {
+          kind: 'update',
+          unifiedDiff: '--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,3 +1,3 @@\n // top\n-const a = 1;\n+const a = 2;\n // end\n',
+        },
+      },
+    },
+  );
+  const s1 = presenter.rewriteOutgoingFrame({
+    type: 'stream_event',
+    event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu-1', name: 'Bash', input: {} } },
+  });
+  const s2 = presenter.rewriteOutgoingFrame({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command: editCmd }) } },
+  });
+  const s3 = presenter.rewriteOutgoingFrame({
+    type: 'stream_event',
+    event: { type: 'content_block_stop', index: 0 },
+  });
+  const permEditOut = presenter.rewriteOutgoingFrame({
+    type: 'control_request',
+    request_id: 'req-edit-1',
+    request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: editCmd } },
+  })[0];
+  const permEditIn = presenter.rewriteIncomingFrame({
+    type: 'control_response',
+    response: {
+      subtype: 'success',
+      request_id: 'req-edit-1',
+      response: { behavior: 'allow', updatedInput: permEditOut?.request?.input },
+    },
+  });
+  const userEditOut = presenter.rewriteOutgoingFrame({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: JSON.stringify({ ok: true, data: { path: 'C:\\example\\src\\app.ts', change: { added: 1, removed: 1 } } }) }],
+    },
+  })[0];
+  const streamPresenterOk = s1.length === 0
+    && s2.length === 0
+    && s3.length === 3
+    && s3[0]?.event?.content_block?.name === 'Edit'
+    && JSON.parse(s3[1]?.event?.delta?.partial_json ?? '{}')?.file_path === 'C:\\example\\src\\app.ts'
+    && permEditOut?.request?.tool_name === 'Edit'
+    && permEditIn?.response?.response?.updatedInput?.command === editCmd
+    && userEditOut?.tool_use_result?.structuredPatch?.[0]?.oldStart === 1
+    && userEditOut?.tool_use_result?.structuredPatch?.[0]?.lines?.includes('+const a = 2;');
+
   let bridge = null;
   let bridgeError = null;
   if (!pure) {
@@ -801,7 +860,7 @@ async function runOfflineSelfTest({ pure = false } = {}) {
     }
   }
 
-  const ok = rejectedBadConfig && sanitizedOk && disallowedOk && planPolicyOk && attachmentPathsOk && mediaRemapOk && usageSyncOk && (pure || !bridgeError);
+  const ok = rejectedBadConfig && sanitizedOk && disallowedOk && planPolicyOk && attachmentPathsOk && mediaRemapOk && usageSyncOk && streamPresenterOk && (pure || !bridgeError);
   process.stdout.write(`${JSON.stringify({
     ok,
     mode: pure ? 'offline-self-test-pure' : 'offline-self-test',
@@ -813,6 +872,7 @@ async function runOfflineSelfTest({ pure = false } = {}) {
     attachmentPathsOk,
     mediaRemapOk,
     usageSyncOk,
+    streamPresenterOk,
     bridgeVersion: bridge?.version ?? null,
     ...(bridgeError ? { bridgeError } : {}),
   })}\n`);
@@ -1279,113 +1339,11 @@ function mcpCallApprovalKey(server, toolName, args) {
   return `${server}\0${toolName}\0${createHash('sha256').update(JSON.stringify(canonicalJsonValue(args ?? {}))).digest('hex')}`;
 }
 
-function tokenizePosixShell(text) {
-  if (typeof text !== 'string') return null;
-  const tokens = [];
-  let cur = '';
-  let inToken = false;
-  let quote = null;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (quote === "'") {
-      if (ch === "'") quote = null;
-      else cur += ch;
-      continue;
-    }
-    if (quote === '"') {
-      if (ch === '\\' && i + 1 < text.length) {
-        cur += text[++i];
-      } else if (ch === '"') {
-        quote = null;
-      } else {
-        cur += ch;
-      }
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (inToken) {
-        tokens.push(cur);
-        cur = '';
-        inToken = false;
-      }
-      continue;
-    }
-    inToken = true;
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-    } else if (ch === '\\' && i + 1 < text.length) {
-      cur += text[++i];
-    } else {
-      cur += ch;
-    }
-  }
-  if (quote) return null;
-  if (inToken) tokens.push(cur);
-  return tokens;
-}
-
-export function parseApprovedWorkspaceCommand(command) {
-  if (typeof command !== 'string' || !command.trim()) return null;
-  const wsPrefixRe = /^\s*(?:\/usr\/local\/bin\/|\/[^\s'"]+\/)?windows-workspace\s+'(\{[\s\S]*\})'\s*$/;
-  const jsonMatch = command.match(wsPrefixRe);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[1]);
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-    } catch {
-      return null;
-    }
-  }
-  const normalized = command.replace(/^\s*"\$CODEXHOST_CLI_PATH"/, 'windows-agent');
-  const tokens = tokenizePosixShell(normalized);
-  if (!tokens || tokens.length === 0) return null;
-  const cmdBase = path.posix.basename(tokens[0]);
-  if (cmdBase === 'windows-agent') {
-    return { action: 'agent', argv: tokens.slice(1) };
-  }
-  if (cmdBase !== 'windows-workspace') return null;
-  const argv = tokens.slice(1);
-  if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') return { action: 'info' };
-  if (argv.length === 1 && argv[0].trimStart().startsWith('{')) {
-    try {
-      const parsed = JSON.parse(argv[0]);
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-    } catch {
-      return null;
-    }
-  }
-  const action = argv[0];
-  const req = { action };
-  const intFlags = new Map([
-    ['--offset', 'offset'],
-    ['--limit', 'limit'],
-    ['--start-line', 'startLine'],
-    ['--end-line', 'endLine'],
-    ['--wait-ms', 'waitMs'],
-    ['--segment', 'segment'],
-  ]);
-  const strFlags = new Map([
-    ['--pattern', 'pattern'],
-    ['--id', 'id'],
-    ['--request-id', 'requestId'],
-    ['--operation', 'operation'],
-    ['--stream', 'stream'],
-    ['--segment-id', 'segmentId'],
-    ['--search-id', 'searchId'],
-    ['--encoding', 'encoding'],
-  ]);
-  for (let i = 1; i < argv.length; i++) {
-    const tok = argv[i];
-    if (intFlags.has(tok) && i + 1 < argv.length) {
-      const n = Number(argv[++i]);
-      if (Number.isSafeInteger(n)) req[intFlags.get(tok)] = n;
-    } else if (strFlags.has(tok) && i + 1 < argv.length) {
-      req[strFlags.get(tok)] = argv[++i];
-    } else if (!tok.startsWith('-') && req.path === undefined) {
-      req.path = tok;
-    }
-  }
-  return req;
+export function shouldPresentWorkspaceStream(env = process.env) {
+  if (env?.CLAUDE_VPS_RAW_TOOL_FRAMES === '1') return false;
+  if (env?.CLAUDE_VPS_PRESENT_WORKSPACE === '1') return true;
+  if (env?.CLAUDE_AGENT_ACP_PROTOCOL) return false;
+  return true;
 }
 
 const DEFAULT_BRIDGE_TOOLS_SET = new Set([
@@ -1532,6 +1490,10 @@ async function main() {
     sessionId,
     projectId: info?.projectId ?? '',
     cacheFile: info?.projectId ? path.join(bridgeInfo.root, 'runtime', 'state', 'media-path-cache.json') : null,
+  });
+  const workspacePresenter = createWorkspaceStreamPresenter({
+    cwd: info?.cwd ?? cwd,
+    enabled: !probeOnly && shouldPresentWorkspaceStream(process.env),
   });
 
   const startPayload = {
@@ -1808,6 +1770,7 @@ async function main() {
       let value;
       if (lane === 'tool' && request?.action !== 'media-export') {
         value = await workspace.handle(boundReq, { signal: activeTurn?.controller.signal });
+        workspacePresenter.recordLocalResult(boundReq, value);
       } else {
         value = await workspace.control(boundReq);
         if (request?.action === 'media-export') {
@@ -1956,10 +1919,13 @@ async function main() {
         }
         if (activeTurn === turn) activeTurn = null;
       }
-      const outFrames = mediaRemapper.rewriteOutgoingFrame(parsedOut);
-      for (const outFrame of outFrames) {
-        if (outFrame === parsedOut) process.stdout.write(`${line}\n`);
-        else writeStdoutFrame(outFrame);
+      const presentedFrames = workspacePresenter.rewriteOutgoingFrame(parsedOut);
+      for (const presentedFrame of presentedFrames) {
+        const outFrames = mediaRemapper.rewriteOutgoingFrame(presentedFrame);
+        for (const outFrame of outFrames) {
+          if (outFrame === parsedOut) process.stdout.write(`${line}\n`);
+          else writeStdoutFrame(outFrame);
+        }
       }
     }).catch(() => {});
   };
@@ -2106,13 +2072,14 @@ async function main() {
         }
         return;
       }
-      if (msg?.type === 'control_response' && typeof msg.response?.request_id === 'string') {
-        const reqId = msg.response.request_id;
+      const incomingMsg = mediaRemapper.rewriteIncomingFrame(workspacePresenter.rewriteIncomingFrame(msg));
+      if (incomingMsg?.type === 'control_response' && typeof incomingMsg.response?.request_id === 'string') {
+        const reqId = incomingMsg.response.request_id;
         if (pendingCanUseTools.has(reqId)) {
           const pendingTool = pendingCanUseTools.get(reqId);
           pendingCanUseTools.delete(reqId);
-          const inner = msg.response?.response;
-          if (msg.response.subtype === 'success' && inner?.behavior === 'allow' && info) {
+          const inner = incomingMsg.response?.response;
+          if (incomingMsg.response.subtype === 'success' && inner?.behavior === 'allow' && info) {
             const approvedInput = inner.updatedInput && typeof inner.updatedInput === 'object' ? inner.updatedInput : pendingTool.input;
             if (pendingTool.tool_name === 'Bash' && typeof approvedInput?.command === 'string') {
               const op = parseApprovedWorkspaceCommand(approvedInput.command);
@@ -2136,8 +2103,8 @@ async function main() {
         if (pendingSdkToolsList.has(reqId)) {
           const sdkServer = pendingSdkToolsList.get(reqId);
           pendingSdkToolsList.delete(reqId);
-          const mcpResp = msg.response?.response?.mcp_response;
-          const tools = mcpResp?.result?.tools ?? msg.response?.response?.result?.tools;
+          const mcpResp = incomingMsg.response?.response?.mcp_response;
+          const tools = mcpResp?.result?.tools ?? incomingMsg.response?.response?.result?.tools;
           if (Array.isArray(tools)) {
             localMcpHub.recordSdkTools(sdkServer, tools);
             const permissions = await projectPermissions();
@@ -2152,11 +2119,11 @@ async function main() {
             }).allowed);
             if (mcpResp?.result?.tools) {
               const nextMsg = {
-                ...msg,
+                ...incomingMsg,
                 response: {
-                  ...msg.response,
+                  ...incomingMsg.response,
                   response: {
-                    ...msg.response.response,
+                    ...incomingMsg.response.response,
                     mcp_response: {
                       ...mcpResp,
                       result: { ...mcpResp.result, tools: filtered },
@@ -2170,8 +2137,7 @@ async function main() {
           }
         }
       }
-      const forwardedMsg = mediaRemapper.rewriteIncomingFrame(msg);
-      sendToRelay({ type: 'claude_in', line: forwardedMsg === msg ? line : JSON.stringify(forwardedMsg) });
+      sendToRelay({ type: 'claude_in', line: incomingMsg === msg ? line : JSON.stringify(incomingMsg) });
     }).catch(err => {
       process.stderr.write(`Claude VPS shim stdin processing error: ${err?.message ?? err}\n`);
     });
@@ -2188,6 +2154,9 @@ async function main() {
     sshExited = true;
 
     await stdoutChain.catch(() => {});
+    for (const trailing of workspacePresenter.flushPendingStreamBlocks()) {
+      writeStdoutFrame(trailing);
+    }
     for (const trailing of mediaRemapper.flushPendingStreamBlocks()) {
       writeStdoutFrame(trailing);
     }

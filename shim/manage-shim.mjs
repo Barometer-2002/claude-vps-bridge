@@ -21,6 +21,7 @@ export const SCRIPT_ASSETS = [
   { name: 'bridge-installation.mjs', src: path.join(shimSourceDir, 'bridge-installation.mjs') },
   { name: 'mcp-policy.mjs', src: path.join(shimSourceDir, 'mcp-policy.mjs') },
   { name: 'http-mcp-client.mjs', src: path.join(shimSourceDir, 'http-mcp-client.mjs') },
+  { name: 'stream-presenter.mjs', src: path.join(shimSourceDir, 'stream-presenter.mjs') },
   { name: 'claude-vps-shim.mjs', src: path.join(shimSourceDir, 'claude-vps-shim.mjs') },
 ];
 
