@@ -1,15 +1,65 @@
 import { readFile, writeFile, mkdir, unlink, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { promisify } from 'node:util';
 import { JsonWriter, readJsonLines } from './transport-streams.mjs';
 import { prepareWorkspace } from './workspace-map.mjs';
 import { createToolBridge } from './tool-bridge.mjs';
+import { BRIDGE_PROTOCOL } from './bridge-protocol.mjs';
 import { bridgeRoot, workspaceRoot, agentCommand } from './remote-config.mjs';
 
+const execFileAsync = promisify(execFile);
 const DEFAULT_TOOLS = 'Bash,Read,AskUserQuestion,WebSearch,WebFetch,TodoWrite,TaskCreate,TaskUpdate,TaskList,TaskGet,ExitPlanMode,EnterPlanMode,ToolSearch';
 const SERVER_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const STANDALONE_CAPABILITIES = [
+  'project-context',
+  'local-policy',
+  'local-hooks',
+  'media-cache',
+  'job-recovery',
+  'duplex-control',
+  'duplex-tools',
+  'local-mcp',
+  'account-usage',
+];
+
+async function runRelayHealthCheck() {
+  try {
+    const manifest = JSON.parse(await readFile(path.join(bridgeRoot, 'bridge-manifest.json'), 'utf8'));
+    const claudeCommand = (await readFile(path.join(bridgeRoot, 'claude-path'), 'utf8')).trim();
+    const healthEnv = {
+      ...process.env,
+      PATH: `${path.dirname(process.execPath)}:${path.dirname(claudeCommand)}:${process.env.PATH ?? ''}`,
+    };
+    const { stdout } = await execFileAsync(claudeCommand, ['--version'], { env: healthEnv, timeout: 10_000, maxBuffer: 16_384 });
+    const claudeVersion = stdout.trim();
+    if (!claudeVersion) throw new Error('Remote claude --version returned empty output');
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      mode: 'standalone',
+      protocol: BRIDGE_PROTOCOL,
+      bridgeVersion: manifest.version ?? null,
+      claudeExecutable: claudeCommand,
+      claudeVersion,
+      relayReady: true,
+      capabilities: STANDALONE_CAPABILITIES,
+    })}\n`);
+    process.exit(0);
+  } catch (error) {
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      mode: 'standalone',
+      error: error?.message ?? String(error),
+    })}\n`);
+    process.exit(1);
+  }
+}
+
+if (process.argv.includes('--health')) {
+  await runRelayHealthCheck();
+}
 
 let closing = false;
 const writer = new JsonWriter(process.stdout, { onError: () => void shutdown(2) });
@@ -26,11 +76,19 @@ const pendingLocal = new Map();
 let toolBridge = null;
 let child = null;
 let childReady = false;
-let bridgeSystemPrompt = '';
 let allowedMcpFile = null;
 let allowedMcpServers = [];
 let pendingMcpUpdate = null;
+const sessionTempFiles = [];
 const queuedStdinLines = [];
+
+async function writeSessionTempFile(runDir, prefix, ext, content) {
+  await mkdir(runDir, { recursive: true, mode: 0o700 });
+  const filePath = path.join(runDir, `${prefix}-${randomUUID()}.${ext}`);
+  await writeFile(filePath, content, { mode: 0o600 });
+  sessionTempFiles.push(filePath);
+  return filePath;
+}
 
 async function writeAllowedMcpFile(servers) {
   if (!allowedMcpFile) return;
@@ -72,24 +130,6 @@ async function prepareOutgoingStdinLine(line) {
       await writeAllowedMcpFile(dynamicServers);
       pendingMcpUpdate = { id: msg.request_id, previous: allowedMcpServers };
       allowedMcpServers = dynamicServers;
-    }
-    if (bridgeSystemPrompt && msg?.type === 'control_request' && msg.request?.subtype === 'initialize') {
-      const existing = msg.request.appendSystemPrompt;
-      let merged;
-      if (Array.isArray(existing)) {
-        merged = [bridgeSystemPrompt, ...existing];
-      } else if (typeof existing === 'string' && existing.trim()) {
-        merged = `${bridgeSystemPrompt}\n\n${existing}`;
-      } else {
-        merged = bridgeSystemPrompt;
-      }
-      return JSON.stringify({
-        ...msg,
-        request: {
-          ...msg.request,
-          appendSystemPrompt: merged,
-        },
-      });
     }
   } catch (error) {
     send({ type: 'claude_out', line: JSON.stringify({
@@ -144,9 +184,16 @@ async function startClaude(params) {
   let spawnEnv = { ...process.env };
   const finalArgs = [];
 
+  const runDir = path.join(bridgeRoot, 'run');
+
   if (probeOnly || !localCwd || !projectId || !workspaceInfo) {
     if (appendSystemPrompt) {
-      finalArgs.push('--append-system-prompt', appendSystemPrompt);
+      if (Buffer.byteLength(appendSystemPrompt, 'utf8') > 32_768) {
+        const promptFile = await writeSessionTempFile(runDir, 'system-prompt', 'md', appendSystemPrompt);
+        finalArgs.push('--append-system-prompt-file', promptFile);
+      } else {
+        finalArgs.push('--append-system-prompt', appendSystemPrompt);
+      }
     }
     if (zeroTools) {
       finalArgs.push('--tools', '');
@@ -162,7 +209,6 @@ async function startClaude(params) {
     const binding = { sessionId, localCwd, projectId, remoteCwd: spawnCwd };
     const toolEnv = toolBridge.register(binding);
 
-    const runDir = path.join(bridgeRoot, 'run');
     await mkdir(runDir, { recursive: true, mode: 0o700 });
     allowedMcpFile = path.join(runDir, `mcp-allow-${randomUUID()}.json`);
     const initialServers = new Set(
@@ -182,7 +228,7 @@ async function startClaude(params) {
         `Additional directories requested by host (--add-dir): ${addedDirs.join(', ')}. Note: windows-workspace enforces the bound Windows project root (${localCwd}) as its filesystem boundary.`,
       );
     }
-    bridgeSystemPrompt = baseBridgeParts.join('\n\n');
+    const bridgeSystemPrompt = baseBridgeParts.join('\n\n');
 
     const mergedPromptParts = [bridgeSystemPrompt];
     if (typeof appendSystemPrompt === 'string' && appendSystemPrompt.trim()) {
@@ -209,18 +255,24 @@ async function startClaude(params) {
       }
     }
 
+    const [promptFile, mcpConfigFile, settingsFile] = await Promise.all([
+      writeSessionTempFile(runDir, 'system-prompt', 'md', mergedPromptParts.join('\n\n')),
+      writeSessionTempFile(runDir, 'mcp-config', 'json', mergedMcpConfig),
+      writeSessionTempFile(runDir, 'settings', 'json', JSON.stringify(mergedSettings)),
+    ]);
+
     finalArgs.push(
-      '--append-system-prompt', mergedPromptParts.join('\n\n'),
+      '--append-system-prompt-file', promptFile,
       '--tools', zeroTools ? '' : DEFAULT_TOOLS,
       '--strict-mcp-config',
-      '--mcp-config', mergedMcpConfig,
-      '--settings', JSON.stringify(mergedSettings),
+      '--mcp-config', mcpConfigFile,
+      '--settings', settingsFile,
       ...args,
     );
 
     spawnEnv = {
       ...process.env,
-      PATH: `${bridgeRoot}:${process.env.PATH ?? ''}`,
+      PATH: `${bridgeRoot}:${path.dirname(process.execPath)}:${process.env.PATH ?? ''}`,
       WINDOWS_PROJECT_CWD: localCwd,
       WINDOWS_PROJECT_ID: projectId,
       WINDOWS_BRIDGE_SESSION: sessionId,
@@ -313,6 +365,9 @@ async function shutdown(code = 0) {
     if (allowedMcpFile) await unlink(allowedMcpFile);
   } catch {
     // Ignore allow-file cleanup error.
+  }
+  for (const tempFile of sessionTempFiles.splice(0)) {
+    await unlink(tempFile).catch(() => {});
   }
   try {
     const finished = new Promise(resolve => process.stdout.once('finish', resolve));

@@ -12,7 +12,41 @@ import {
 const DEFAULT_HTTP_REQUEST_TIMEOUT_MS = 290_000;
 const DEFAULT_HTTP_CLOSE_TIMEOUT_MS = 3_000;
 const DEFAULT_STDIO_REQUEST_TIMEOUT_MS = 120_000;
+const STDIO_STDERR_TAIL_LIMIT = 2048;
 const INVALID_HTTP_SESSION = /\bmcp[-_ ]session[-_ ]id\b|\b(?:invalid|unknown|expired|missing|unrecognized|no such)\b.{0,35}\bsession\b|\bsession\b.{0,35}\b(?:invalid|unknown|expired|missing|not found)\b/is;
+
+function sanitizeDiagnosticSnippet(text, maxLen = 200) {
+  if (typeof text !== 'string') return '';
+  const cleaned = text
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [REDACTED]')
+    .replace(/\bsk-ant-(?:api\d+|oat\d+)-[A-Za-z0-9_-]+/g, '[REDACTED]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}...` : cleaned;
+}
+
+function escapeCmdArg(value) {
+  const text = String(value);
+  if (/[\r\n\0]/.test(text)) {
+    throw new Error('Local stdio MCP batch argument contains unsupported control characters');
+  }
+  // Wrap in double quotes for cmd.exe /d /s /c and escape embedded quotes and % expansion.
+  // Inside double quotes, cmd.exe treats & | < > ( ) ^ literally; % still triggers env expansion
+  // unless broken outside quotes as "^%".
+  const parts = text.split('%').map(seg => `"${seg.replaceAll('"', '""')}"`);
+  return parts.join('^%');
+}
+
+export function buildWindowsBatchSpawn(command, args) {
+  const cmdLine = [escapeCmdArg(command), ...args.map(escapeCmdArg)].join(' ');
+  return {
+    executable: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', `"${cmdLine}"`],
+    windowsVerbatimArguments: true,
+  };
+}
 
 function killProcessTree(child) {
   if (!child || child.exitCode !== null) return;
@@ -306,7 +340,7 @@ export class LocalHttpMcpClient {
       }
 
       if (!response.ok) {
-        const errText = response.status === 400 && sentSessionId ? await response.text() : '';
+        const errText = (await response.text().catch(() => '')).slice(0, 1024);
         const sessionInvalid = Boolean(sentSessionId) && (response.status === 404
           || (response.status === 400 && INVALID_HTTP_SESSION.test(errText)));
         if (sessionInvalid) {
@@ -321,8 +355,9 @@ export class LocalHttpMcpClient {
             -32001,
           );
         }
+        const detail = sanitizeDiagnosticSnippet(errText, 200);
         throw mcpError(
-          `Local HTTP MCP endpoint responded with HTTP ${response.status}`,
+          `Local HTTP MCP endpoint responded with HTTP ${response.status}${detail ? `: ${detail}` : ''}`,
           'MCP_HTTP_ERROR',
           -32603,
         );
@@ -487,29 +522,60 @@ export class LocalStdioMcpClient {
 
   #spawnConnection(connectionId) {
     const { command, useShell } = resolveWindowsCommand(this.command);
-    const child = spawn(command, this.args, {
-      cwd: this.cwd || process.cwd(),
-      env: { ...process.env, ...this.env },
-      windowsHide: true,
-      shell: useShell,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const spawnEnv = { ...process.env, ...this.env };
+    const spawnCwd = this.cwd || process.cwd();
+    let child;
+    if (useShell && process.platform === 'win32') {
+      const batch = buildWindowsBatchSpawn(command, this.args);
+      child = spawn(batch.executable, batch.args, {
+        cwd: spawnCwd,
+        env: spawnEnv,
+        windowsHide: true,
+        windowsVerbatimArguments: batch.windowsVerbatimArguments,
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } else {
+      child = spawn(command, this.args, {
+        cwd: spawnCwd,
+        env: spawnEnv,
+        windowsHide: true,
+        shell: useShell,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    }
     const conn = {
       child,
       pending: new Map(),
+      stderrTail: '',
       rl: createInterface({ input: child.stdout, crlfDelay: Infinity }),
     };
     this.connections.set(connectionId, conn);
 
-    child.stderr.resume();
-    const transportError = () => this.#stop(connectionId, undefined, conn);
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => {
+      conn.stderrTail = (conn.stderrTail + chunk).slice(-STDIO_STDERR_TAIL_LIMIT);
+    });
+    const withStderr = base => {
+      const snippet = sanitizeDiagnosticSnippet(conn.stderrTail, 300);
+      return snippet ? `${base} (stderr: ${snippet})` : base;
+    };
+    const transportError = err => this.#stop(
+      connectionId,
+      mcpError(
+        withStderr(`Local stdio MCP transport error${err?.message ? ` (${err.message})` : ''}; execution outcome is unknown and no operation was replayed`),
+        'MCP_OUTCOME_UNKNOWN',
+        -32002,
+      ),
+      conn,
+    );
     child.stdin.on('error', transportError);
     child.on('error', transportError);
     child.on('exit', code => {
       this.#stop(
         connectionId,
         mcpError(
-          `Local stdio MCP exited (${code ?? 'signal'}); execution outcome is unknown and no operation was replayed`,
+          withStderr(`Local stdio MCP exited (${code ?? 'signal'}); execution outcome is unknown and no operation was replayed`),
           'MCP_OUTCOME_UNKNOWN',
           -32002,
         ),
@@ -638,6 +704,23 @@ export class LocalMcpHub {
 
   getToolMeta(serverName, connectionId, toolName) {
     return this.toolCatalogs.get(serverName)?.get(connectionId)?.get(toolName) ?? { known: false };
+  }
+
+  getToolMetaAcrossConnections(serverName, toolName) {
+    const connMap = this.toolCatalogs.get(serverName);
+    if (!connMap || connMap.size === 0) return { known: false };
+    const matches = [];
+    for (const catalog of connMap.values()) {
+      const meta = catalog.get(toolName);
+      if (meta?.known) matches.push(meta);
+    }
+    if (matches.length === 0) return { known: false };
+    // Fail-closed across connections: only treat as read-only when every discovered catalog agrees.
+    return {
+      known: true,
+      readOnlyHint: matches.every(m => m.readOnlyHint === true),
+      destructiveHint: matches.some(m => m.destructiveHint === true),
+    };
   }
 
   #makeClient(kind, entry, cwd, catalogs) {

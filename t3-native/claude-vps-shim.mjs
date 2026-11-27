@@ -83,6 +83,7 @@ export function parseShimArgs(argv) {
   let isVersionCheck = false;
   let liveVersionCheck = process.env.CLAUDE_VPS_LIVE_VERSION === '1';
   let isSelfTest = false;
+  let pureSelfTest = false;
   let claudeSessionId = null;
   let resumesSession = false;
 
@@ -98,6 +99,10 @@ export function parseShimArgs(argv) {
     }
     if (arg === '--self-test') {
       isSelfTest = true;
+      continue;
+    }
+    if (arg === '--pure') {
+      pureSelfTest = true;
       continue;
     }
 
@@ -194,6 +199,7 @@ export function parseShimArgs(argv) {
     isVersionCheck,
     liveVersionCheck,
     isSelfTest,
+    pureSelfTest,
     forwarded,
     appendSystemPrompt: appendPrompts.join('\n\n'),
     addedDirs,
@@ -552,7 +558,7 @@ export function createMediaPathRemapper({
   };
 }
 
-async function runOfflineSelfTest() {
+async function runOfflineSelfTest({ pure = false } = {}) {
   const hub = new LocalMcpHub();
   let rejectedBadConfig = false;
   try {
@@ -570,6 +576,24 @@ async function runOfflineSelfTest() {
     && !('headers' in rewritten['t3-code'])
     && !('env' in rewritten['t3-code']);
   await hub.closeAll();
+
+  const planPolicyOk = evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'pull_request_read', permissionMode: 'plan' }).allowed === true
+    && evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'pull_request_list', permissionMode: 'plan' }).allowed === true
+    && evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'ci_logs', permissionMode: 'plan' }).allowed === true
+    && evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'pull_request_merge', permissionMode: 'plan' }).allowed === false
+    && evaluateLocalMcpToolCall({ server: 'custom', toolName: 'read_doc', permissionMode: 'plan', toolMeta: { known: true, readOnlyHint: true, destructiveHint: false } }).allowed === true
+    && evaluateLocalMcpToolCall({ server: 'custom', toolName: 'write_doc', permissionMode: 'plan', toolMeta: { known: true, readOnlyHint: false, destructiveHint: true } }).allowed === false;
+
+  const spacedPath = 'C:\\Users\\example\\t3 home\\userdata\\attachments\\screen shot (1).png';
+  const extraAttachPath = 'D:\\My Attachments\\chart 2.pdf';
+  const foundAttachments = findT3AttachmentPaths(
+    `See "${spacedPath}" and ${extraAttachPath}`,
+    { T3CODE_HOME: 'C:\\Users\\example\\t3 home', CLAUDE_VPS_ATTACHMENT_DIRS: 'D:\\My Attachments' },
+    p => sameWinPath(p, spacedPath) || sameWinPath(p, extraAttachPath),
+  );
+  const attachmentPathsOk = foundAttachments.length === 2
+    && foundAttachments.some(p => sameWinPath(p, spacedPath))
+    && foundAttachments.some(p => sameWinPath(p, extraAttachPath));
 
   const sampleHash = 'a'.repeat(64);
   const sampleVpsPath = `/home/user/windows-local-work/.bridge-media/s1/${sampleHash}.png`;
@@ -628,19 +652,23 @@ async function runOfflineSelfTest() {
 
   let bridge = null;
   let bridgeError = null;
-  try {
-    ({ info: bridge } = await loadBridgeModules());
-  } catch (err) {
-    bridgeError = err?.message ?? String(err);
+  if (!pure) {
+    try {
+      ({ info: bridge } = await loadBridgeModules());
+    } catch (err) {
+      bridgeError = err?.message ?? String(err);
+    }
   }
 
-  const ok = rejectedBadConfig && sanitizedOk && mediaRemapOk && usageSyncOk && !bridgeError;
+  const ok = rejectedBadConfig && sanitizedOk && planPolicyOk && attachmentPathsOk && mediaRemapOk && usageSyncOk && (pure || !bridgeError);
   process.stdout.write(`${JSON.stringify({
     ok,
-    mode: 'offline-self-test',
+    mode: pure ? 'offline-self-test-pure' : 'offline-self-test',
     shimDir,
     rejectedBadConfig,
     sanitizedOk,
+    planPolicyOk,
+    attachmentPathsOk,
     mediaRemapOk,
     usageSyncOk,
     bridgeVersion: bridge?.version ?? null,
@@ -653,12 +681,13 @@ async function loadBridgeModules() {
   const info = await inspectBridge();
   const rt = name => pathToFileURL(path.join(info.root, 'runtime', name)).href;
   const top = name => pathToFileURL(path.join(info.root, name)).href;
-  const [configMod, routesMod, workspaceMod, envMod, streamsMod] = await Promise.all([
+  const [configMod, routesMod, workspaceMod, envMod, streamsMod, mcpRuntimeMod] = await Promise.all([
     import(rt('bridge-config.mjs')),
     import(rt('ssh-routes.mjs')),
     import(rt('workspace-runtime.mjs')),
     import(rt('project-environment.mjs')),
     import(top('transport-streams.mjs')),
+    import(rt('mcp-runtime.mjs')),
   ]);
   return {
     info,
@@ -668,6 +697,7 @@ async function loadBridgeModules() {
     workspace: workspaceMod,
     envMod,
     streams: streamsMod,
+    mcpRuntime: mcpRuntimeMod,
   };
 }
 
@@ -758,18 +788,49 @@ function prependUserContext(msg, prefixText) {
   return msg;
 }
 
-function findT3AttachmentPaths(text) {
-  if (!text) return [];
-  const t3Home = path.resolve(process.env.T3CODE_HOME || path.join(os.homedir(), '.t3'));
-  const attachRoot = path.join(t3Home, 'userdata', 'attachments');
-  const normRoot = attachRoot.toLowerCase();
+function escapeRegexLiteral(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function collectAttachmentRoots(env = process.env) {
+  const t3Home = path.win32.resolve(env?.T3CODE_HOME || path.win32.join(os.homedir(), '.t3'));
+  const roots = [path.win32.join(t3Home, 'userdata', 'attachments')];
+  const extraRaw = env?.CLAUDE_VPS_ATTACHMENT_DIRS;
+  if (typeof extraRaw === 'string' && extraRaw.trim()) {
+    for (const part of extraRaw.split(';')) {
+      const trimmed = part.trim().replace(/^"(.*)"$/, '$1');
+      if (trimmed && path.win32.isAbsolute(trimmed)) {
+        roots.push(path.win32.resolve(trimmed));
+      }
+    }
+  }
+  const seen = new Set();
+  return roots.filter(root => {
+    const key = root.replace(/[\\/]+$/, '').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function findT3AttachmentPaths(text, env = process.env, existsCheck = existsSync) {
+  if (!text || typeof text !== 'string') return [];
+  const roots = collectAttachmentRoots(env);
   const candidates = new Set();
-  const re = /[A-Za-z]:[\\/][^\s"'`<>|)\]]+\.(?:png|jpe?g|webp|gif|pdf)/gi;
-  let match;
-  while ((match = re.exec(text)) !== null) {
-    const resolved = path.win32.resolve(match[0]);
-    if (resolved.toLowerCase().startsWith(normRoot + path.win32.sep) && MEDIA_EXT_RE.test(resolved) && existsSync(resolved)) {
-      candidates.add(resolved);
+  for (const root of roots) {
+    const cleanRoot = root.replace(/[\\/]+$/, '');
+    const normRoot = cleanRoot.toLowerCase();
+    const rootPattern = cleanRoot.split(/[\\/]+/).map(escapeRegexLiteral).join('[\\\\/]+');
+    const re = new RegExp(
+      `${rootPattern}[\\\\/][^"'` + '`' + `<>|\\r\\n]+?\\.(?:png|jpe?g|webp|gif|pdf)(?=$|[\\s"'` + '`' + `<>|)\\],;])`,
+      'gi',
+    );
+    let match;
+    while ((match = re.exec(text)) !== null) {
+      const resolved = path.win32.resolve(match[0]);
+      if (resolved.toLowerCase().startsWith(normRoot + path.win32.sep) && MEDIA_EXT_RE.test(resolved) && existsCheck(resolved)) {
+        candidates.add(resolved);
+      }
     }
   }
   return [...candidates];
@@ -1025,11 +1086,11 @@ async function listRelevantLocalJobs(workspace, info, sessionId, trackedJobIds =
 async function main() {
   const parsed = parseShimArgs(process.argv.slice(2));
   if (parsed.isSelfTest) {
-    await runOfflineSelfTest();
+    await runOfflineSelfTest({ pure: parsed.pureSelfTest });
     return;
   }
 
-  const { info: bridgeInfo, config, SshRoutes, classifySshFailure, workspace, envMod, streams } = await loadBridgeModules();
+  const { info: bridgeInfo, config, SshRoutes, classifySshFailure, workspace, envMod, streams, mcpRuntime } = await loadBridgeModules();
 
   if (parsed.isVersionCheck) {
     await handleVersionCheck(config, SshRoutes, classifySshFailure, { live: parsed.liveVersionCheck });
@@ -1187,18 +1248,29 @@ async function main() {
         if (info && request.projectId && request.projectId !== info.projectId) {
           throw new Error('MCP request project binding mismatch');
         }
-        if (!localMcpHub.has(request.server)) {
-          throw new Error(`Local MCP server "${String(request.server ?? '')}" is not registered for this session`);
+        if (localMcpHub.has(request.server)) {
+          const permissions = request.close || !['tools/list', 'tools/call'].includes(request.frame?.method)
+            ? null : await projectPermissions();
+          const value = await localMcpHub.handle(request, {
+            permissionMode: effectiveMode(),
+            t3Policy,
+            projectPermissions: permissions,
+          });
+          sendToRelay({ type: 'local_reply', controlId, value });
+          return;
         }
-        const permissions = request.close || !['tools/list', 'tools/call'].includes(request.frame?.method)
-          ? null : await projectPermissions();
-        const value = await localMcpHub.handle(request, {
-          permissionMode: effectiveMode(),
-          t3Policy,
-          projectPermissions: permissions,
-        });
-        sendToRelay({ type: 'local_reply', controlId, value });
-        return;
+        if (request.server === 'playwright') {
+          const value = await workspace.control({
+            ...request,
+            cwd: info.cwd,
+            projectId: info.projectId,
+            sessionId,
+            bridgeRequestId: controlId,
+          });
+          sendToRelay({ type: 'local_reply', controlId, value });
+          return;
+        }
+        throw new Error(`Local MCP server "${String(request.server ?? '')}" is not registered for this session`);
       }
 
       if (request?.action === 'preflight' && request.request?.action === 'mcp-call') {
@@ -1206,7 +1278,13 @@ async function main() {
         if (tool) {
           if (PERMISSION_MODES.has(request.permissionMode)) observedClaudeMode = request.permissionMode;
           const permissions = await projectPermissions();
-          const decision = evaluateLocalMcpToolCall({ ...tool, t3Policy, projectPermissions: permissions });
+          const decision = evaluateLocalMcpToolCall({
+            ...tool,
+            permissionMode: effectiveMode(),
+            t3Policy,
+            projectPermissions: permissions,
+            toolMeta: localMcpHub.getToolMetaAcrossConnections(tool.server, tool.toolName),
+          });
           const value = decision.allowed
             ? (decision.approval ? { decision: 'ask', reason: decision.approval } : { decision: 'inherit' })
             : { decision: 'deny', reason: decision.reason };
@@ -1460,6 +1538,7 @@ async function main() {
     activeTurn = null;
     pendingMcpUpdate?.finish(false);
     pendingMcpUpdate = null;
+    try { mcpRuntime?.closeMcpSession?.(sessionId); } catch {}
     await localMcpHub.closeAll().catch(() => {});
     await withBoundedTimeout(new Promise(resolve => process.stdout.write('', resolve)), 1000, () => {});
     process.exit(signalStop ? 130 : code);

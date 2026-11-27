@@ -4,6 +4,7 @@
     [switch]$WithT3,
     [switch]$WithT3Native,
     [switch]$T3Only,
+    [switch]$Standalone,
     [string]$T3Home
 )
 $ErrorActionPreference = 'Stop'
@@ -38,11 +39,18 @@ if ($Disable -or $Uninstall) {
     if ($LASTEXITCODE -ne 0) { throw '停用未完成，请查看错误信息；用户数据已保留。' }
     return
 }
+$configModeRaw = & $bridgePython (Join-Path $PSScriptRoot 'installer\bridge_config.py') --mode
+if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect bridge configuration mode; run installer\configure.py first.' }
+$configMode = ([string]$configModeRaw).Trim()
+$standaloneMode = ($configMode -eq 'standalone') -or ($Standalone -and $configMode -ne 'codexhost')
+
 # Both sides are prepared and checked before switching code. State is excluded.
 & $bridgePython (Join-Path $PSScriptRoot 'installer\prepare-local.py')
 if ($LASTEXITCODE -ne 0) { throw 'Local dependency preparation failed; installed bridge files were not replaced.' }
-& $bridgePython (Join-Path $PSScriptRoot 'installer\prepare-dependency.py')
-if ($LASTEXITCODE -ne 0) { throw 'Pinned dependency preparation failed; active bridge code was not replaced.' }
+if (-not $standaloneMode) {
+    & $bridgePython (Join-Path $PSScriptRoot 'installer\prepare-dependency.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned dependency preparation failed; active bridge code was not replaced.' }
+}
 # Optional MCP configuration is managed separately; upgrades never import credentials.
 & $bridgePython (Join-Path $PSScriptRoot 'installer\deploy-transaction.py')
 if ($LASTEXITCODE -ne 0) { throw 'Bridge transaction failed. Read its journal for rollback or recovery status.' }
@@ -53,6 +61,8 @@ if ($includeT3) {
 
 if ($T3Only) {
     Write-Host 'Installed for T3 Code (Claude VPS native claudeAgent shim). Refresh Providers in T3 Code or restart T3 Code, then check with: node .\t3-native\manage-native.mjs status'
+} elseif ($standaloneMode -and -not $includeT3) {
+    Write-Host 'Installed standalone Claude VPS bridge (no CodexHost adapter required). Check with: node .\plugin\diagnose.mjs'
 } elseif ($includeT3) {
     Write-Host 'Installed for CodexHost and T3 Code (Claude VPS). For CodexHost: finish running tasks, run "codexhost stop", then reopen CodexHost. For T3 Code: check with node .\t3-native\manage-native.mjs status'
 } else {

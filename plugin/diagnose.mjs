@@ -76,6 +76,29 @@ export async function stateSummary(state,{limit=10000,now=Date.now()}={}){
   return result;
 }
 
+export async function remoteRelayHealth(config,{execute=exec,timeoutMs=20000,onRoute}={}){
+  const routes=new SshRoutes(config);
+  const cmd='sh -c '+shellQuote(`"$(cat ${shellQuote(config.remoteRoot+'/node-path')})" ${shellQuote(config.remoteRoot+'/claude-stream-relay.mjs')} --health`);
+  const env={...process.env};for(const key of Object.keys(env))if(/ANTHROPIC|CLAUDE|CODEXHOST_RUNTIME|API_KEY|TOKEN|SECRET/i.test(key))delete env[key];
+  const value=await routes.firstAvailable(async route=>{
+    try{
+      const result=await execute(config.sshExecutable,route.args(cmd,{connectTimeout:10}),{env,windowsHide:true,timeout:timeoutMs,maxBuffer:65536});
+      const parsed=JSON.parse(result.stdout.trim());
+      if(!parsed||typeof parsed!=='object'||parsed.ok!==true||parsed.relayReady!==true){
+        throw Object.assign(Error(parsed?.error||'Remote relay health failed'),{code:'REMOTE_HEALTH_FAILED'});
+      }
+      return parsed;
+    }catch(error){
+      if(error.code&&String(error.code).startsWith('REMOTE_HEALTH'))throw error;
+      if(error.killed)throw Object.assign(Error('Remote relay health timeout'),{code:'REMOTE_HEALTH_TIMEOUT'});
+      if(error.code===255)throw Object.assign(Error('SSH connection failed'),{code:'SSH_CONNECTION_FAILED'});
+      throw Object.assign(Error('Remote relay health did not complete'),{code:'REMOTE_HEALTH_FAILED'});
+    }
+  },error=>['ROUTE_HELPER_UNAVAILABLE','SSH_START_FAILED','SSH_CONNECTION_FAILED','REMOTE_HEALTH_TIMEOUT'].includes(error.code));
+  onRoute?.({route:routes.current.name,routeType:routes.current.proxy?.type??'direct',lastSwitchReason:routes.lastSwitchReason,ingress:{kind:'standalone-relay',process:null}});
+  return value;
+}
+
 export async function remoteHealth(config,{spawnProcess=spawn,timeoutMs=20000,onRoute}={}){
   const routes=new SshRoutes(config);
   const value=await routes.firstAvailable(route=>healthOnRoute(config,route,{spawnProcess,timeoutMs}),
@@ -108,7 +131,7 @@ function healthOnRoute(config,route,{spawnProcess,timeoutMs}){
   });
 }
 
-export async function diagnose({root=here,installedRoot=path.join(os.homedir(),'.codexhost','plugins','claude-vps'),configFile=process.env.CLAUDE_VPS_CONFIG,local=false,probeRemote=remoteHealth,probeExecutables=remoteExecutables,probeSsh=probeSshVersion,pingBroker,runnerAlive=alive}={}){
+export async function diagnose({root=here,installedRoot=path.join(os.homedir(),'.codexhost','plugins','claude-vps'),configFile=process.env.CLAUDE_VPS_CONFIG,local=false,probeRemote,probeExecutables=remoteExecutables,probeSsh=probeSshVersion,pingBroker,runnerAlive=alive}={}){
   const checks=[];
   const add=(stage,status,details={},required=false)=>checks.push({stage,status,required,...details});
   const source=await json(path.join(root,'manifest.json')).catch(()=>null),installed=await json(path.join(installedRoot,'manifest.json')).catch(()=>null);
@@ -150,8 +173,10 @@ export async function diagnose({root=here,installedRoot=path.join(os.homedir(),'
       catch{add('remote-executables','unavailable',{reason:'probe-failed',next:'检查 SSH 与远端 python3；尚未确认 Node/Claude 路径是否有效。'},true);}
     })(),
     (async()=>{if(!config||local){add('remote-bridge','not-checked',{reason:local?'local-only':'configuration-unavailable'});return;}
-      try{const health=await probeRemote(config,{onRoute:row=>{diagnosticRoute=row;}}),capabilities=Array.isArray(health?.capabilities)?health.capabilities:[];const core=health?.protocol===BRIDGE_PROTOCOL&&['project-context','duplex-control','duplex-tools'].every(c=>capabilities.includes(c));add('remote-bridge',core?'ok':'unavailable',{protocol:Number.isInteger(health?.protocol)?health.protocol:null,bridgeVersion:version(health?.bridgeVersion),adapterVersion:version(health?.dependencyVersion),capabilities:['project-context','duplex-control','duplex-tools','native-fork','local-mcp','account-usage'].filter(c=>capabilities.includes(c)),scope:'fresh health process; no model, task or reverse tunnel'},true);}
-      catch(error){add('remote-bridge','unavailable',{reason:['SSH_START_FAILED','SSH_INPUT_FAILED','REMOTE_HEALTH_TIMEOUT','REMOTE_HEALTH_INVALID'].includes(error.code)?error.code:'remote-health-failed',next:'Check the configured SSH connection and remote bridge installation.'},true);}
+      const standalone=!config.hostRoot;
+      const probe=probeRemote??(standalone?remoteRelayHealth:remoteHealth);
+      try{const health=await probe(config,{onRoute:row=>{diagnosticRoute=row;}}),capabilities=Array.isArray(health?.capabilities)?health.capabilities:[];const core=health?.ok!==false&&health?.protocol===BRIDGE_PROTOCOL&&['project-context','duplex-control','duplex-tools'].every(c=>capabilities.includes(c));add('remote-bridge',core?'ok':'unavailable',{mode:standalone?'standalone':'codexhost',protocol:Number.isInteger(health?.protocol)?health.protocol:null,bridgeVersion:version(health?.bridgeVersion),...(standalone?{claudeVersion:typeof health?.claudeVersion==='string'?health.claudeVersion:null}:{adapterVersion:version(health?.dependencyVersion)}),capabilities:['project-context','duplex-control','duplex-tools','native-fork','local-mcp','account-usage'].filter(c=>capabilities.includes(c)),scope:standalone?'fresh standalone relay health check; no model or task submitted':'fresh health process; no model, task or reverse tunnel'},true);}
+      catch(error){add('remote-bridge','unavailable',{mode:standalone?'standalone':'codexhost',reason:['SSH_START_FAILED','SSH_INPUT_FAILED','REMOTE_HEALTH_TIMEOUT','REMOTE_HEALTH_INVALID'].includes(error.code)?error.code:'remote-health-failed',next:'Check the configured SSH connection and remote bridge installation.'},true);}
     })()
   ]);
   if(config){
@@ -164,16 +189,21 @@ export async function diagnose({root=here,installedRoot=path.join(os.homedir(),'
     }
   }
   {
-    // Installed is not active: the shared background Host keeps previously loaded code.
-    const activation=activationStatus(await readStamp(target),await json(path.join(state,'loaded-install.json')).catch(()=>null));
-    const host=config?.hostRoot?path.join(config.hostRoot,'bin','codexhost.exe'):'codexhost';
-    const restart=config?.hostRoot
-      ?'先结束正在进行的任务，再执行 "'+host+'" stop，然后重新打开 CodexHost。只关闭桌面窗口不会重启加载插件的共享后台。'
-      :'当前配置为独立 T3 Code 模式（未配置 CodexHost 宿主目录），在 T3 Code 刷新 Provider 或重启后生效。';
-    const next={stale:'宿主仍在运行旧版插件。'+restart,
-      // Code loaded before this check existed writes no record, so a running Host can look unloaded.
-      'not-loaded':'没有找到运行中宿主的加载记录：宿主未运行，或仍在运行不会写记录的旧版本。若刚完成安装，'+restart}[activation.status];
-    add('plugin-activation',activation.status,{...activation,...(next?{next}:{})},activation.status==='stale');
+    if(config&&!config.hostRoot){
+      const stamp=await readStamp(target);
+      add('plugin-activation','not-applicable',{mode:'standalone',installedTransaction:stamp?.transaction??null,next:'当前为独立模式（未配置 CodexHost 宿主目录），无需重启 CodexHost 后台；刷新 T3 Code Provider 或重启客户端后生效。'},false);
+    }else{
+      // Installed is not active: the shared background Host keeps previously loaded code.
+      const activation=activationStatus(await readStamp(target),await json(path.join(state,'loaded-install.json')).catch(()=>null));
+      const host=config?.hostRoot?path.join(config.hostRoot,'bin','codexhost.exe'):'codexhost';
+      const restart=config?.hostRoot
+        ?'先结束正在进行的任务，再执行 "'+host+'" stop，然后重新打开 CodexHost。只关闭桌面窗口不会重启加载插件的共享后台。'
+        :'当前配置为独立模式（未配置 CodexHost 宿主目录），在客户端刷新 Provider 或重启后生效。';
+      const next={stale:'宿主仍在运行旧版插件。'+restart,
+        // Code loaded before this check existed writes no record, so a running Host can look unloaded.
+        'not-loaded':'没有找到运行中宿主的加载记录：宿主未运行，或仍在运行不会写记录的旧版本。若刚完成安装，'+restart}[activation.status];
+      add('plugin-activation',activation.status,{...activation,...(next?{next}:{})},activation.status==='stale');
+    }
   }
   add('quota-freshness','not-checked',{reason:'Current Host quota schema has no observation timestamp; no quota or credentials were queried.'});
   add('optional-mcp-configuration','not-checked',{reason:'Private MCP configuration is intentionally not read.'});

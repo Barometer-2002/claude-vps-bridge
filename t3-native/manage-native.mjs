@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
-import { mkdir, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,7 @@ const INSTANCE_ID = 'claude-vps';
 const DISPLAY_NAME = 'Claude VPS';
 const VERSION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const SHIM_NAME = 'claude-vps-shim.exe';
+const NODE_PATH_NAME = 'node-path.txt';
 const VERSION_CACHE_NAME = 'vps-version-cache.json';
 
 const SCRIPT_ASSETS = [
@@ -248,12 +249,16 @@ async function install(t3Home, { offline = false } = {}) {
       scriptFiles.push({ target: path.join(installDir, asset.name), payload });
     }
 
+    const nodePathPayload = Buffer.from(`${process.execPath}\n`, 'utf8');
+    await writeFile(path.join(stagingDir, NODE_PATH_NAME), nodePathPayload);
+    const nodePathAsset = { target: path.join(installDir, NODE_PATH_NAME), payload: nodePathPayload };
+
     const csc = findCsc();
     const csSource = path.join(nativeDir, 'claude-vps-shim.cs');
     const stagedExe = path.join(stagingDir, SHIM_NAME);
     await execFileAsync(csc, ['/nologo', '/optimize+', '/target:exe', `/out:${stagedExe}`, csSource], { windowsHide: true });
     const executable = { target: exePath, payload: await readFile(stagedExe) };
-    const stagedFiles = [...scriptFiles, executable];
+    const stagedFiles = [...scriptFiles, nodePathAsset, executable];
 
     // 2. Self-test the staged installed layout BEFORE touching any live file or settings.json.
     const selfTest = await runExeSelfTest(stagedExe);
@@ -394,7 +399,7 @@ async function uninstall(t3Home) {
     return;
   }
 
-  const files = [SHIM_NAME, ...SCRIPT_ASSETS.map(asset => asset.name), VERSION_CACHE_NAME];
+  const files = [SHIM_NAME, NODE_PATH_NAME, ...SCRIPT_ASSETS.map(asset => asset.name), VERSION_CACHE_NAME];
   const changes = [];
   try {
     await assertSettingsUnchanged(settings);
@@ -412,6 +417,47 @@ async function uninstall(t3Home) {
   }
   await cleanupRetiredFiles(installDir);
   console.log(`已移除独立原生 Claude 实例 "${INSTANCE_ID}"（保留 claude-home，未影响其他 Provider）。`);
+}
+
+function isPidAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err?.code !== 'ESRCH';
+  }
+}
+
+async function acquireManageLock(lockPath) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await writeFile(lockPath, String(process.pid), { flag: 'wx' });
+      return;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (attempt === 0) {
+        let stale = false;
+        try {
+          const raw = (await readFile(lockPath, 'utf8')).trim();
+          const pid = /^\d+$/.test(raw) ? Number(raw) : NaN;
+          if (Number.isSafeInteger(pid) && pid > 0) {
+            stale = !isPidAlive(pid);
+          } else {
+            const st = await stat(lockPath);
+            stale = Date.now() - st.mtimeMs > 5000;
+          }
+        } catch (readErr) {
+          if (readErr?.code === 'ENOENT') continue;
+        }
+        if (stale) {
+          await rm(lockPath, { force: true }).catch(() => {});
+          continue;
+        }
+      }
+      throw new Error(`安装目录有正在使用的管理锁。${lockPath}`);
+    }
+  }
 }
 
 async function main() {
@@ -448,12 +494,7 @@ async function main() {
   const installDir = path.join(t3Home, 'integrations', 'claude-vps-native');
   await mkdir(installDir, { recursive: true });
   const lock = path.join(installDir, '.manage.lock');
-  try {
-    await writeFile(lock, String(process.pid), { flag: 'wx' });
-  } catch (error) {
-    if (error.code === 'EEXIST') throw new Error(`安装目录有正在使用的管理锁。${lock}`);
-    throw error;
-  }
+  await acquireManageLock(lock);
   try {
     if (action === 'install') await install(t3Home, { offline: values.offline });
     else await uninstall(t3Home);

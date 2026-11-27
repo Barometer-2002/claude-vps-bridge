@@ -50,10 +50,54 @@ internal static class ClaudeVpsShimLauncher
         return sb.ToString();
     }
 
-    private static string ResolveNode()
+    private static string FindNodeOnPath()
+    {
+        string pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrEmpty(pathEnv)) return null;
+        foreach (string rawDir in pathEnv.Split(';'))
+        {
+            string dir = rawDir == null ? "" : rawDir.Trim().Trim('"');
+            if (dir.Length == 0) continue;
+            try
+            {
+                string candidate = Path.Combine(dir, "node.exe");
+                if (File.Exists(candidate)) return candidate;
+            }
+            catch
+            {
+                // Ignore malformed PATH entries.
+            }
+        }
+        return null;
+    }
+
+    private static string ResolveNode(string exeDir)
     {
         string fromEnv = Environment.GetEnvironmentVariable("CLAUDE_VPS_NODE");
         if (!string.IsNullOrEmpty(fromEnv) && File.Exists(fromEnv)) return fromEnv;
+
+        if (!string.IsNullOrEmpty(exeDir))
+        {
+            string pinnedFile = Path.Combine(exeDir, "node-path.txt");
+            if (File.Exists(pinnedFile))
+            {
+                try
+                {
+                    string pinned = File.ReadAllText(pinnedFile, Encoding.UTF8).Trim();
+                    if (!string.IsNullOrEmpty(pinned) && Path.IsPathRooted(pinned) && File.Exists(pinned))
+                    {
+                        return pinned;
+                    }
+                }
+                catch
+                {
+                    // Fall through to PATH / Program Files lookup.
+                }
+            }
+        }
+
+        string fromPath = FindNodeOnPath();
+        if (!string.IsNullOrEmpty(fromPath)) return fromPath;
 
         string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         if (!string.IsNullOrEmpty(pf))
@@ -84,7 +128,7 @@ internal static class ClaudeVpsShimLauncher
 
         var psi = new ProcessStartInfo
         {
-            FileName = ResolveNode(),
+            FileName = ResolveNode(exeDir),
             Arguments = argBuilder.ToString(),
             UseShellExecute = false,
         };

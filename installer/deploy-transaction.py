@@ -74,15 +74,19 @@ def main():
     payload.update({name:(INSTALLER/name).read_text(encoding='utf-8') for name in protocol_files})
     payload['workspace-request-schema.json']=(PLUGIN/'runtime/workspace-request-schema.json').read_text(encoding='utf-8')
     policy=load_policy((INSTALLER/'dependency-policy.json').read_text())
-    # The version is whatever prepare-dependency.py validated on the VPS (latest, or the kept one).
-    prepared_dependency=SOURCE/'installation-dependency.json'
-    if not prepared_dependency.exists():raise RuntimeError('Run installer/prepare-dependency.py first')
-    version=json.loads(prepared_dependency.read_text(encoding='utf-8'))['version']
-    if not supported(version,policy):raise RuntimeError('Prepared dependency is below the supported minimum')
-    prepared=remote({'action':'prepare','id':tx,'files':payload,'remoteNodeExecutable':config.get('remoteNodeExecutable'),'adapterVersion':version,'pluginApiVersion':policy['pluginApiVersion'],'adapterPath':config['remoteRoot']+'/dependencies/codexhost-'+version+'/node_modules/@codexhost/cli-linux-x64/app/plugins/claude-code/plugin.mjs','remoteConfig':{'workspaceRoot':config['remoteWorkspaceRoot'],'claudeExecutable':config['remoteClaudeExecutable'],'legacy':config.get('legacy',{})}},config)
+    adapter_required=bool(hostRoot)
+    prepare_req={'action':'prepare','id':tx,'files':payload,'remoteNodeExecutable':config.get('remoteNodeExecutable'),'adapterRequired':adapter_required,'remoteConfig':{'workspaceRoot':config['remoteWorkspaceRoot'],'claudeExecutable':config['remoteClaudeExecutable'],'legacy':config.get('legacy',{})}}
+    if adapter_required:
+        # The version is whatever prepare-dependency.py validated on the VPS (latest, or the kept one).
+        prepared_dependency=SOURCE/'installation-dependency.json'
+        if not prepared_dependency.exists():raise RuntimeError('Run installer/prepare-dependency.py first')
+        version=json.loads(prepared_dependency.read_text(encoding='utf-8'))['version']
+        if not supported(version,policy):raise RuntimeError('Prepared dependency is below the supported minimum')
+        prepare_req.update(adapterVersion=version,pluginApiVersion=policy['pluginApiVersion'],adapterPath=config['remoteRoot']+'/dependencies/codexhost-'+version+'/node_modules/@codexhost/cli-linux-x64/app/plugins/claude-code/plugin.mjs')
+    prepared=remote(prepare_req,config)
     dist_file=(hostRoot/'app/codexhost-distribution.json') if hostRoot else None
     host_version=json.loads(dist_file.read_text())['version'] if dist_file and dist_file.is_file() else None
-    journal={'id':tx,'connection':config,'phase':'prepared','files':rows,'remote':prepared,'hostVersion':host_version};(stage/'journal.json').write_text(json.dumps(journal,indent=2))
+    journal={'id':tx,'mode':'codexhost' if adapter_required else 'standalone','connection':config,'phase':'prepared','files':rows,'remote':prepared,'hostVersion':host_version};(stage/'journal.json').write_text(json.dumps(journal,indent=2))
     # Only code/enablement participate. runtime/state and runtime-context are never replaced.
     reportPath=SOURCE/'installation-workspace.json';oldReport=reportPath.read_bytes() if reportPath.exists() else None
     if oldReport:(stage/'installation-workspace.previous.json').write_bytes(oldReport)
@@ -96,7 +100,7 @@ def main():
             if row['sha256'] is None:Path(row['path']).unlink(missing_ok=True)
             else:replace(Path(row['path']),(stage/(row['key']+'.new')).read_bytes())
         if args.fail_after_local:raise RuntimeError('Injected transaction failure')
-        report={'connection':config,'installedAt':tx,'localBackup':str(stage),'localPlugin':str(target),'selfContained':True,'remote':{'backup':prepared['stage'],'hashes':prepared['hashes'],'adapter':prepared['adapter']},'files':rows,'hostVersion':journal['hostVersion'],'transaction':str(stage)}
+        report={'mode':'codexhost' if adapter_required else 'standalone','connection':config,'installedAt':tx,'localBackup':str(stage),'localPlugin':str(target),'selfContained':True,'remote':{'backup':prepared['stage'],'hashes':prepared['hashes'],'adapter':prepared.get('adapter')},'files':rows,'hostVersion':journal['hostVersion'],'transaction':str(stage)}
         replace(reportPath,json.dumps(report,ensure_ascii=False,indent=2).encode())
         routes=len(config.get('sshRoutes',[None]))
         subprocess.run([str(node),str(INSTALLER/'verify-upgrade.mjs')],check=True,timeout=100+50*(routes-1))

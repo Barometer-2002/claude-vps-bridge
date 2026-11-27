@@ -1,6 +1,6 @@
-"""Check distributed source syntax and plugin entry files without deployment."""
+"""Check distributed source syntax, pure offline self-test and plugin entry files without deployment."""
 from pathlib import Path
-import ast, json, re, shutil, subprocess
+import ast, json, os, re, shutil, subprocess, sys, tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN, REMOTE, INSTALLER, T3_NATIVE = ROOT / 'plugin', ROOT / 'remote', ROOT / 'installer', ROOT / 't3-native'
@@ -50,4 +50,54 @@ for name in ('bridge-manifest.json','workspace-request-schema.json'):
     if "payload['"+name+"']" not in deploy:raise SystemExit('Missing generated metadata: '+name)
 if 'bridgeVersion:' in (REMOTE / 'remote-server.mjs').read_text(encoding='utf-8'):
     raise SystemExit('Remote version must come from the deployed manifest')
-print('PASS Source syntax, plugin entry, shared transport and install manifest; runtime acceptance was not run')
+
+# Pure offline self-test (no installed bridge, private config or network required).
+pure_self_test = subprocess.run(
+    [node, str(T3_NATIVE / 'claude-vps-shim.mjs'), '--self-test', '--pure'],
+    check=True,
+    capture_output=True,
+    text=True,
+    cwd=ROOT,
+)
+pure_result = json.loads(pure_self_test.stdout.strip())
+if pure_result.get('ok') is not True:
+    raise SystemExit('Shim pure offline self-test failed: ' + pure_self_test.stdout.strip())
+
+# On Windows, compile claude-vps-shim.cs with .NET csc.exe into a temp dir and verify execution.
+if sys.platform == 'win32':
+    windir = Path(os.environ.get('WINDIR', r'C:\Windows'))
+    csc = next(
+        (c for c in (
+            Path(os.environ['CLAUDE_VPS_CSC']) if os.environ.get('CLAUDE_VPS_CSC') else None,
+            windir / 'Microsoft.NET' / 'Framework64' / 'v4.0.30319' / 'csc.exe',
+            windir / 'Microsoft.NET' / 'Framework' / 'v4.0.30319' / 'csc.exe',
+        ) if c and c.is_file()),
+        None,
+    )
+    if not csc:
+        raise SystemExit('Windows .NET csc.exe not found; cannot verify claude-vps-shim.cs compilation')
+    with tempfile.TemporaryDirectory(prefix='claude-vps-shim-check-') as tmp:
+        tmp_dir = Path(tmp)
+        for asset in ('bridge-installation.mjs', 'mcp-policy.mjs', 'http-mcp-client.mjs', 'claude-vps-shim.mjs'):
+            shutil.copy2(T3_NATIVE / asset, tmp_dir / asset)
+        (tmp_dir / 'node-path.txt').write_text(str(Path(node).resolve()) + '\n', encoding='utf-8')
+        exe = tmp_dir / 'claude-vps-shim.exe'
+        subprocess.run(
+            [str(csc), '/nologo', '/optimize+', '/target:exe', f'/out:{exe}', str(T3_NATIVE / 'claude-vps-shim.cs')],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        exe_test = subprocess.run(
+            [str(exe), '--self-test', '--pure'],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        exe_result = json.loads(exe_test.stdout.strip())
+        if exe_result.get('ok') is not True:
+            raise SystemExit('Compiled claude-vps-shim.exe pure self-test failed: ' + exe_test.stdout.strip())
+
+print('PASS Source syntax, shim offline self-test, plugin entry, shared transport and install manifest; runtime acceptance was not run')

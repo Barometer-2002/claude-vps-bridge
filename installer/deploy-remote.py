@@ -50,14 +50,22 @@ def main(request):
             if before is not None:(stage/(name+'.old')).write_bytes(before)
             rows.append(row)
         node=paths['node']
-        selected=pathlib.Path(request['adapterPath'])
-        # The selection is inside a separately installed complete npm dependency tree.
-        expected=ROOT/'dependencies'/('codexhost-'+request['adapterVersion'])/'node_modules/@codexhost/cli-linux-x64/app/plugins/claude-code/plugin.mjs'
-        if not selected.is_file() or selected.resolve()!=expected.resolve():raise RuntimeError('Managed adapter missing or outside the selected dependency tree; prepare its exact npm version first')
-        config=inspect_dependency(selected.parents[6],request['adapterVersion'],node,request['pluginApiVersion'])
-        if pathlib.Path(config['modulePath'])!=selected.resolve():raise RuntimeError('Unexpected managed adapter entry')
+        adapter_required=request.get('adapterRequired',True)
+        config=None
+        if adapter_required:
+            selected=pathlib.Path(request['adapterPath'])
+            # The selection is inside a separately installed complete npm dependency tree.
+            expected=ROOT/'dependencies'/('codexhost-'+request['adapterVersion'])/'node_modules/@codexhost/cli-linux-x64/app/plugins/claude-code/plugin.mjs'
+            if not selected.is_file() or selected.resolve()!=expected.resolve():raise RuntimeError('Managed adapter missing or outside the selected dependency tree; prepare its exact npm version first')
+            config=inspect_dependency(selected.parents[6],request['adapterVersion'],node,request['pluginApiVersion'])
+            if pathlib.Path(config['modulePath'])!=selected.resolve():raise RuntimeError('Unexpected managed adapter entry')
         managed={'schemaVersion':1,'files':{name:sha(text.encode()) for name,text in request['files'].items()}}
-        for name,text in {'managed-files.json':json.dumps(managed),'node-path':node+'\n','adapter-selection.json':json.dumps(config),**({'claude-path':request['remoteConfig']['claudeExecutable']+'\n','remote-config.json':json.dumps(request['remoteConfig'])} if 'remoteConfig' in request else {})}.items():
+        generated={'managed-files.json':json.dumps(managed),'node-path':node+'\n'}
+        if config is not None:generated['adapter-selection.json']=json.dumps(config)
+        if 'remoteConfig' in request:
+            generated['claude-path']=request['remoteConfig']['claudeExecutable']+'\n'
+            generated['remote-config.json']=json.dumps(request['remoteConfig'])
+        for name,text in generated.items():
             dest=ROOT/name;before=dest.read_bytes() if dest.exists() else None;data=text.encode()
             (stage/(name+'.new')).write_bytes(data)
             if before is not None:(stage/(name+'.old')).write_bytes(before)

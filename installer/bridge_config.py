@@ -72,6 +72,11 @@ def remote_python(config,code,timeout=120):
 if __name__=='__main__':
     # install.ps1 uses the same rule instead of a separate PowerShell copy.
     import sys
-    if sys.argv[1:]!=['--check-roots']:raise SystemExit('usage: bridge_config.py --check-roots')
-    custom=custom_codexhost_roots()
-    if custom:raise SystemExit('Custom CodexHost location is not supported by this installer: '+', '.join(custom))
+    if sys.argv[1:]==['--check-roots']:
+        custom=custom_codexhost_roots()
+        if custom:raise SystemExit('Custom CodexHost location is not supported by this installer: '+', '.join(custom))
+    elif sys.argv[1:]==['--mode']:
+        config=load_config()
+        print('codexhost' if config.get('hostRoot') else 'standalone')
+    else:
+        raise SystemExit('usage: bridge_config.py --check-roots | --mode')
