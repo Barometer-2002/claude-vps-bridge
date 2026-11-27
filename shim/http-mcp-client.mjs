@@ -681,8 +681,10 @@ export class LocalStdioMcpClient {
 }
 
 /**
- * Multi-server Windows MCP proxy hub for t3-native.
+ * Multi-server Windows MCP proxy hub for Claude VPS Shim.
  * - Strictly validates every local config before proxying (never leaks url/headers/env to VPS).
+ * - Preserves pure in-process `type: 'sdk'` MCP stubs (no credentials or commands) while still
+ *   enforcing shared local MCP policy on preflight.
  * - Enforces shared local MCP policy (Plan mode fail-closed, allow/deny, project deny rules)
  *   before every tools/call and filters tools/list.
  */
@@ -690,6 +692,7 @@ export class LocalMcpHub {
   constructor(options = {}) {
     this.options = options;
     this.clients = new Map();
+    this.sdkServers = new Set();
     this.configs = new Map();
     this.toolCatalogs = new Map();
   }
@@ -698,8 +701,39 @@ export class LocalMcpHub {
     return this.clients.has(name);
   }
 
+  hasSdk(name) {
+    return this.sdkServers.has(name);
+  }
+
   names() {
     return [...this.clients.keys()];
+  }
+
+  sdkNames() {
+    return [...this.sdkServers];
+  }
+
+  allNames() {
+    return [...this.clients.keys(), ...this.sdkServers];
+  }
+
+  recordSdkTools(serverName, tools) {
+    if (!this.sdkServers.has(serverName) || !Array.isArray(tools)) return;
+    let connMap = this.toolCatalogs.get(serverName);
+    if (!connMap) {
+      connMap = new Map();
+      this.toolCatalogs.set(serverName, connMap);
+    }
+    const catalog = new Map();
+    for (const tool of tools) {
+      if (!tool || typeof tool.name !== 'string') continue;
+      catalog.set(tool.name, {
+        known: true,
+        readOnlyHint: tool.annotations?.readOnlyHint === true,
+        destructiveHint: tool.annotations?.destructiveHint !== undefined && tool.annotations.destructiveHint !== false,
+      });
+    }
+    connMap.set('sdk', catalog);
   }
 
   getToolMeta(serverName, connectionId, toolName) {
@@ -760,14 +794,20 @@ export class LocalMcpHub {
 
   stageServers(serversObj, remoteRoot, cwd) {
     const validated = this.#validateAll(serversObj);
-    const previous = { clients: this.clients, configs: this.configs, toolCatalogs: this.toolCatalogs };
+    const previous = { clients: this.clients, sdkServers: this.sdkServers, configs: this.configs, toolCatalogs: this.toolCatalogs };
     const clients = new Map();
+    const sdkServers = new Set();
     const configs = new Map();
     const toolCatalogs = new Map();
     for (const { name, entry, kind } of validated) {
       const signature = JSON.stringify([entry, cwd]);
       configs.set(name, signature);
-      if (previous.configs.get(name) === signature) {
+      if (kind === 'sdk') {
+        sdkServers.add(name);
+        toolCatalogs.set(name, previous.configs.get(name) === signature ? (previous.toolCatalogs.get(name) ?? new Map()) : new Map());
+        continue;
+      }
+      if (previous.configs.get(name) === signature && previous.clients.has(name)) {
         clients.set(name, previous.clients.get(name));
         toolCatalogs.set(name, previous.toolCatalogs.get(name));
       } else {
@@ -776,11 +816,11 @@ export class LocalMcpHub {
         clients.set(name, this.#makeClient(kind, entry, cwd, catalogs));
       }
     }
-    Object.assign(this, { clients, configs, toolCatalogs });
+    Object.assign(this, { clients, sdkServers, configs, toolCatalogs });
     return {
-      servers: Object.fromEntries(validated.map(({ name }) => [name, {
-        type: 'stdio', command: 'python3', args: [path.posix.join(remoteRoot, 'mcp-local.py'), '--server', name],
-      }])),
+      servers: Object.fromEntries(validated.map(({ name, kind }) => [name, kind === 'sdk'
+        ? { type: 'sdk', name }
+        : { type: 'stdio', command: 'python3', args: [path.posix.join(remoteRoot, 'mcp-local.py'), '--server', name] }])),
       finish: accepted => {
         if (!accepted) Object.assign(this, previous);
         const discarded = accepted ? previous.clients : clients;
@@ -864,6 +904,7 @@ export class LocalMcpHub {
   async closeAll() {
     await Promise.allSettled([...this.clients.values()].map(c => c.closeAll()));
     this.clients.clear();
+    this.sdkServers.clear();
     this.configs.clear();
     this.toolCatalogs.clear();
   }

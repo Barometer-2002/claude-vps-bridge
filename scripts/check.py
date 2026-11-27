@@ -3,7 +3,7 @@ from pathlib import Path
 import ast, json, os, re, shutil, subprocess, sys, tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN, REMOTE, INSTALLER, T3_NATIVE = ROOT / 'plugin', ROOT / 'remote', ROOT / 'installer', ROOT / 't3-native'
+PLUGIN, REMOTE, INSTALLER, SHIM, T3_NATIVE = ROOT / 'plugin', ROOT / 'remote', ROOT / 'installer', ROOT / 'shim', ROOT / 't3-native'
 node = shutil.which('node')
 if not node:
     raise SystemExit('Node.js 24 must be on PATH')
@@ -13,21 +13,23 @@ python_files += [REMOTE / 'windows-agent', REMOTE / 'windows-workspace']
 for file in python_files:
     if not file.name.startswith('test-'):
         ast.parse(file.read_text(encoding='utf-8-sig'), filename=str(file))
-for file in [*PLUGIN.glob('*.mjs'), *(PLUGIN / 'runtime').glob('*.mjs'), *REMOTE.glob('*.mjs'), *INSTALLER.glob('*.mjs'), *T3_NATIVE.glob('*.mjs')]:
+for file in [*PLUGIN.glob('*.mjs'), *(PLUGIN / 'runtime').glob('*.mjs'), *REMOTE.glob('*.mjs'), *INSTALLER.glob('*.mjs'), *SHIM.glob('*.mjs'), *T3_NATIVE.glob('*.mjs')]:
     if not file.name.startswith(('test-', 'benchmark-')):
         subprocess.run([node, '--check', str(file)], check=True, cwd=ROOT)
 
-manage_native = (T3_NATIVE / 'manage-native.mjs').read_text(encoding='utf-8')
-assets_block = re.search(r"const SCRIPT_ASSETS = \[([^\]]*)\]", manage_native, re.S)
+manage_shim = (SHIM / 'manage-shim.mjs').read_text(encoding='utf-8')
+assets_block = re.search(r"export const SCRIPT_ASSETS = \[([^\]]*)\]", manage_shim, re.S)
 if not assets_block:
-    raise SystemExit('Missing SCRIPT_ASSETS list in t3-native/manage-native.mjs')
+    raise SystemExit('Missing SCRIPT_ASSETS list in shim/manage-shim.mjs')
 for name in re.findall(r"name:\s*'([^']+)'", assets_block.group(1)):
-    if not (T3_NATIVE / name).is_file():
-        raise SystemExit('T3 native installer copies a missing file: t3-native/' + name)
+    if not (SHIM / name).is_file():
+        raise SystemExit('Shim installer copies a missing file: shim/' + name)
 
-for name in ('claude-vps-shim.cs', 'claude-vps-shim.mjs', 'http-mcp-client.mjs', 'manage-native.mjs', 'bridge-installation.mjs', 'mcp-policy.mjs'):
-    if not (T3_NATIVE / name).is_file():
-        raise SystemExit('Missing T3 native shim file: t3-native/' + name)
+for name in ('claude-vps-shim.cs', 'claude-vps-shim.mjs', 'http-mcp-client.mjs', 'manage-shim.mjs', 'bridge-installation.mjs', 'mcp-policy.mjs'):
+    if not (SHIM / name).is_file():
+        raise SystemExit('Missing neutral shim file: shim/' + name)
+if not (T3_NATIVE / 'manage-native.mjs').is_file():
+    raise SystemExit('Missing T3 native registration manager: t3-native/manage-native.mjs')
 
 manifest = json.loads((PLUGIN / 'manifest.json').read_text(encoding='utf-8'))
 for field in ('entry', 'icon'):
@@ -53,7 +55,7 @@ if 'bridgeVersion:' in (REMOTE / 'remote-server.mjs').read_text(encoding='utf-8'
 
 # Pure offline self-test (no installed bridge, private config or network required).
 pure_self_test = subprocess.run(
-    [node, str(T3_NATIVE / 'claude-vps-shim.mjs'), '--self-test', '--pure'],
+    [node, str(SHIM / 'claude-vps-shim.mjs'), '--self-test', '--pure'],
     check=True,
     capture_output=True,
     text=True,
@@ -79,11 +81,11 @@ if sys.platform == 'win32':
     with tempfile.TemporaryDirectory(prefix='claude-vps-shim-check-') as tmp:
         tmp_dir = Path(tmp)
         for asset in ('bridge-installation.mjs', 'mcp-policy.mjs', 'http-mcp-client.mjs', 'claude-vps-shim.mjs'):
-            shutil.copy2(T3_NATIVE / asset, tmp_dir / asset)
+            shutil.copy2(SHIM / asset, tmp_dir / asset)
         (tmp_dir / 'node-path.txt').write_text(str(Path(node).resolve()) + '\n', encoding='utf-8')
         exe = tmp_dir / 'claude-vps-shim.exe'
         subprocess.run(
-            [str(csc), '/nologo', '/optimize+', '/target:exe', f'/out:{exe}', str(T3_NATIVE / 'claude-vps-shim.cs')],
+            [str(csc), '/nologo', '/optimize+', '/target:exe', f'/out:{exe}', str(SHIM / 'claude-vps-shim.cs')],
             check=True,
             capture_output=True,
             text=True,

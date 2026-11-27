@@ -1,6 +1,19 @@
-// Local MCP policy & config validation for T3 Claude VPS Native Shim (t3-native/).
+// Local MCP policy & config validation for Claude VPS Shim (shim/).
 
 export const MCP_SERVER_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+// Never allow an ACP SDK server to expose host filesystem or terminal tools that bypass windows-workspace.
+const BLOCKED_ACP_WORKSPACE_BYPASS_TOOLS = new Set([
+  'read',
+  'write',
+  'edit',
+  'multiedit',
+  'bash',
+  'notebookedit',
+  'read_text_file',
+  'write_text_file',
+  'terminal',
+]);
 
 // Fail-closed read-only allowlist for T3 MCP tools while in Plan mode.
 // Any mutating, launching, cancelling, or newly added T3 tool is blocked in Plan mode.
@@ -118,6 +131,17 @@ export function validateLocalMcpServerConfig(name, entry) {
   const hasUrl = typeof entry.url === 'string' && entry.url.trim().length > 0;
   const hasCommand = typeof entry.command === 'string' && entry.command.trim().length > 0;
 
+  if (type === 'sdk') {
+    const keys = Object.keys(entry);
+    if (!keys.every(k => k === 'type' || k === 'name')) {
+      return { ok: false, error: `Local SDK MCP server "${name}" must not carry url, headers, command, or env fields` };
+    }
+    if (entry.name !== undefined && (typeof entry.name !== 'string' || entry.name !== name)) {
+      return { ok: false, error: `Local SDK MCP server "${name}" name field must match its key` };
+    }
+    return { ok: true, kind: 'sdk' };
+  }
+
   if (type === 'sse') {
     return { ok: false, error: `Local MCP server "${name}" requires Streamable HTTP or stdio. Legacy SSE transport is unsupported` };
   }
@@ -202,6 +226,14 @@ export function evaluateLocalMcpToolCall({
         reason: `Local project policy denies MCP tool "${fullToolName}" (deny rule ${entry.pattern}${entry.source ? ` in ${entry.source}` : ''}).`,
       };
     }
+  }
+
+  // 1.5. Block ACP built-in filesystem/terminal tools that would bypass windows-workspace locks and boundaries.
+  if (server.toLowerCase() === 'acp' && BLOCKED_ACP_WORKSPACE_BYPASS_TOOLS.has(cleanTool.toLowerCase())) {
+    return {
+      allowed: false,
+      reason: `ACP built-in filesystem/terminal tool "${fullToolName}" is blocked to preserve windows-workspace path boundaries, hooks, and write locks.`,
+    };
   }
 
   // 2. Built-in t3-code server: enforce T3_MCP_ALLOW_TOOLS / T3_MCP_DENY_TOOLS and Plan-mode fail-closed allowlist.

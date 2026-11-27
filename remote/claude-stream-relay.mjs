@@ -107,10 +107,13 @@ function extractProxiedServersFromControl(msg) {
   if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('Invalid MCP server map');
   const names = [];
   for (const [name, cfg] of Object.entries(servers)) {
-    if (!SERVER_NAME_RE.test(name) || !cfg || cfg.type !== 'stdio' || cfg.command !== 'python3'
-        || Object.keys(cfg).length !== 3 || !Array.isArray(cfg.args)
-        || cfg.args.length !== 3 || cfg.args[0] !== path.join(bridgeRoot, 'mcp-local.py')
-        || cfg.args[1] !== '--server' || cfg.args[2] !== name) throw new Error('Invalid MCP proxy stub');
+    const isLocalProxy = SERVER_NAME_RE.test(name) && cfg && cfg.type === 'stdio' && cfg.command === 'python3'
+      && Object.keys(cfg).length === 3 && Array.isArray(cfg.args)
+      && cfg.args.length === 3 && cfg.args[0] === path.join(bridgeRoot, 'mcp-local.py')
+      && cfg.args[1] === '--server' && cfg.args[2] === name;
+    const isSdkStub = SERVER_NAME_RE.test(name) && cfg && cfg.type === 'sdk'
+      && Object.keys(cfg).length === 2 && cfg.name === name;
+    if (!isLocalProxy && !isSdkStub) throw new Error('Invalid MCP proxy stub');
     names.push(name);
   }
   return names;
@@ -174,6 +177,7 @@ async function startClaude(params) {
     projectContext = '',
     t3Mcp = false,
     localMcpServers = [],
+    sdkMcpServers = [],
     addedDirs = [],
     probeOnly = false,
     zeroTools = false,
@@ -215,7 +219,10 @@ async function startClaude(params) {
       (Array.isArray(localMcpServers) ? localMcpServers : []).filter(n => typeof n === 'string' && SERVER_NAME_RE.test(n)),
     );
     if (t3Mcp) initialServers.add('t3-code');
-    allowedMcpServers = [...initialServers];
+    const initialSdkServers = new Set(
+      (Array.isArray(sdkMcpServers) ? sdkMcpServers : []).filter(n => typeof n === 'string' && SERVER_NAME_RE.test(n) && !initialServers.has(n)),
+    );
+    allowedMcpServers = [...initialServers, ...initialSdkServers];
     await writeAllowedMcpFile(allowedMcpServers);
 
     const bridgeInstructions = await readFile(path.join(bridgeRoot, 'bridge-instructions.md'), 'utf8');
@@ -243,6 +250,9 @@ async function startClaude(params) {
         command: 'python3',
         args: [path.join(bridgeRoot, 'mcp-local.py'), '--server', name],
       };
+    }
+    for (const name of initialSdkServers) {
+      mcpServers[name] = { type: 'sdk', name };
     }
     const mergedMcpConfig = JSON.stringify({ ...baseMcp, mcpServers });
 

@@ -35,7 +35,7 @@ function hasLocalConfig(value) {
   if (!value || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, nested]) => {
     if (['url', 'headers', 'env', 'mcpConfig', 'mcp_config', 'mcp_servers'].includes(key)) return true;
-    if (key === 'mcpServers' && Array.isArray(nested) && nested.every(name => typeof name === 'string')) return false;
+    if ((key === 'mcpServers' || key === 'sdkMcpServers') && Array.isArray(nested) && nested.every(name => typeof name === 'string')) return false;
     return key === 'mcpServers' || hasLocalConfig(nested);
   });
 }
@@ -168,6 +168,18 @@ export function parseShimArgs(argv) {
     if (flag === '--tools') {
       const val = readValue();
       if (val.trim() === '') zeroTools = true;
+      continue;
+    }
+    if (flag === '--disallowedTools' || flag === '--disallowed-tools') {
+      const val = readValue();
+      // Preserve Bash and Read because remote/workspace-guard.py requires them for windows-workspace and staged media.
+      const filtered = val
+        .split(/[\s,]+/)
+        .map(item => item.trim())
+        .filter(item => item && item !== 'Bash' && item !== 'Read');
+      if (filtered.length > 0) {
+        forwarded.push(flag, filtered.join(','));
+      }
       continue;
     }
     if (STRIP_VALUE_FLAGS.has(flag)) {
@@ -570,17 +582,28 @@ async function runOfflineSelfTest({ pure = false } = {}) {
   }
   const rewritten = hub.registerServers({
     't3-code': { type: 'http', url: 'http://127.0.0.1:1234/mcp', headers: { Authorization: 'Bearer secret' } },
+    'host-sdk': { type: 'sdk', name: 'host-sdk' },
   }, '/tmp/remote', process.cwd());
   const sanitizedOk = rewritten['t3-code']?.type === 'stdio'
     && !('url' in rewritten['t3-code'])
     && !('headers' in rewritten['t3-code'])
-    && !('env' in rewritten['t3-code']);
+    && !('env' in rewritten['t3-code'])
+    && rewritten['host-sdk']?.type === 'sdk'
+    && rewritten['host-sdk']?.name === 'host-sdk'
+    && hub.sdkNames().includes('host-sdk');
   await hub.closeAll();
+
+  const disallowedParsed = parseShimArgs(['--disallowedTools', 'Bash,Read,WebFetch']);
+  const disallowedOk = disallowedParsed.forwarded.length === 2
+    && disallowedParsed.forwarded[0] === '--disallowedTools'
+    && disallowedParsed.forwarded[1] === 'WebFetch';
 
   const planPolicyOk = evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'pull_request_read', permissionMode: 'plan' }).allowed === true
     && evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'pull_request_list', permissionMode: 'plan' }).allowed === true
     && evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'ci_logs', permissionMode: 'plan' }).allowed === true
     && evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'pull_request_merge', permissionMode: 'plan' }).allowed === false
+    && evaluateLocalMcpToolCall({ server: 'acp', toolName: 'Bash', permissionMode: 'default' }).allowed === false
+    && evaluateLocalMcpToolCall({ server: 'acp', toolName: 'Write', permissionMode: 'default' }).allowed === false
     && evaluateLocalMcpToolCall({ server: 'custom', toolName: 'read_doc', permissionMode: 'plan', toolMeta: { known: true, readOnlyHint: true, destructiveHint: false } }).allowed === true
     && evaluateLocalMcpToolCall({ server: 'custom', toolName: 'write_doc', permissionMode: 'plan', toolMeta: { known: true, readOnlyHint: false, destructiveHint: true } }).allowed === false;
 
@@ -660,13 +683,14 @@ async function runOfflineSelfTest({ pure = false } = {}) {
     }
   }
 
-  const ok = rejectedBadConfig && sanitizedOk && planPolicyOk && attachmentPathsOk && mediaRemapOk && usageSyncOk && (pure || !bridgeError);
+  const ok = rejectedBadConfig && sanitizedOk && disallowedOk && planPolicyOk && attachmentPathsOk && mediaRemapOk && usageSyncOk && (pure || !bridgeError);
   process.stdout.write(`${JSON.stringify({
     ok,
     mode: pure ? 'offline-self-test-pure' : 'offline-self-test',
     shimDir,
     rejectedBadConfig,
     sanitizedOk,
+    disallowedOk,
     planPolicyOk,
     attachmentPathsOk,
     mediaRemapOk,
@@ -1118,6 +1142,7 @@ async function main() {
   let signalStop = null;
   let pendingMcpUpdate = null;
   const pendingModes = new Map();
+  const pendingSdkToolsList = new Map();
   const trackedJobIds = new Set();
   const localMcpHub = new LocalMcpHub();
 
@@ -1175,6 +1200,7 @@ async function main() {
     projectContext,
     t3Mcp: Boolean(info && localMcpHub.has('t3-code')),
     localMcpServers: info ? localMcpHub.names() : [],
+    sdkMcpServers: info ? localMcpHub.sdkNames() : [],
     addedDirs: parsed.addedDirs,
     probeOnly,
     zeroTools: parsed.zeroTools,
@@ -1274,7 +1300,7 @@ async function main() {
       }
 
       if (request?.action === 'preflight' && request.request?.action === 'mcp-call') {
-        const tool = resolveLocalMcpTool(localMcpHub.names(), request.request.tool);
+        const tool = resolveLocalMcpTool(localMcpHub.allNames(), request.request.tool);
         if (tool) {
           if (PERMISSION_MODES.has(request.permissionMode)) observedClaudeMode = request.permissionMode;
           const permissions = await projectPermissions();
@@ -1342,6 +1368,14 @@ async function main() {
       }
       if (parsedOut?.type === 'system' && parsedOut.subtype === 'init' && typeof parsedOut.permissionMode === 'string') {
         observedClaudeMode = parsedOut.permissionMode;
+      }
+      if (parsedOut?.type === 'control_request' && parsedOut.request?.subtype === 'mcp_message'
+          && typeof parsedOut.request_id === 'string'
+          && typeof parsedOut.request.server_name === 'string'
+          && parsedOut.request.message?.method === 'tools/list'
+          && localMcpHub.hasSdk(parsedOut.request.server_name)) {
+        while (pendingSdkToolsList.size >= 64) pendingSdkToolsList.delete(pendingSdkToolsList.keys().next().value);
+        pendingSdkToolsList.set(parsedOut.request_id, parsedOut.request.server_name);
       }
       if (parsedOut?.type === 'control_response') {
         const response = parsedOut.response;
@@ -1499,6 +1533,12 @@ async function main() {
       if (msg?.type === 'control_request' && msg.request?.subtype === 'initialize' && hasLocalConfig(msg.request)) {
         respondControlError(msg.request_id, 'initialize contains local-only MCP or environment configuration');
         return;
+      }
+      if (msg?.type === 'control_response' && typeof msg.response?.request_id === 'string' && pendingSdkToolsList.has(msg.response.request_id)) {
+        const sdkServer = pendingSdkToolsList.get(msg.response.request_id);
+        pendingSdkToolsList.delete(msg.response.request_id);
+        const tools = msg.response?.response?.mcp_response?.result?.tools ?? msg.response?.response?.result?.tools;
+        if (Array.isArray(tools)) localMcpHub.recordSdkTools(sdkServer, tools);
       }
       const forwardedMsg = mediaRemapper.rewriteIncomingFrame(msg);
       sendToRelay({ type: 'claude_in', line: forwardedMsg === msg ? line : JSON.stringify(forwardedMsg) });
