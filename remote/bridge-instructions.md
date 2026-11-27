@@ -13,14 +13,14 @@ Bash 只是传输通道。每次只发一条命令，参数是一个用单引号
 - 不要用管道、重定向、`$()` 或 Linux 命令。原生 Read 只能读 `media` 传过来的图片/PDF，以及本会话保存的工具输出；其他原生文件工具都已禁用。
 - JSON 里的单引号写成 `\u0027`。PowerShell 脚本按原样写，不要为了引号去改写脚本结构。
 - 不要传 `cwd`、`projectId`、`sessionId`，它们会自动补上。
-- 只读查看可以用简写：`windows-workspace read 'src/a.ts' --offset 0 --limit 100`、`search '.' --pattern 'text'`、`list '.'`、`status`。
+- 只读查看可以用简写：`windows-workspace read 'src/a.ts' --offset 0 --limit 100`（或 `--start-line 1 --end-line 100`）、`search '.' --pattern 'text'`、`list '.'`、`status`。
 - `{"action":"batch","requests":[...]}` 一次最多执行 20 个互不依赖的 read/list/search/info 请求。
 
 ## 操作
 
 | action | 用途 |
 |---|---|
-| `read` / `list` | 读文件（带 sha256 和分页）；列目录 |
+| `read` / `list` | 读文件（带 sha256；支持 0 基 `offset`/`limit` 或 1 基 `startLine`/`endLine`）；列目录 |
 | `search` | 按字面搜索；用 `searchId` + `nextOffset` 继续读，直到 `hasMore` 为 false |
 | `write` / `edit` | 需要当前 sha256 作为 `expectedHash`（新文件用 `absent`）；`edit` 只替换唯一且完全匹配的一处 |
 | `run` | PowerShell 7 的 `script`，或 `executable` + `args`；`requestId` 不能重复；可选 `workingDirectory`、`waitMs`（≤ 30000）、`artifacts` |

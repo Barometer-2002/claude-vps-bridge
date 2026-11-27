@@ -5,7 +5,7 @@
     "status":{"fields":{}},
     "context":{"fields":{"path":"string"}},
     "capability":{"fields":{"id":"string","path":"string"},"required":["id"]},
-    "read":{"fields":{"path":"string","offset":"integer","limit":"integer"},"required":["path"]},
+    "read":{"fields":{"path":"string","offset":"integer","limit":"integer","startLine":"integer","endLine":"integer"},"required":["path"]},
     "list":{"fields":{"path":"string"}},
     "search":{"fields":{"path":"string","pattern":"string","searchId":"string","offset":"integer","limit":"integer","segmentId":"string","encoding":{"type":"string","enum":["utf-8","base64"]}},"anyRequired":[["pattern"],["searchId"]]},
     "write":{"fields":{"path":"string","content":"string","expectedHash":"string","requestId":"string"},"required":["path","content","expectedHash"]},

@@ -24,6 +24,13 @@ export function validateRequest(request,{internal=false,permission=false}={}){
   }
   for(const key of definition.required??[])if(request[key]===undefined)bad('Missing required field '+key+'. Allowed fields: '+allowed);
   if(definition.anyRequired&&!definition.anyRequired.some(group=>group.every(key=>request[key]!==undefined)))bad('Required fields: '+definition.anyRequired.map(group=>group.join(' + ')).join(' or ')+'. Allowed fields: '+allowed);
+  if(request.action==='read'){
+    if(request.startLine!==undefined&&request.startLine<1)bad('startLine must be >= 1');
+    if(request.endLine!==undefined&&request.endLine<1)bad('endLine must be >= 1');
+    if(request.startLine!==undefined&&request.endLine!==undefined&&request.endLine<request.startLine)bad('endLine must be >= startLine');
+    if(request.offset!==undefined&&(request.startLine!==undefined||request.endLine!==undefined))bad('Cannot combine offset with startLine or endLine');
+    if(request.limit!==undefined&&request.endLine!==undefined)bad('Cannot combine limit with endLine');
+  }
   if(request.action==='batch')for(const item of request.requests){
     validateRequest(item);
     if(!['info','read','list','search'].includes(item.action)||Object.keys(schema.common).some(key=>key!=='action'&&key in item))bad('Batch accepts only bound read/list/search/info requests');

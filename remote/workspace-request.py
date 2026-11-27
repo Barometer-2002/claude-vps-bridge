@@ -32,6 +32,12 @@ def validate(request, internal=False, permission=False):
     for key in definition.get('required',[]):
         if key not in request:bad('Missing required field '+key+'. Allowed fields: '+allowed)
     if 'anyRequired' in definition and not any(all(key in request for key in group) for group in definition['anyRequired']):bad('Required fields: '+' or '.join(' + '.join(group) for group in definition['anyRequired'])+'. Allowed fields: '+allowed)
+    if request['action']=='read':
+        if 'startLine' in request and request['startLine']<1:bad('startLine must be >= 1')
+        if 'endLine' in request and request['endLine']<1:bad('endLine must be >= 1')
+        if 'startLine' in request and 'endLine' in request and request['endLine']<request['startLine']:bad('endLine must be >= startLine')
+        if 'offset' in request and ('startLine' in request or 'endLine' in request):bad('Cannot combine offset with startLine or endLine')
+        if 'limit' in request and 'endLine' in request:bad('Cannot combine limit with endLine')
     if request['action']=='batch':
         for item in request['requests']:
             validate(item)
@@ -49,6 +55,7 @@ def parse(argv):
     parser.add_argument('action',choices=['info','status','list','read','search','context','capability','jobs','job','artifact','media'])
     parser.add_argument('path',nargs='?');parser.add_argument('--pattern');parser.add_argument('--id')
     parser.add_argument('--offset',type=int);parser.add_argument('--limit',type=int)
+    parser.add_argument('--start-line',dest='startLine',type=int);parser.add_argument('--end-line',dest='endLine',type=int)
     parser.add_argument('--request-id',dest='requestId');parser.add_argument('--wait-ms',dest='waitMs',type=int)
     parser.add_argument('--operation',choices=['status','cancel','output'])
     parser.add_argument('--stream',choices=['stdout','stderr']);parser.add_argument('--segment',type=int,choices=[0,1])

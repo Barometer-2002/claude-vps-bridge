@@ -39,11 +39,15 @@ export function parseWorkspaceCommand(command) {
   if (action === 'read') {
     const offsetMatch = argsStr.match(/--offset\s+(\d+)/);
     const limitMatch = argsStr.match(/--limit\s+(\d+)/);
+    const startLineMatch = argsStr.match(/--start-line\s+(\d+)/);
+    const endLineMatch = argsStr.match(/--end-line\s+(\d+)/);
     return {
       action,
       path: targetPath,
       ...(offsetMatch ? { offset: Number(offsetMatch[1]) } : {}),
       ...(limitMatch ? { limit: Number(limitMatch[1]) } : {}),
+      ...(startLineMatch ? { startLine: Number(startLineMatch[1]) } : {}),
+      ...(endLineMatch ? { endLine: Number(endLineMatch[1]) } : {}),
     };
   }
   if (action === 'search') {
@@ -243,12 +247,24 @@ export function presentWorkspaceToolCall(item, sessionCwd, { includeOutput = fal
 
   if (op.action === 'read') {
     kind = 'read';
-    const range = Number.isInteger(op.offset) || Number.isInteger(op.limit)
-      ? ` (L${(op.offset ?? 0) + 1}${op.limit ? `-${(op.offset ?? 0) + op.limit}` : '+'})`
+    const startOne = Number.isInteger(op.startLine) && op.startLine >= 1
+      ? op.startLine
+      : (Number.isInteger(op.offset) ? op.offset + 1 : null);
+    const endOne = Number.isInteger(op.endLine) && op.endLine >= 1
+      ? op.endLine
+      : (Number.isInteger(op.limit) && op.limit > 0 ? ((startOne ?? 1) + op.limit - 1) : null);
+    const range = startOne !== null || endOne !== null
+      ? ` (L${startOne ?? 1}${endOne !== null ? `-${endOne}` : '+'})`
       : '';
     title = `Read ${rel}${range}`;
-    if (abs) locations = [{ path: abs, ...(Number.isInteger(op.offset) && op.offset > 0 ? { line: op.offset + 1 } : {}) }];
-    rawInput = { path: op.path, ...(op.offset !== undefined ? { offset: op.offset } : {}), ...(op.limit !== undefined ? { limit: op.limit } : {}) };
+    if (abs) locations = [{ path: abs, ...(startOne !== null && startOne > 1 ? { line: startOne } : {}) }];
+    rawInput = {
+      path: op.path,
+      ...(op.offset !== undefined ? { offset: op.offset } : {}),
+      ...(op.limit !== undefined ? { limit: op.limit } : {}),
+      ...(op.startLine !== undefined ? { startLine: op.startLine } : {}),
+      ...(op.endLine !== undefined ? { endLine: op.endLine } : {}),
+    };
   } else if (op.action === 'list') {
     kind = 'read';
     title = `List ${rel}`;

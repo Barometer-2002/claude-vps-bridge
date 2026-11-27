@@ -1359,6 +1359,8 @@ export function parseApprovedWorkspaceCommand(command) {
   const intFlags = new Map([
     ['--offset', 'offset'],
     ['--limit', 'limit'],
+    ['--start-line', 'startLine'],
+    ['--end-line', 'endLine'],
     ['--wait-ms', 'waitMs'],
     ['--segment', 'segment'],
   ]);
