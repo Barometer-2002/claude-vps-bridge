@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
+import { buildWindowsBatchSpawn } from '../shim/http-mcp-client.mjs';
 import {
   NODE_PATH_NAME,
   cleanupRetiredExeFiles,
@@ -110,10 +111,19 @@ async function installAcp({ acpDir = defaultAcpDir(), shimDir = defaultShimDir()
 
       if (!skipNpm) {
         const npmCmd = findNpmCmd();
+        const batch = buildWindowsBatchSpawn(npmCmd, [
+          '--prefix',
+          installDir,
+          'ci',
+          '--omit=optional',
+          '--ignore-scripts',
+          '--no-audit',
+          '--no-fund',
+        ]);
         await execFileAsync(
-          process.env.ComSpec || 'cmd.exe',
-          ['/d', '/s', '/c', `"${npmCmd}" --prefix "${installDir}" ci --omit=optional --ignore-scripts --no-audit --no-fund`],
-          { windowsHide: true, windowsVerbatimArguments: true, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 },
+          batch.executable,
+          batch.args,
+          { windowsHide: true, windowsVerbatimArguments: batch.windowsVerbatimArguments, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 },
         );
       }
 
