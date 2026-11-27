@@ -1,11 +1,18 @@
 """Prepare both ends first; compensate code changes on failure, retaining state."""
 from pathlib import Path
-import os,json,subprocess,datetime,hashlib,argparse
+import os,json,subprocess,datetime,hashlib,argparse,time
 from bridge_config import load_config,node_executable,remote_python,custom_codexhost_roots,INSTALLED,INSTALLER,PLUGIN,REMOTE,SOURCE
 from dependency import load_policy,supported
 def sha(data):return hashlib.sha256(data).hexdigest()
+def _retry_io(fn):
+    for attempt in range(8):
+        try:return fn()
+        except PermissionError:
+            if attempt==7:raise
+            time.sleep(0.1)
 def replace(dest,data):
-    dest.parent.mkdir(parents=True,exist_ok=True);tmp=dest.with_name(dest.name+'.transaction.tmp');tmp.write_bytes(data);os.replace(tmp,dest)
+    dest.parent.mkdir(parents=True,exist_ok=True);tmp=dest.with_name(dest.name+'.transaction.tmp')
+    _retry_io(lambda:tmp.write_bytes(data));_retry_io(lambda:os.replace(tmp,dest))
 def remote(request,config=None):
     config=config or load_config()
     code=(INSTALLER/'deploy-remote.py').read_text()+'\nROOT=pathlib.Path('+repr(config['remoteRoot'])+')\nprint(json.dumps(main(json.loads('+repr(json.dumps(request))+'))))\n'
@@ -101,7 +108,7 @@ def main():
         remote({'action':'commit','id':tx},config)
         for row in rows:
             if row['sha256'] is None:Path(row['path']).unlink(missing_ok=True)
-            else:replace(Path(row['path']),(stage/(row['key']+'.new')).read_bytes())
+            elif row['beforeHash']!=row['sha256']:replace(Path(row['path']),_retry_io(lambda p=stage/(row['key']+'.new'):p.read_bytes()))
         if args.fail_after_local:raise RuntimeError('Injected transaction failure')
         report={'mode':'codexhost' if adapter_required else 'standalone','connection':config,'installedAt':tx,'localBackup':str(stage),'localPlugin':str(target),'selfContained':True,'remote':{'backup':prepared['stage'],'hashes':prepared['hashes'],'adapter':prepared.get('adapter')},'files':rows,'hostVersion':journal['hostVersion'],'transaction':str(stage)}
         replace(reportPath,json.dumps(report,ensure_ascii=False,indent=2).encode())
