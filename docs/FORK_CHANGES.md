@@ -13,7 +13,7 @@
 | 上游仓库 | [`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge) |
 | fork 基线 | `0.14.1`（上游提交 `0acd8a0`） |
 | 本 fork 名称 | T3 Claude VPS（仓库名 `t3-claude-vps`） |
-| 本 fork 版本 | 从 `v1.0.0` 起独立编号，当前 `v1.0.1`，见 [CHANGELOG](../CHANGELOG.md) |
+| 本 fork 版本 | 从 `v1.0.0` 起独立编号，当前 `v1.1.0`，见 [CHANGELOG](../CHANGELOG.md) |
 | 许可证 | 与上游相同，[LGPL-3.0-only](../LICENSE)（随附 [GPL-3.0 全文](../LICENSE-GPL-3.0)） |
 
 跟进上游新版本时，会在 CHANGELOG 中注明新的基线版本和提交。

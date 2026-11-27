@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-v1.0.1-1F7A5A?style=flat-square&labelColor=1C1B18" alt="Version: v1.0.1">
+  <img src="https://img.shields.io/badge/Version-v1.1.0-1F7A5A?style=flat-square&labelColor=1C1B18" alt="Version: v1.1.0">
   <a href="https://github.com/vv-get-ti/claude-vps-bridge"><img src="https://img.shields.io/badge/Fork_of-claude--vps--bridge_0.14.1-D97757?style=flat-square&labelColor=1C1B18" alt="Fork of claude-vps-bridge 0.14.1"></a>
   <img src="https://img.shields.io/badge/Host-T3_Code_%7C_CodexHost-3F3D39?style=flat-square&labelColor=1C1B18" alt="Host: T3 Code | CodexHost">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-LGPL--3.0--only-4A4742?style=flat-square&labelColor=1C1B18" alt="License: LGPL-3.0-only"></a>

@@ -4,6 +4,16 @@
 
 ---
 
+## 1.1.0 · 2026-11-27
+
+- **T3 原生工具卡片**。新增 `shim/stream-presenter.mjs`：把 `windows-workspace` 的 `read`、`search`、`list`、`run`、`edit`、`write` 以及 `batch`、`info`、`status`、`job` 等结果，转换成 T3 Code 原生的 Read、Grep、Glob、Bash、Edit、Write 卡片。Edit 和 Write 会附带本机生成的 unified diff 与 `structuredPatch`，错误信封也会整理成可读文字。非 workspace 的 Bash 保持原样。
+- **提示词合并**。新增 `remote/initialize-prompt.mjs`：宿主在 `initialize` 阶段下发自己的 `appendSystemPrompt` 时，Relay 将它与桥接说明合并，不再让宿主的内容覆盖桥接说明。
+- **标准 ACP 包装器**。新增复用官方 `claude-agent-acp` 的薄包装（`acp/`），收窄为 ACP v1，并在执行侧强制策略：未知的 `isolation`、`job`、`agent` 动作按拒绝处理。
+- **共享中立 Shim**。抽出中立 Shim 核心，`t3-native` 迁移到它之上；独立模式不再依赖 CodexHost，诊断信息如实反映独立模式。
+- **读取行号兼容**。`read` 同时支持 0 基的 `offset`/`limit` 与 1 基的 `startLine`/`endLine`，Schema、Python 解析、Runtime、Shim 和 ACP 展示一致。
+- **安装器**。未变化的本机文件直接跳过，遇到 Windows 暂时性文件锁时自动重试；`install.ps1` 增加卸载命令并修复重装。
+- **文档**。README 补充中立 Shim、独立模式与标准 ACP 包装器的说明，说明本项目是 `claude-vps-bridge` 的 fork 及其核心用途，并补充 T3 Bridge 的连接与数据流。
+
 ## 1.0.1 · 2026-11-23
 
 - **T3 额度刷新**。对话轮次结束时，shim 按最小间隔向 VPS 上的 Claude Code 补查额度，并在轮次结果前发送 5 小时和 7 天窗口的更新。查询超时或额度暂不可用时，照常返回对话结果。
