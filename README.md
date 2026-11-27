@@ -29,11 +29,11 @@
 
 ## 这个项目做什么
 
-**在 Windows 的 T3 Code 里使用 VPS 上的官方 Claude Code：模型会话跑在 VPS，项目文件和工具留在 Windows。**
+**在 Windows 本地开发环境中运行 Linux VPS 上的官方 Claude Code：源码、编译器、终端、GPU、浏览器和本地 MCP 留在 Windows，模型会话与登录态隔离在 VPS；对外提供 T3 Code 原生接入与标准 ACP 协议包装（并保留上游 CodexHost 插件）。**
 
-- **VPS 端**运行官方 `claude` CLI。登录状态、原生会话记录和模型请求都在 VPS 上。
-- **Windows 端**保留项目目录和开发环境。文件读写、搜索、PowerShell、构建、测试和 MCP 工具都在本机执行。
-- **桥接**在两者之间转发数据：Windows 通过一条 SSH 连接启动 VPS 上的 Claude Code，把 Claude 发出的工具调用转到本机执行，再把结果传回去。
+- **VPS 端**运行官方 `claude` CLI。登录状态、原生会话记录和模型请求都在 VPS 上（独立模式不再需要 VPS 端 `npm` 或 `@codexhost/cli`）。
+- **Windows 端**保留项目目录和开发环境。文件读写、搜索、PowerShell、构建、测试和本地 MCP 工具都在本机执行。
+- **中立 Shim 与接入层**：共享中立 Shim（`%USERPROFILE%\.claude-vps\shim\claude-vps-shim.exe`）经由单条 SSH 连接与 VPS 上的 `claude-stream-relay.mjs` 交互；上层提供 **T3 Code 原生注册**（`t3-native/`）与基于官方 `@agentclientprotocol/claude-agent-acp` 的 **标准 ACP 协议包装**（`acp/`）。
 
 在 T3 Code 里，它会注册为一个单独的 Provider 实例，名为 **`Claude VPS`**。选中它后，用法和 T3 自带的 Claude 一样：权限审批、额度显示、自动标题、`--resume` / fork 会话都可以用。它不改默认的 `claudeAgent` 实例，不碰本机 `~/.claude`，也不改 T3 Code 的程序文件。
 
@@ -55,9 +55,9 @@
 
 | | 上游 `claude-vps-bridge` | 本 fork `t3-claude-vps` |
 |---|---|---|
-| 宿主 | CodexHost 0.20.0+ | **T3 Code**，也可与 CodexHost 共存或只装 CodexHost |
-| 是否必须安装 CodexHost | 是 | 否（`--t3-only` / `-T3Only`） |
-| T3 Code 接入 | 无 | `t3-native/` 原生 Shim：注册独立实例 `Claude VPS`，通过 SSH 透传官方 `stream-json` |
+| 宿主 | CodexHost 0.20.0+ | **T3 Code 原生接入**、**标准 ACP 协议包装**，也可与 CodexHost 共存或只装 CodexHost |
+| 是否必须安装 CodexHost | 是 | 否（`--t3-only` / `--standalone`，独立模式跳过 VPS `@codexhost/cli` 与 `npm`） |
+| 接入层 | 无 | 中立 `shim/` 内核 + `t3-native/` 原生注册 + `acp/` 标准 ACP 薄包装（复用锁版本官方 `@agentclientprotocol/claude-agent-acp`） |
 | MCP | 本机 Playwright、VPS 端 Tavily | 另外由 Windows 端代理 T3 内置 MCP 和本机配置的 HTTP / Stdio MCP，并在本机做权限检查 |
 | 读图预览 | — | 远端 `.bridge-media` 路径映射回 Windows 原始路径，T3 读图卡片正常显示 |
 | T3 中调用本机 Skills / Commands | — | 发送 `/skill`、`$skill`、`/command` 时由 Shim 展开 Windows 本机 `.claude/{skills,commands}` |
@@ -72,22 +72,29 @@
 
 ### 1. 准备环境
 
-- **Windows**：T3 Code、Node.js 24+、PowerShell 7、OpenSSH 客户端、Python 3.11+、npm、ripgrep（`rg`）、系统自带的 .NET Framework 4（`csc.exe`）。本机**不需要**安装或登录 Claude Code。
-- **Linux x64 VPS**：Python 3、Bash、Node.js 24 / npm，已安装并登录官方 [Claude Code](https://code.claude.com/docs/en/setup)。Windows 上要配好连到这台 VPS 的免密 SSH 别名（见[安装指南](docs/SETUP.md)）。
+- **Windows**：Node.js 24+、PowerShell 7、OpenSSH 客户端、Python 3.11+、npm、ripgrep（`rg`）、系统自带的 .NET Framework 4（`csc.exe`）。本机**不需要**安装或登录 Claude Code。
+- **Linux x64 VPS**：Python 3、Bash、Node.js 24（仅 CodexHost 共存模式额外需要 `npm`），已安装并登录官方 [Claude Code](https://code.claude.com/docs/en/setup)。Windows 上要配好连到这台 VPS 的免密 SSH 别名（见[安装指南](docs/SETUP.md)）。
 
-### 2. 安装（只用 T3 Code，不需要 CodexHost）
+### 2. 安装（独立模式，不需要 CodexHost）
 
 在仓库根目录打开 **PowerShell 7**：
 
 ```powershell
-# 生成配置（把 my-linux-host 换成你的 SSH 别名）
+# 生成配置（把 my-linux-host 换成你的 SSH 别名；--standalone 与 --t3-only 等价）
 python .\installer\configure.py --ssh-host my-linux-host --t3-only
 
-# 部署两端桥接，并在 T3 Code 中注册 Claude VPS 实例
+# 方式 A：部署桥接 + 中立 Shim + T3 Code 原生注册
 pwsh -NoProfile -File .\install.ps1 -T3Only
+
+# 方式 B：部署桥接 + 中立 Shim + 标准 ACP 协议包装（生成 %USERPROFILE%\.claude-vps\acp\claude-vps-acp.exe）
+pwsh -NoProfile -File .\install.ps1 -AcpOnly
+
+# 方式 C：同时安装 T3 Code 原生注册与标准 ACP 协议包装（共享同一中立 Shim）
+pwsh -NoProfile -File .\install.ps1 -T3Only -WithAcp
 
 # 检查安装状态（不发起模型请求）
 node .\t3-native\manage-native.mjs status
+node .\acp\manage-acp.mjs status
 ```
 
 ### 3. 开始使用
@@ -178,13 +185,15 @@ pwsh -NoProfile -File .\install.ps1
 ## 项目结构
 
 ```text
-t3-native/   [fork 新增] T3 Code 原生 Shim：C# 启动器、Node 代理、本机 MCP 代理与权限检查、安装管理
+shim/        [fork 新增] 中立 Claude VPS Shim 内核（默认安装至 %USERPROFILE%\.claude-vps\shim\）：C# 启动器、Node stream-json 代理、本机 MCP 代理与权限策略
+t3-native/   [fork 新增] T3 Code 原生注册管理（复用中立 Shim，兼容平滑迁移旧安装）
+acp/         [fork 新增] 标准 ACP 协议薄包装（复用锁版本官方 @agentclientprotocol/claude-agent-acp，含轻量 C# 启动器与 windows-workspace 展示增强）
 remote/      VPS 端运行时：claude-stream-relay（fork 新增）、remote-server、tool-bridge、workspace-guard、mcp-local
 plugin/      Windows 端核心桥接与 CodexHost 插件：协议 3 传输、工作区执行、Hooks、诊断
-installer/   配置器（fork 新增 --t3-only）、依赖准备、事务式部署与回滚
+installer/   配置器（支持 --t3-only / --standalone）、依赖准备、事务式部署与回滚
 docs/        使用指南、架构文档与图示
 examples/    配置示例（全部为占位值）
-scripts/     源码语法检查与公开内容检查
+scripts/     源码语法检查、纯离线自检、Windows 启动器编译校验与公开内容检查
 ```
 
 ---
