@@ -111,14 +111,55 @@ export async function capability(environment,id,relative){
   const candidate=relative?path.resolve(item.root,relative):item.path;if(!inside(item.root,candidate))error('PATH_OUTSIDE_CAPABILITY','Capability asset escapes its configured directory');const file=await fs.realpath(candidate);if(!inside(item.root,file))error('PATH_OUTSIDE_CAPABILITY','Capability asset escapes its configured directory');
   return {...item,path:file,content:await textFile(file)};
 }
+const READ_ONLY_ACTIONS=new Set(['info','status','context','capability','read','list','search','jobs','artifact','media','batch']);
+const MUTATING_ACTIONS=new Set(['write','edit','run']);
+const READ_ONLY_AGENT_SUBCOMMANDS=new Map([
+  ['harness',new Set(['list','read'])],
+  ['delegate',new Set(['list','read','wait'])],
+  ['thread',new Set(['list','read','wait'])],
+]);
+const MUTATING_AGENT_SUBCOMMANDS=new Map([
+  ['delegate',new Set(['start','cancel'])],
+  ['thread',new Set(['send','cancel','create','new'])],
+]);
 export function operation(request,cwd){
   if(request.action==='mcp-call')return mcpOperation(request);
-  if(request.action==='isolation'){const mutating=request.operation!=='status',command='windows-workspace isolation '+(request.operation??'');return {tool:mutating?'Bash':'Read',command,file:cwd,mutating,input:mutating?{command}:{file_path:cwd}};}
-  const action=request.action,argv=request.argv??[];const mutatingAgent=action==='agent'&&((argv[0]==='delegate'&&argv[1]==='start')||(argv[0]==='thread'&&['send','cancel'].includes(argv[1])));
-  const tool=({read:'Read',list:'Glob',search:'Grep',write:'Write',edit:'Edit',run:'Bash',agent:'Agent',capability:'Skill',media:'Read'})[action]??'Read';
+  if(request.action==='isolation'){
+    const opName=request.operation;
+    const command='windows-workspace isolation '+(opName??'');
+    if(opName==='status')return {tool:'Read',command,file:cwd,mutating:false,input:{file_path:cwd}};
+    if(opName==='create'||opName==='apply')return {tool:'Bash',command,file:cwd,mutating:true,input:{command}};
+    return {tool:'Bash',command,file:cwd,mutating:true,unknownOperation:true,input:{command}};
+  }
+  const action=request.action,argv=Array.isArray(request.argv)?request.argv:[];
+  const tool=({read:'Read',list:'Glob',search:'Grep',write:'Write',edit:'Edit',run:'Bash',agent:'Agent',capability:'Skill',media:'Read',info:'Read',status:'Read',context:'Read',jobs:'Read',job:'Read',artifact:'Read',batch:'Read'})[action];
   const command=request.script??(request.executable?[request.executable,...(request.args??[])].join(' '):'');
   const file=typeof request.path==='string'?path.resolve(cwd,request.path):cwd;
-  return {tool,command,file,mutating:['write','edit','run'].includes(action)||mutatingAgent||(action==='job'&&request.operation==='cancel'),input:tool==='Bash'?{command}:tool==='Agent'?{argv}:tool==='Skill'?{skill:request.id}:{file_path:file,...(request.pattern?{pattern:request.pattern}:{})}};
+  if(action==='agent'){
+    let mutating=true,unknownOperation=false;
+    if(request.nativeAction){
+      if(['resolve','native-read'].includes(request.nativeAction))mutating=false;
+      else unknownOperation=true;
+    }else if(argv.includes('--help')||argv.includes('-h')){
+      mutating=false;
+    }else{
+      const [group,sub]=argv;
+      if(READ_ONLY_AGENT_SUBCOMMANDS.get(group)?.has(sub))mutating=false;
+      else if(!MUTATING_AGENT_SUBCOMMANDS.get(group)?.has(sub))unknownOperation=true;
+    }
+    return {tool:'Agent',command,file,mutating,unknownOperation,input:{argv}};
+  }
+  if(action==='job'){
+    const opName=request.operation??'status';
+    if(opName==='cancel')return {tool:'Bash',command:'windows-workspace job cancel',file:cwd,mutating:true,input:{command:'windows-workspace job cancel'}};
+    if(opName==='status'||opName==='output')return {tool:'Read',command:'',file:cwd,mutating:false,input:{file_path:cwd}};
+    return {tool:'Bash',command:'windows-workspace job '+opName,file:cwd,mutating:true,unknownOperation:true,input:{command:'windows-workspace job '+opName}};
+  }
+  if(!tool||(!READ_ONLY_ACTIONS.has(action)&&!MUTATING_ACTIONS.has(action))){
+    return {tool:'Bash',command:String(action??''),file:cwd,mutating:true,unknownOperation:true,input:{command:String(action??'')}};
+  }
+  const mutating=MUTATING_ACTIONS.has(action);
+  return {tool,command,file,mutating,input:tool==='Bash'?{command}:tool==='Skill'?{skill:request.id}:{file_path:file,...(request.pattern?{pattern:request.pattern}:{})}};
 }
 // Entries belong to one loaded environment. Weak keys do not retain old project
 // configurations, and a changed pattern invalidates even an in-place update.
@@ -130,6 +171,7 @@ function permissionMatcher(entry){
 }
 export function permissionDecision(environment,request,mode='default'){
   const op=operation(request,environment.cwd);
+  if(op.unknownOperation)return {decision:'deny',reason:'Unknown or unmapped workspace operation is denied by default.'};
   if(mode==='plan'&&op.mutating)return {decision:'deny',reason:'Plan mode permits inspection only. Switch mode before writes, programs, cancellation or delegation.'};
   const matches=entry=>{const compiled=permissionMatcher(entry),m=compiled.match;if(!m)return false;const [,tool,pattern]=m;if(tool!==op.tool&&tool!=='*'&&!(op.tool.startsWith('mcp__')&&(tool===op.tool.split('__').slice(0,2).join('__')||(compiled.tool??=picomatch(tool))(op.tool))))return false;if(pattern===undefined)return true;
     if(op.tool==='Bash')return pattern.endsWith(':*')?(op.command===pattern.slice(0,-2)||op.command.startsWith(pattern.slice(0,-2)+' ')):(compiled.command??=picomatch(pattern,{dot:true}))(op.command);

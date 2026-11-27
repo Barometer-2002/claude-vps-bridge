@@ -47,7 +47,11 @@ if not internal and (len(sys.argv) < 2 or sys.argv[1] in ('--help', '-h')):
 try:
     parser_spec=importlib.util.spec_from_file_location('workspace_request',str(ROOT/'workspace-request.py'))
     parser_module=importlib.util.module_from_spec(parser_spec);parser_spec.loader.exec_module(parser_module)
-    request=parser_module.validate(json.loads(sys.argv[2]),internal=True) if internal else parser_module.parse(sys.argv[1:])
+    if internal:
+        raw_internal = sys.stdin.read() if sys.argv[2] == '-' else sys.argv[2]
+        request = parser_module.validate(json.loads(raw_internal), internal=True)
+    else:
+        request = parser_module.parse(sys.argv[1:])
     if not isinstance(request, dict):
         raise ValueError('Expected a JSON object')
     cwd = os.environ.get('WINDOWS_PROJECT_CWD')

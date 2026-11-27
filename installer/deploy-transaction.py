@@ -31,10 +31,12 @@ def main():
         if stage.parent!=SOURCE/'transactions':raise RuntimeError('Rollback must reference a transaction under this installer')
         journal=json.loads((stage/'journal.json').read_text());restore_local(stage,journal,check_only=True);remote({'action':'check-rollback','id':journal['id']},journal.get('connection'));remote({'action':'rollback','id':journal['id']},journal.get('connection'));restore_local(stage,journal)
         previous=stage/'installation-workspace.previous.json'
-        if previous.exists():replace(SOURCE/'installation-workspace.json',previous.read_bytes())
+        reportPath=SOURCE/'installation-workspace.json'
+        if previous.exists():replace(reportPath,previous.read_bytes())
+        else:reportPath.unlink(missing_ok=True)
         journal['phase']='rolled-back';(stage/'journal.json').write_text(json.dumps(journal,indent=2));print(json.dumps({'rolledBack':True,'restartRequired':True}));return
     tx=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ');stage=SOURCE/'transactions'/tx;stage.mkdir(parents=True)
-    config=load_config();target=INSTALLED;hostRoot=Path(config['hostRoot']) if config.get('hostRoot') else None;node=node_executable(config)
+    config=load_config();target=INSTALLED;hostRoot=Path(config['hostRoot']) if config.get('hostRoot') else None;node=node_executable(config);adapter_required=bool(hostRoot)
     pairs=[(PLUGIN/n,target/n) for n in ('plugin.mjs','manifest.json','icon.svg','transport-streams.mjs','diagnose.mjs','maintenance.mjs')]
     # Deploy the same policy and loader side by side at both flat runtime roots.
     protocol_files=('bridge-protocol.mjs','dependency-policy.json')
@@ -56,10 +58,11 @@ def main():
             if any(part in ('state','runtime-context') for part in relative.parts) or relative.name in ('bridge-config.json','mcp-config.private.json'):continue
             if old.exists() and sha(old.read_bytes())!=row['sha256']:raise RuntimeError('Retired local managed file changed: '+str(old))
             data.append((old,None));desired.add(old.resolve())
-    enabledPath=target.parent/'enabled.json';enabled=json.loads(enabledPath.read_text()) if enabledPath.exists() else {'version':1,'enabled':[]}
-    if enabled.get('version')!=1 or not isinstance(enabled.get('enabled'),list):raise RuntimeError('Invalid plugin registry')
-    if 'claude-vps' not in enabled['enabled']:enabled['enabled'].append('claude-vps')
-    data.append((enabledPath,json.dumps(enabled,ensure_ascii=False,indent=2).encode()))
+    if adapter_required:
+        enabledPath=target.parent/'enabled.json';enabled=json.loads(enabledPath.read_text()) if enabledPath.exists() else {'version':1,'enabled':[]}
+        if enabled.get('version')!=1 or not isinstance(enabled.get('enabled'),list):raise RuntimeError('Invalid plugin registry')
+        if 'claude-vps' not in enabled['enabled']:enabled['enabled'].append('claude-vps')
+        data.append((enabledPath,json.dumps(enabled,ensure_ascii=False,indent=2).encode()))
     rows=[]
     for i,(dest,content) in enumerate(data):
         before=dest.read_bytes() if dest.exists() else None;key=str(i)
@@ -113,5 +116,6 @@ def main():
         try:restore_local(stage,journal)
         except Exception as e:problems.append('Local recovery: '+str(e))
         if oldReport:replace(reportPath,oldReport)
+        else:reportPath.unlink(missing_ok=True)
         journal.update(phase='recovery-required' if problems else 'rolled-back',error=str(error),recoveryErrors=problems);(stage/'journal.json').write_text(json.dumps(journal,indent=2));raise RuntimeError(json.dumps({'error':str(error),'recoveryErrors':problems,'transaction':str(stage)}))
 if __name__=='__main__':main()

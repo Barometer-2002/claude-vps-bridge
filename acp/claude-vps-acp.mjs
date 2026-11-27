@@ -8,17 +8,30 @@ import { createAcpStreamTransformer, parseWorkspaceCommand } from './workspace-p
 
 const acpDir = path.dirname(fileURLToPath(import.meta.url));
 const WRAPPER_VERSION = '1.0.0';
+const SHIM_PATH_FILE = 'shim-path.txt';
 
-function defaultShimExePath(env = process.env) {
+export function defaultShimExePath(env = process.env, { baseDir = acpDir } = {}) {
   if (env.CLAUDE_CODE_EXECUTABLE && env.CLAUDE_CODE_EXECUTABLE.trim()) {
     return path.resolve(env.CLAUDE_CODE_EXECUTABLE.trim());
   }
   if (env.CLAUDE_VPS_SHIM_PATH && env.CLAUDE_VPS_SHIM_PATH.trim()) {
     return path.resolve(env.CLAUDE_VPS_SHIM_PATH.trim());
   }
-  const shimDir = env.CLAUDE_VPS_SHIM_DIR
-    ? path.resolve(env.CLAUDE_VPS_SHIM_DIR)
-    : path.join(os.homedir(), '.claude-vps', 'shim');
+  if (env.CLAUDE_VPS_SHIM_DIR && env.CLAUDE_VPS_SHIM_DIR.trim()) {
+    return path.join(path.resolve(env.CLAUDE_VPS_SHIM_DIR.trim()), 'claude-vps-shim.exe');
+  }
+  const pinnedFile = path.join(baseDir, SHIM_PATH_FILE);
+  if (existsSync(pinnedFile)) {
+    try {
+      const pinned = readFileSync(pinnedFile, 'utf8').trim();
+      if (pinned && path.isAbsolute(pinned)) {
+        return path.resolve(pinned);
+      }
+    } catch {
+      // Fall back to default neutral Shim directory.
+    }
+  }
+  const shimDir = path.join(os.homedir(), '.claude-vps', 'shim');
   return path.join(shimDir, 'claude-vps-shim.exe');
 }
 
@@ -128,11 +141,52 @@ export function runAcpSelfTest({ pure = false, env = process.env } = {}) {
   const passthroughOk = tx.transformAgentToClient(passthroughLine) === passthroughLine
     && parseWorkspaceCommand('echo hello') === null;
 
+  // 4. v1 contract narrows initialize agentCapabilities and blocks SSE / disabled methods.
+  const initRespOut = JSON.parse(tx.transformAgentToClient(JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    result: {
+      protocolVersion: 1,
+      agentCapabilities: {
+        loadSession: true,
+        providers: {},
+        mcpCapabilities: { http: true, sse: true, acp: true },
+        sessionCapabilities: { list: {}, fork: {}, resume: {}, close: {}, status: {} },
+        auth: { status: {}, logout: {} },
+      },
+      authMethods: [{ id: 'gateway', name: 'Gateway' }],
+    },
+  })));
+  const capsNarrowedOk = initRespOut.result.agentCapabilities.loadSession === false
+    && initRespOut.result.agentCapabilities.mcpCapabilities.sse === false
+    && initRespOut.result.agentCapabilities.mcpCapabilities.acp === false
+    && !('providers' in initRespOut.result.agentCapabilities)
+    && !('list' in initRespOut.result.agentCapabilities.sessionCapabilities)
+    && !('logout' in initRespOut.result.agentCapabilities.auth)
+    && Array.isArray(initRespOut.result.authMethods) && initRespOut.result.authMethods.length === 0;
+
+  const sseBlocked = tx.processClientLine(JSON.stringify({
+    jsonrpc: '2.0',
+    id: 10,
+    method: 'session/new',
+    params: { cwd: 'C:\\example\\repo', mcpServers: [{ name: 'bad', type: 'sse', url: 'http://127.0.0.1:9999/sse' }] },
+  }));
+  const sseBlockedOk = sseBlocked.forwardLine === null && JSON.parse(sseBlocked.immediateReply)?.error?.code === -32602;
+
+  const deliveryInjected = tx.processClientLine(JSON.stringify({
+    jsonrpc: '2.0',
+    id: 11,
+    method: 'session/new',
+    params: { cwd: 'C:\\example\\repo', mcpServers: [{ name: 'docs', type: 'http', url: 'http://127.0.0.1:9999/mcp' }] },
+  }));
+  const deliveryOpts = JSON.parse(deliveryInjected.forwardLine)?.params?._meta?.claudeCode?.options;
+  const deliveryOk = deliveryOpts?.mcpServersDelivery === 'initialize' && deliveryOpts?.settingsDelivery === 'initialize';
+
   const shimExe = defaultShimExePath(env);
   const agentEntry = resolveUpstreamAgentEntry(env);
   const shimPresent = existsSync(shimExe);
   const agentEntryPresent = existsSync(agentEntry);
-  const ok = initSanitizedOk && toolCallOk && permissionPreviewOk && passthroughOk && (pure || (shimPresent && agentEntryPresent));
+  const ok = initSanitizedOk && toolCallOk && permissionPreviewOk && passthroughOk && capsNarrowedOk && sseBlockedOk && deliveryOk && (pure || (shimPresent && agentEntryPresent));
 
   return {
     ok,
@@ -143,6 +197,9 @@ export function runAcpSelfTest({ pure = false, env = process.env } = {}) {
     toolCallOk,
     permissionPreviewOk,
     passthroughOk,
+    capsNarrowedOk,
+    sseBlockedOk,
+    deliveryOk,
     ...(pure ? {} : { shimPresent, agentEntryPresent }),
   };
 }
@@ -177,6 +234,7 @@ function main() {
     env: {
       ...process.env,
       CLAUDE_CODE_EXECUTABLE: shimExe,
+      CLAUDE_AGENT_ACP_PROTOCOL: 'v1',
     },
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'inherit'],
@@ -184,9 +242,12 @@ function main() {
 
   const stdinRl = createInterface({ input: process.stdin, crlfDelay: Infinity });
   stdinRl.on('line', line => {
-    const out = transformer.transformClientToAgent(line);
-    if (child.stdin?.writable) {
-      child.stdin.write(`${out}\n`);
+    const result = transformer.processClientLine(line);
+    if (result.immediateReply) {
+      process.stdout.write(`${result.immediateReply}\n`);
+    }
+    if (result.forwardLine !== null && child.stdin?.writable) {
+      child.stdin.write(`${result.forwardLine}\n`);
     }
   });
   stdinRl.on('close', () => {

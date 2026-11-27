@@ -62,6 +62,11 @@ def main(request):
         managed={'schemaVersion':1,'files':{name:sha(text.encode()) for name,text in request['files'].items()}}
         generated={'managed-files.json':json.dumps(managed),'node-path':node+'\n'}
         if config is not None:generated['adapter-selection.json']=json.dumps(config)
+        elif (ROOT/'adapter-selection.json').exists():
+            stale_adapter=ROOT/'adapter-selection.json'
+            before=stale_adapter.read_bytes()
+            (stage/'adapter-selection.json.old').write_bytes(before)
+            rows.append({'dest':str(stale_adapter),'name':'adapter-selection.json','beforeHash':sha(before),'afterHash':None,'mode':None,'beforeMode':stale_adapter.stat().st_mode&0o777})
         if 'remoteConfig' in request:
             generated['claude-path']=request['remoteConfig']['claudeExecutable']+'\n'
             generated['remote-config.json']=json.dumps(request['remoteConfig'])

@@ -23,10 +23,34 @@ if ($ShimDir) { $acpArgs += @('--shim-dir', $ShimDir) }
 $includeT3 = [bool]($T3Only -or $WithT3 -or $WithT3Native)
 $includeAcp = [bool]($AcpOnly -or $WithAcp)
 
+function Resolve-PreferredNode {
+    if ($script:PreferredNode) { return $script:PreferredNode }
+    try {
+        if (-not $script:BridgePythonForNode) {
+            . (Join-Path $PSScriptRoot 'installer\select-python.ps1')
+            $script:BridgePythonForNode = Resolve-BridgePython
+        }
+        $raw = & $script:BridgePythonForNode (Join-Path $PSScriptRoot 'installer\bridge_config.py') --node 2>$null
+        if ($LASTEXITCODE -eq 0 -and $raw) {
+            $candidate = ([string]$raw).Trim()
+            if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+                $script:PreferredNode = $candidate
+                return $candidate
+            }
+        }
+    } catch {
+    }
+    return $null
+}
+
 function Invoke-NodeManager([string]$ScriptPath, [string]$Label, [string]$Action, [string[]]$ExtraArgs) {
-    $node = Get-Command node -ErrorAction SilentlyContinue
-    if (-not $node) { throw "$Label requires Node.js 24 or newer on PATH." }
-    & $node.Source $ScriptPath $Action @ExtraArgs
+    $nodePath = Resolve-PreferredNode
+    if (-not $nodePath) {
+        $node = Get-Command node -ErrorAction SilentlyContinue
+        if ($node) { $nodePath = $node.Source }
+    }
+    if (-not $nodePath) { throw "$Label requires Node.js 24 or newer (bridge nodeExecutable or on PATH)." }
+    & $nodePath $ScriptPath $Action @ExtraArgs
     if ($LASTEXITCODE -ne 0) { throw "$Label $Action failed." }
 }
 
@@ -56,6 +80,9 @@ if ($Disable -or $Uninstall) {
 $configModeRaw = & $bridgePython (Join-Path $PSScriptRoot 'installer\bridge_config.py') --mode
 if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect bridge configuration mode; run installer\configure.py first.' }
 $configMode = ([string]$configModeRaw).Trim()
+if ($Standalone -and $configMode -eq 'codexhost') {
+    throw 'Cannot pass -Standalone when bridge configuration targets CodexHost (hostRoot is set). Clear hostRoot or omit -Standalone.'
+}
 $standaloneMode = ($configMode -eq 'standalone') -or (($Standalone -or $AcpOnly) -and $configMode -ne 'codexhost')
 
 # Both sides are prepared and checked before switching code. State is excluded.

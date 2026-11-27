@@ -15,6 +15,7 @@ const VERSION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const SHIM_NAME = 'claude-vps-shim.exe';
 export const NODE_PATH_NAME = 'node-path.txt';
 export const VERSION_CACHE_NAME = 'vps-version-cache.json';
+export const CONSUMERS_NAME = 'consumers.json';
 
 export const SCRIPT_ASSETS = [
   { name: 'bridge-installation.mjs', src: path.join(shimSourceDir, 'bridge-installation.mjs') },
@@ -137,31 +138,57 @@ function isPidAlive(pid) {
   }
 }
 
+async function isLockStale(lockPath) {
+  try {
+    const raw = (await readFile(lockPath, 'utf8')).trim();
+    const pid = /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      return !isPidAlive(pid);
+    }
+    const st = await stat(lockPath);
+    return Date.now() - st.mtimeMs > 5000;
+  } catch (err) {
+    return err?.code === 'ENOENT';
+  }
+}
+
 export async function acquireManageLock(lockPath) {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const reapLock = `${lockPath}.reap`;
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       await writeFile(lockPath, String(process.pid), { flag: 'wx' });
       return;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      if (attempt === 0) {
-        let stale = false;
+      if (attempt < 2) {
+        let haveReapLock = false;
         try {
-          const raw = (await readFile(lockPath, 'utf8')).trim();
-          const pid = /^\d+$/.test(raw) ? Number(raw) : NaN;
-          if (Number.isSafeInteger(pid) && pid > 0) {
-            stale = !isPidAlive(pid);
-          } else {
-            const st = await stat(lockPath);
-            stale = Date.now() - st.mtimeMs > 5000;
+          await writeFile(reapLock, String(process.pid), { flag: 'wx' });
+          haveReapLock = true;
+        } catch (reapErr) {
+          if (reapErr?.code === 'EEXIST' && await isLockStale(reapLock)) {
+            await rm(reapLock, { force: true }).catch(() => {});
           }
-        } catch (readErr) {
-          if (readErr?.code === 'ENOENT') continue;
         }
-        if (stale) {
-          await rm(lockPath, { force: true }).catch(() => {});
-          continue;
+        if (haveReapLock) {
+          try {
+            if (await isLockStale(lockPath)) {
+              await rm(lockPath, { force: true }).catch(() => {});
+              try {
+                await writeFile(lockPath, String(process.pid), { flag: 'wx' });
+                return;
+              } catch {
+                // Another process grabbed it cleanly; fall through.
+              }
+            }
+          } finally {
+            await rm(reapLock, { force: true }).catch(() => {});
+          }
         }
+      }
+      if (attempt === 0) {
+        await new Promise(resolve => setTimeout(resolve, 40));
+        continue;
       }
       throw new Error(`安装目录有正在使用的管理锁。${lockPath}`);
     }
@@ -343,13 +370,77 @@ export async function shimStatus({ shimDir = defaultShimDir(), offline = false }
   };
 }
 
-export async function uninstallShim({ shimDir = defaultShimDir() } = {}) {
+async function readConsumersUnlocked(installDir) {
+  const file = path.join(installDir, CONSUMERS_NAME);
+  const raw = await readOptional(file);
+  if (!raw) return { version: 1, consumers: {} };
+  try {
+    const parsed = JSON.parse(raw.toString('utf8'));
+    if (parsed && typeof parsed === 'object' && parsed.consumers && typeof parsed.consumers === 'object') {
+      return { version: 1, consumers: { ...parsed.consumers } };
+    }
+  } catch {}
+  return { version: 1, consumers: {} };
+}
+
+export async function registerShimConsumer(shimDir, consumerId, info = {}) {
+  const installDir = await resolveDirPath(shimDir);
+  return withDirectoryLock(installDir, async () => {
+    const file = path.join(installDir, CONSUMERS_NAME);
+    const before = await readOptional(file);
+    const doc = await readConsumersUnlocked(installDir);
+    doc.consumers[consumerId] = { ...info, updatedAt: new Date().toISOString() };
+    await writeAtomic(file, Buffer.from(`${JSON.stringify(doc, null, 2)}\n`, 'utf8'), before);
+    return doc.consumers;
+  });
+}
+
+export async function unregisterShimConsumer(shimDir, consumerId) {
+  const installDir = await resolveDirPath(shimDir);
+  if (!existsSync(installDir)) return {};
+  return withDirectoryLock(installDir, async () => {
+    const file = path.join(installDir, CONSUMERS_NAME);
+    const before = await readOptional(file);
+    if (!before) return {};
+    const doc = await readConsumersUnlocked(installDir);
+    delete doc.consumers[consumerId];
+    if (Object.keys(doc.consumers).length === 0) {
+      await removeExpectedFile(file, before).catch(() => {});
+      return {};
+    }
+    await writeAtomic(file, Buffer.from(`${JSON.stringify(doc, null, 2)}\n`, 'utf8'), before);
+    return doc.consumers;
+  });
+}
+
+export async function listShimConsumers(shimDir) {
+  const installDir = await resolveDirPath(shimDir);
+  const doc = await readConsumersUnlocked(installDir);
+  const active = {};
+  for (const [id, entry] of Object.entries(doc.consumers)) {
+    const checkPath = typeof entry?.checkPath === 'string' ? entry.checkPath : null;
+    if (checkPath && !existsSync(checkPath)) continue;
+    active[id] = entry;
+  }
+  return active;
+}
+
+export async function uninstallShim({ shimDir = defaultShimDir(), force = false, excludeConsumer = null } = {}) {
   const installDir = await resolveDirPath(shimDir);
   if (!existsSync(installDir)) {
     return { installDir, removed: [] };
   }
   return withDirectoryLock(installDir, async () => {
-    const files = [SHIM_NAME, NODE_PATH_NAME, ...SCRIPT_ASSETS.map(asset => asset.name), VERSION_CACHE_NAME];
+    const doc = await readConsumersUnlocked(installDir);
+    const blocking = Object.entries(doc.consumers).filter(([id, entry]) => {
+      if (id === excludeConsumer) return false;
+      const checkPath = typeof entry?.checkPath === 'string' ? entry.checkPath : null;
+      return !checkPath || existsSync(checkPath);
+    });
+    if (!force && blocking.length > 0) {
+      throw new Error(`共享中立 Shim 仍被其他组件引用（${blocking.map(([id]) => id).join(', ')}），已保留。如需强制移除请附加 --force。`);
+    }
+    const files = [SHIM_NAME, NODE_PATH_NAME, ...SCRIPT_ASSETS.map(asset => asset.name), VERSION_CACHE_NAME, CONSUMERS_NAME];
     const changes = [];
     const removed = [];
     try {
@@ -375,12 +466,13 @@ async function main() {
     options: {
       'shim-dir': { type: 'string' },
       offline: { type: 'boolean', default: false },
+      force: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h' },
     },
   });
 
   if (values.help || action === 'help') {
-    console.log('用法  node shim/manage-shim.mjs <install|status|uninstall> [--shim-dir <目录>] [--offline]');
+    console.log('用法  node shim/manage-shim.mjs <install|status|uninstall> [--shim-dir <目录>] [--offline] [--force]');
     return;
   }
   if (unexpected.length || !['install', 'status', 'uninstall'].includes(action)) {
@@ -403,10 +495,12 @@ async function main() {
     return;
   }
   if (action === 'status') {
-    console.log(JSON.stringify(await shimStatus({ shimDir, offline: values.offline }), null, 2));
+    const status = await shimStatus({ shimDir, offline: values.offline });
+    status.consumers = await listShimConsumers(shimDir);
+    console.log(JSON.stringify(status, null, 2));
     return;
   }
-  const result = await uninstallShim({ shimDir });
+  const result = await uninstallShim({ shimDir, force: values.force });
   console.log(`已清理中立 Shim 目录中的托管文件（${result.removed.length} 项）：${result.installDir}`);
 }
 

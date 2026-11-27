@@ -28,7 +28,7 @@ def structured(command):
 def preflight(operation,mode):
     request={'action':'preflight','request':operation}
     if isinstance(mode,str):request['permissionMode']=mode
-    result=subprocess.run([WORKSPACE_COMMAND,'--internal',json.dumps(request)],capture_output=True,text=True,timeout=150)
+    result=subprocess.run([WORKSPACE_COMMAND,'--internal','-'],input=json.dumps(request),capture_output=True,text=True,timeout=150)
     if result.returncode:raise ValueError(result.stderr[-2000:])
     return json.loads(result.stdout)
 
@@ -89,6 +89,9 @@ if __name__ == '__main__':
                 print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'JSON argument contains an unescaped single quote (\'). Replace single quotes inside JSON with \\u0027 and retry.'}}))
                 sys.exit(0)
             operation=structured(raw_cmd)
+            if operation.get('action')=='agent' and os.environ.get('WINDOWS_AGENT_AVAILABLE')=='0':
+                print(json.dumps({'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'windows-agent requires an active CodexHost Desktop session; in standalone T3 Code / ACP mode use native subagent or t3-code MCP tools instead.'}}))
+                sys.exit(0)
             decision=preflight(operation,request.get('permission_mode'))
             output={'hookEventName':'PreToolUse'}
             if decision['decision'] in ('deny','ask','allow'):

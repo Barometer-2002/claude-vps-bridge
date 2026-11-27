@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -69,10 +69,95 @@ const STRIP_VALUE_FLAGS = new Set([
   '--setting-sources',
 ]);
 
+export function splitCommaAware(value) {
+  if (typeof value !== 'string') return [];
+  const items = [];
+  let current = '';
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (quote) {
+      current += ch;
+      if (ch === '\\' && i + 1 < value.length) {
+        current += value[++i];
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      current += ch;
+      continue;
+    }
+    if (ch === ')' && depth > 0) {
+      depth--;
+      current += ch;
+      continue;
+    }
+    if (ch === ',' && depth === 0) {
+      const trimmed = current.trim();
+      if (trimmed) items.push(trimmed);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  const tail = current.trim();
+  if (tail) items.push(tail);
+  return items;
+}
+
+export function parseTrustedMcpServers(env = process.env, config = null) {
+  const rawEnv = typeof env?.CLAUDE_VPS_TRUSTED_MCP_SERVERS === 'string' ? env.CLAUDE_VPS_TRUSTED_MCP_SERVERS.trim() : '';
+  if (rawEnv === '*') return '*';
+  const trusted = new Set();
+  if (rawEnv) {
+    for (const item of rawEnv.split(',')) {
+      const trimmed = item.trim();
+      if (trimmed) trusted.add(trimmed);
+    }
+  }
+  if (Array.isArray(config?.trustedMcpServers)) {
+    for (const item of config.trustedMcpServers) {
+      if (typeof item === 'string' && item.trim()) trusted.add(item.trim());
+    }
+  }
+  return trusted;
+}
+
+const VALUE_FORWARD_FLAGS = new Set([
+  '--model',
+  '--fallback-model',
+  '--effort',
+  '--max-turns',
+  '--max-budget-usd',
+  '--task-budget',
+  '--agent',
+  '--betas',
+  '--json-schema',
+  '--thinking-display',
+  '--allowedTools',
+  '--allowed-tools',
+  '--permission-prompts',
+  '--workload',
+  '--input-format',
+  '--output-format',
+  '--channels',
+]);
+
 export function parseShimArgs(argv) {
   const forwarded = [];
   const appendPrompts = [];
   const addedDirs = [];
+  const positionalArgs = [];
+  const disallowedTools = [];
   const mcpServers = Object.create(null);
   const invalidMcpConfigs = [];
   let extraSettings = null;
@@ -80,6 +165,7 @@ export function parseShimArgs(argv) {
   let hasPermissionPromptTool = false;
   let hasAllowDangerouslySkip = false;
   let zeroTools = false;
+  let requestedTools = null;
   let isVersionCheck = false;
   let liveVersionCheck = process.env.CLAUDE_VPS_LIVE_VERSION === '1';
   let isSelfTest = false;
@@ -142,9 +228,11 @@ export function parseShimArgs(argv) {
     if (flag === '--settings') {
       const val = readValue();
       const parsed = parseJsonOrFile(val);
-      if (parsed && hasLocalConfig(parsed)) {
-        invalidMcpConfigs.push('--settings contains local-only MCP or environment configuration');
-      } else if (parsed) extraSettings = { ...(extraSettings ?? {}), ...parsed };
+      if (!parsed || hasLocalConfig(parsed)) {
+        invalidMcpConfigs.push('--settings contains unreadable or local-only MCP or environment configuration');
+      } else {
+        extraSettings = { ...(extraSettings ?? {}), ...parsed };
+      }
       continue;
     }
     if (flag === '--session-id' || flag === '--resume' || flag === '-r') {
@@ -167,18 +255,26 @@ export function parseShimArgs(argv) {
     }
     if (flag === '--tools') {
       const val = readValue();
-      if (val.trim() === '') zeroTools = true;
+      const trimmed = val.trim();
+      if (trimmed === '') {
+        zeroTools = true;
+        requestedTools = [];
+      } else if (trimmed === 'default') {
+        zeroTools = false;
+        requestedTools = 'default';
+      } else {
+        zeroTools = false;
+        const items = splitCommaAware(trimmed);
+        requestedTools = Array.isArray(requestedTools) ? [...requestedTools, ...items] : items;
+      }
       continue;
     }
     if (flag === '--disallowedTools' || flag === '--disallowed-tools') {
       const val = readValue();
-      // Preserve Bash and Read because remote/workspace-guard.py requires them for windows-workspace and staged media.
-      const filtered = val
-        .split(/[\s,]+/)
-        .map(item => item.trim())
-        .filter(item => item && item !== 'Bash' && item !== 'Read');
-      if (filtered.length > 0) {
-        forwarded.push(flag, filtered.join(','));
+      const items = splitCommaAware(val);
+      if (items.length > 0) {
+        disallowedTools.push(...items);
+        forwarded.push(flag, items.join(','));
       }
       continue;
     }
@@ -203,15 +299,30 @@ export function parseShimArgs(argv) {
       forwarded.push(arg);
       continue;
     }
+    if (VALUE_FORWARD_FLAGS.has(flag) && inlineVal === null) {
+      const val = readValue();
+      forwarded.push(flag, val);
+      continue;
+    }
 
+    if (!arg.startsWith('-')) {
+      positionalArgs.push(arg);
+    }
     forwarded.push(arg);
   }
+
+  const isAuthStatus = positionalArgs[0] === 'auth' && positionalArgs[1] === 'status';
+  const unsupportedAuthCommand = positionalArgs[0] === 'auth' && positionalArgs[1] && positionalArgs[1] !== 'status'
+    ? positionalArgs[1]
+    : null;
 
   return {
     isVersionCheck,
     liveVersionCheck,
     isSelfTest,
     pureSelfTest,
+    isAuthStatus,
+    unsupportedAuthCommand,
     forwarded,
     appendSystemPrompt: appendPrompts.join('\n\n'),
     addedDirs,
@@ -225,6 +336,8 @@ export function parseShimArgs(argv) {
     hasPermissionPromptTool,
     hasAllowDangerouslySkip,
     zeroTools,
+    requestedTools,
+    disallowedTools,
   };
 }
 
@@ -593,10 +706,14 @@ async function runOfflineSelfTest({ pure = false } = {}) {
     && hub.sdkNames().includes('host-sdk');
   await hub.closeAll();
 
-  const disallowedParsed = parseShimArgs(['--disallowedTools', 'Bash,Read,WebFetch']);
+  const disallowedParsed = parseShimArgs(['--disallowedTools', 'Bash(git push:*),WebFetch']);
   const disallowedOk = disallowedParsed.forwarded.length === 2
     && disallowedParsed.forwarded[0] === '--disallowedTools'
-    && disallowedParsed.forwarded[1] === 'WebFetch';
+    && disallowedParsed.forwarded[1] === 'Bash(git push:*),WebFetch'
+    && disallowedParsed.disallowedTools.length === 2
+    && disallowedParsed.disallowedTools[0] === 'Bash(git push:*)'
+    && parseShimArgs(['--tools', 'Bash,Read']).requestedTools?.join(',') === 'Bash,Read'
+    && parseShimArgs(['auth', 'status', '--json']).isAuthStatus === true;
 
   const planPolicyOk = evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'pull_request_read', permissionMode: 'plan' }).allowed === true
     && evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'pull_request_list', permissionMode: 'plan' }).allowed === true
@@ -604,8 +721,9 @@ async function runOfflineSelfTest({ pure = false } = {}) {
     && evaluateLocalMcpToolCall({ server: 't3-code', toolName: 'pull_request_merge', permissionMode: 'plan' }).allowed === false
     && evaluateLocalMcpToolCall({ server: 'acp', toolName: 'Bash', permissionMode: 'default' }).allowed === false
     && evaluateLocalMcpToolCall({ server: 'acp', toolName: 'Write', permissionMode: 'default' }).allowed === false
-    && evaluateLocalMcpToolCall({ server: 'custom', toolName: 'read_doc', permissionMode: 'plan', toolMeta: { known: true, readOnlyHint: true, destructiveHint: false } }).allowed === true
-    && evaluateLocalMcpToolCall({ server: 'custom', toolName: 'write_doc', permissionMode: 'plan', toolMeta: { known: true, readOnlyHint: false, destructiveHint: true } }).allowed === false;
+    && evaluateLocalMcpToolCall({ server: 'custom', toolName: 'read_doc', permissionMode: 'plan', toolMeta: { known: true, readOnlyHint: true, destructiveHint: false }, trustedServers: new Set(['custom']) }).allowed === true
+    && evaluateLocalMcpToolCall({ server: 'custom', toolName: 'read_doc', permissionMode: 'plan', toolMeta: { known: true, readOnlyHint: true, destructiveHint: false } }).allowed === false
+    && evaluateLocalMcpToolCall({ server: 'custom', toolName: 'write_doc', permissionMode: 'plan', toolMeta: { known: true, readOnlyHint: false, destructiveHint: true }, trustedServers: new Set(['custom']) }).allowed === false;
 
   const spacedPath = 'C:\\Users\\example\\t3 home\\userdata\\attachments\\screen shot (1).png';
   const extraAttachPath = 'D:\\My Attachments\\chart 2.pdf';
@@ -725,7 +843,7 @@ async function loadBridgeModules() {
   };
 }
 
-async function runSshOneShot(config, SshRoutes, classifySshFailure, remoteCmd, timeoutMs = 12_000) {
+async function runSshOneShotResult(config, SshRoutes, classifySshFailure, remoteCmd, timeoutMs = 12_000) {
   const routes = new SshRoutes(config);
   return routes.firstAvailable(async r => {
     const sshArgs = r.args(remoteCmd, { connectTimeout: 10 });
@@ -735,7 +853,7 @@ async function runSshOneShot(config, SshRoutes, classifySshFailure, remoteCmd, t
       let stderr = '';
       const timer = setTimeout(() => {
         child.kill();
-        reject(Object.assign(new Error('SSH version probe timed out'), { code: 'HANDSHAKE_TIMEOUT' }));
+        reject(Object.assign(new Error('SSH one-shot command timed out'), { code: 'HANDSHAKE_TIMEOUT' }));
       }, timeoutMs);
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
@@ -744,11 +862,33 @@ async function runSshOneShot(config, SshRoutes, classifySshFailure, remoteCmd, t
       child.on('error', err => { clearTimeout(timer); reject(err); });
       child.on('close', code => {
         clearTimeout(timer);
-        if (code === 0 && stdout.trim()) resolve(stdout.trim());
-        else reject(Object.assign(new Error(stderr.trim() || `SSH exited with code ${code}`), { sshFailure: classifySshFailure(stderr) }));
+        if (code === 255) {
+          reject(Object.assign(new Error(stderr.trim() || `SSH exited with code ${code}`), { sshFailure: classifySshFailure(stderr) }));
+        } else {
+          resolve({ code: code ?? 0, stdout, stderr });
+        }
       });
     });
   });
+}
+
+async function runSshOneShot(config, SshRoutes, classifySshFailure, remoteCmd, timeoutMs = 12_000) {
+  const res = await runSshOneShotResult(config, SshRoutes, classifySshFailure, remoteCmd, timeoutMs);
+  if (res.code === 0 && res.stdout.trim()) return res.stdout.trim();
+  throw Object.assign(new Error(res.stderr.trim() || `SSH exited with code ${res.code}`), { sshFailure: classifySshFailure(res.stderr) });
+}
+
+async function handleAuthStatusCheck(config, SshRoutes, classifySshFailure, { forwarded = [], extraSettings = null } = {}) {
+  const claudeFlags = [];
+  if (extraSettings) {
+    claudeFlags.push('--settings', JSON.stringify(extraSettings));
+  }
+  const argsList = [...claudeFlags, ...forwarded].map(shellQuote).join(' ');
+  const remoteCmd = `bash -lc ${shellQuote(`"$(cat ${shellQuote(`${config.remoteRoot}/claude-path`)})" ${argsList}`)}`;
+  const res = await runSshOneShotResult(config, SshRoutes, classifySshFailure, remoteCmd, 15_000);
+  if (res.stdout) process.stdout.write(res.stdout);
+  if (res.stderr) process.stderr.write(res.stderr);
+  process.exitCode = res.code;
 }
 
 async function handleVersionCheck(config, SshRoutes, classifySshFailure, { live = false } = {}) {
@@ -837,13 +977,18 @@ function collectAttachmentRoots(env = process.env) {
   });
 }
 
-export function findT3AttachmentPaths(text, env = process.env, existsCheck = existsSync) {
+export function findT3AttachmentPaths(text, env = process.env, existsCheck = existsSync, realpathCheck = null) {
   if (!text || typeof text !== 'string') return [];
   const roots = collectAttachmentRoots(env);
+  const resolveReal = realpathCheck ?? (existsCheck === existsSync ? p => realpathSync.native(p) : null);
   const candidates = new Set();
   for (const root of roots) {
     const cleanRoot = root.replace(/[\\/]+$/, '');
     const normRoot = cleanRoot.toLowerCase();
+    let realRoot = normRoot;
+    if (resolveReal) {
+      try { realRoot = path.win32.resolve(resolveReal(cleanRoot)).replace(/[\\/]+$/, '').toLowerCase(); } catch {}
+    }
     const rootPattern = cleanRoot.split(/[\\/]+/).map(escapeRegexLiteral).join('[\\\\/]+');
     const re = new RegExp(
       `${rootPattern}[\\\\/][^"'` + '`' + `<>|\\r\\n]+?\\.(?:png|jpe?g|webp|gif|pdf)(?=$|[\\s"'` + '`' + `<>|)\\],;])`,
@@ -853,6 +998,16 @@ export function findT3AttachmentPaths(text, env = process.env, existsCheck = exi
     while ((match = re.exec(text)) !== null) {
       const resolved = path.win32.resolve(match[0]);
       if (resolved.toLowerCase().startsWith(normRoot + path.win32.sep) && MEDIA_EXT_RE.test(resolved) && existsCheck(resolved)) {
+        if (resolveReal) {
+          try {
+            const actual = path.win32.resolve(resolveReal(resolved));
+            if (!actual.toLowerCase().startsWith(realRoot + path.win32.sep)) continue;
+            candidates.add(actual);
+            continue;
+          } catch {
+            continue;
+          }
+        }
         candidates.add(resolved);
       }
     }
@@ -1107,6 +1262,136 @@ async function listRelevantLocalJobs(workspace, info, sessionId, trackedJobIds =
   }
 }
 
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .filter(k => value[k] !== undefined)
+        .sort()
+        .map(k => [k, canonicalJsonValue(value[k])]),
+    );
+  }
+  return value;
+}
+
+function mcpCallApprovalKey(server, toolName, args) {
+  return `${server}\0${toolName}\0${createHash('sha256').update(JSON.stringify(canonicalJsonValue(args ?? {}))).digest('hex')}`;
+}
+
+function tokenizePosixShell(text) {
+  if (typeof text !== 'string') return null;
+  const tokens = [];
+  let cur = '';
+  let inToken = false;
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '\\' && i + 1 < text.length) {
+        cur += text[++i];
+      } else if (ch === '"') {
+        quote = null;
+      } else {
+        cur += ch;
+      }
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (inToken) {
+        tokens.push(cur);
+        cur = '';
+        inToken = false;
+      }
+      continue;
+    }
+    inToken = true;
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === '\\' && i + 1 < text.length) {
+      cur += text[++i];
+    } else {
+      cur += ch;
+    }
+  }
+  if (quote) return null;
+  if (inToken) tokens.push(cur);
+  return tokens;
+}
+
+export function parseApprovedWorkspaceCommand(command) {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  const wsPrefixRe = /^\s*(?:\/usr\/local\/bin\/|\/[^\s'"]+\/)?windows-workspace\s+'(\{[\s\S]*\})'\s*$/;
+  const jsonMatch = command.match(wsPrefixRe);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  const normalized = command.replace(/^\s*"\$CODEXHOST_CLI_PATH"/, 'windows-agent');
+  const tokens = tokenizePosixShell(normalized);
+  if (!tokens || tokens.length === 0) return null;
+  const cmdBase = path.posix.basename(tokens[0]);
+  if (cmdBase === 'windows-agent') {
+    return { action: 'agent', argv: tokens.slice(1) };
+  }
+  if (cmdBase !== 'windows-workspace') return null;
+  const argv = tokens.slice(1);
+  if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') return { action: 'info' };
+  if (argv.length === 1 && argv[0].trimStart().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(argv[0]);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  const action = argv[0];
+  const req = { action };
+  const intFlags = new Map([
+    ['--offset', 'offset'],
+    ['--limit', 'limit'],
+    ['--wait-ms', 'waitMs'],
+    ['--segment', 'segment'],
+  ]);
+  const strFlags = new Map([
+    ['--pattern', 'pattern'],
+    ['--id', 'id'],
+    ['--request-id', 'requestId'],
+    ['--operation', 'operation'],
+    ['--stream', 'stream'],
+    ['--segment-id', 'segmentId'],
+    ['--search-id', 'searchId'],
+    ['--encoding', 'encoding'],
+  ]);
+  for (let i = 1; i < argv.length; i++) {
+    const tok = argv[i];
+    if (intFlags.has(tok) && i + 1 < argv.length) {
+      const n = Number(argv[++i]);
+      if (Number.isSafeInteger(n)) req[intFlags.get(tok)] = n;
+    } else if (strFlags.has(tok) && i + 1 < argv.length) {
+      req[strFlags.get(tok)] = argv[++i];
+    } else if (!tok.startsWith('-') && req.path === undefined) {
+      req.path = tok;
+    }
+  }
+  return req;
+}
+
+const DEFAULT_BRIDGE_TOOLS_SET = new Set([
+  'Bash', 'Read', 'AskUserQuestion', 'WebSearch', 'WebFetch',
+  'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet',
+  'ExitPlanMode', 'EnterPlanMode', 'ToolSearch',
+]);
+
 async function main() {
   const parsed = parseShimArgs(process.argv.slice(2));
   if (parsed.isSelfTest) {
@@ -1121,17 +1406,47 @@ async function main() {
     return;
   }
 
+  if (parsed.unsupportedAuthCommand) {
+    throw new Error(`Remote VPS Claude authentication command "auth ${parsed.unsupportedAuthCommand}" is not supported from Windows; manage login on the VPS host.`);
+  }
+
   if (parsed.invalidMcpConfigs.length > 0) {
     throw new Error(parsed.invalidMcpConfigs.join('; '));
   }
 
+  if (parsed.isAuthStatus) {
+    await handleAuthStatusCheck(config, SshRoutes, classifySshFailure, {
+      forwarded: parsed.forwarded,
+      extraSettings: parsed.extraSettings,
+    });
+    return;
+  }
+
+  const probeOnly = parsed.zeroTools;
   const cwd = process.cwd();
   const hasRealDir = path.win32.isAbsolute(cwd) && (await stat(cwd).then(s => s.isDirectory(), () => false));
-  // Only skip workspace binding when cwd isn't a real Windows directory or --tools "" disables all tools.
-  const probeOnly = !hasRealDir || parsed.zeroTools;
+  if (!probeOnly && !hasRealDir) {
+    throw new Error(`Selected Windows workspace directory does not exist or is not accessible: ${cwd}`);
+  }
+
+  if (!probeOnly) {
+    for (const item of parsed.disallowedTools) {
+      if (item === 'Bash' || item === 'Read' || item === 'Bash(*)' || item === 'Read(*)') {
+        throw new Error(`Client disallowed built-in tool "${item}", which conflicts with the Windows workspace bridge transport (use --tools "" for a tool-free probe or disallow specific sub-patterns instead).`);
+      }
+    }
+    if (Array.isArray(parsed.requestedTools) && parsed.requestedTools.length > 0) {
+      const unsupported = parsed.requestedTools.filter(t => !DEFAULT_BRIDGE_TOOLS_SET.has(t));
+      if (unsupported.length > 0) {
+        throw new Error(`Requested --tools entry (${unsupported.join(', ')}) conflicts with the Windows workspace bridge; local project operations use Bash (windows-workspace) and staged media uses Read.`);
+      }
+    }
+  }
 
   const sessionId = randomUUID();
   const t3Policy = parseT3McpPolicy(process.env);
+  const trustedServers = parseTrustedMcpServers(process.env, config);
+  const agentAvailable = Boolean(process.env.CODEXHOST_RUNTIME_ENDPOINT && process.env.CODEXHOST_RUNTIME_TOKEN);
   let info = null;
   let projectContext = '';
   let currentPermissionMode = parsed.initialPermissionMode || 'default';
@@ -1141,10 +1456,34 @@ async function main() {
   let activeStopRequested = false;
   let signalStop = null;
   let pendingMcpUpdate = null;
+  let pendingInitMcp = null;
   const pendingModes = new Map();
   const pendingSdkToolsList = new Map();
+  const pendingCanUseTools = new Map();
+  const mcpApprovals = new Map();
+  const preflightedMcp = new Map();
   const trackedJobIds = new Set();
   const localMcpHub = new LocalMcpHub();
+
+  function recordMcpApproval(server, toolName, args) {
+    const key = mcpCallApprovalKey(server, toolName, args);
+    while (mcpApprovals.size >= 128) mcpApprovals.delete(mcpApprovals.keys().next().value);
+    const existing = mcpApprovals.get(key);
+    const count = existing && Date.now() - existing.at <= 10 * 60 * 1000 ? existing.count + 1 : 1;
+    mcpApprovals.set(key, { count, at: Date.now() });
+  }
+
+  function consumeMcpApproval(server, toolName, args) {
+    const key = mcpCallApprovalKey(server, toolName, args);
+    const entry = mcpApprovals.get(key);
+    if (!entry || Date.now() - entry.at > 10 * 60 * 1000 || entry.count <= 0) {
+      mcpApprovals.delete(key);
+      return false;
+    }
+    if (entry.count === 1) mcpApprovals.delete(key);
+    else entry.count -= 1;
+    return true;
+  }
 
   if (Object.keys(parsed.mcpServers).length > 0) {
     localMcpHub.registerServers(parsed.mcpServers, config.remoteRoot, cwd);
@@ -1152,7 +1491,12 @@ async function main() {
 
   if (!probeOnly) {
     info = await workspace.projectInfo(cwd);
-    await workspace.bindSession(sessionId, info, process.env.T3CODE_THREAD_ID ?? process.env.CODEX_THREAD_ID);
+    await workspace.bindSession(
+      sessionId,
+      info,
+      process.env.T3CODE_THREAD_ID ?? process.env.CODEX_THREAD_ID,
+      { enforceAskApprovals: true, agentAvailable },
+    );
     await workspace.control({
       action: 'permission',
       cwd: info.cwd,
@@ -1204,6 +1548,8 @@ async function main() {
     addedDirs: parsed.addedDirs,
     probeOnly,
     zeroTools: parsed.zeroTools,
+    requestedTools: parsed.requestedTools,
+    agentAvailable,
   };
 
   let activeSsh = null;
@@ -1263,6 +1609,89 @@ async function main() {
   };
   const projectPermissions = async () => info ? (await envMod.projectEnvironment(info.cwd)).permissions : null;
 
+  async function runMcpPreToolUseHooks(fullToolName, args, mode) {
+    if (!info) return { decision: 'inherit', additionalContext: '' };
+    const hooks = await workspace.control({
+      action: 'lifecycle',
+      cwd: info.cwd,
+      projectId: info.projectId,
+      sessionId,
+      event: 'PreToolUse',
+      payload: {
+        permission_mode: mode,
+        tool_name: fullToolName,
+        tool_input: args ?? {},
+      },
+    });
+    let hookDecision = 'inherit';
+    let hookReason = '';
+    const ctxParts = [];
+    for (const h of Array.isArray(hooks) ? hooks : []) {
+      const d = h?.hookSpecificOutput?.permissionDecision;
+      if (d === 'deny') {
+        return {
+          decision: 'deny',
+          reason: h.hookSpecificOutput.permissionDecisionReason ?? 'Local hook denied the MCP operation',
+          additionalContext: '',
+        };
+      }
+      if (d === 'ask') {
+        hookDecision = 'ask';
+        hookReason = h.hookSpecificOutput.permissionDecisionReason ?? hookReason;
+      }
+      const extra = h?.hookSpecificOutput?.additionalContext ?? h?.additionalContext;
+      if (typeof extra === 'string' && extra.trim()) ctxParts.push(extra.trim());
+    }
+    return { decision: hookDecision, reason: hookReason, additionalContext: ctxParts.join('\n') };
+  }
+
+  async function evaluateMcpExecutionGate({ server, toolName, arguments: toolArgs = {} }) {
+    const mode = effectiveMode();
+    const permissions = await projectPermissions();
+    const toolMeta = localMcpHub.hasSdk(server)
+      ? localMcpHub.getToolMetaAcrossConnections(server, toolName)
+      : localMcpHub.getToolMeta(server, 'sdk', toolName);
+    const decision = evaluateLocalMcpToolCall({
+      server,
+      toolName,
+      arguments: toolArgs,
+      permissionMode: mode,
+      t3Policy,
+      projectPermissions: permissions,
+      toolMeta: toolMeta?.known ? toolMeta : localMcpHub.getToolMetaAcrossConnections(server, toolName),
+      trustedServers,
+    });
+    if (!decision.allowed) {
+      return { allowed: false, reason: decision.reason };
+    }
+    const key = mcpCallApprovalKey(server, toolName, toolArgs);
+    const pre = preflightedMcp.get(key);
+    preflightedMcp.delete(key);
+    let requiresAsk = Boolean(decision.approval);
+    let askReason = decision.approval ?? '';
+    if (pre && Date.now() - pre.at <= 10 * 60 * 1000) {
+      if (pre.hookDecision === 'deny') return { allowed: false, reason: pre.hookReason || 'Local hook denied the MCP operation' };
+      if (pre.hookDecision === 'ask') {
+        requiresAsk = true;
+        askReason = pre.hookReason || askReason;
+      }
+    } else {
+      const hookResult = await runMcpPreToolUseHooks(`mcp__${server}__${toolName}`, toolArgs, mode);
+      if (hookResult.decision === 'deny') return { allowed: false, reason: hookResult.reason };
+      if (hookResult.decision === 'ask') {
+        requiresAsk = true;
+        askReason = hookResult.reason || askReason;
+      }
+    }
+    if (requiresAsk && !consumeMcpApproval(server, toolName, toolArgs)) {
+      return {
+        allowed: false,
+        reason: askReason || `Explicit user approval is required for local MCP tool "mcp__${server}__${toolName}".`,
+      };
+    }
+    return { allowed: true };
+  }
+
   async function handleLocalReq(frame) {
     const { controlId, lane, request } = frame;
     try {
@@ -1281,6 +1710,26 @@ async function main() {
             permissionMode: effectiveMode(),
             t3Policy,
             projectPermissions: permissions,
+            trustedServers,
+            checkApproval: async ({ server, toolName, arguments: toolArgs, requiresAsk, approvalReason }) => {
+              const key = mcpCallApprovalKey(server, toolName, toolArgs);
+              const pre = preflightedMcp.get(key);
+              preflightedMcp.delete(key);
+              let needAsk = requiresAsk;
+              let reason = approvalReason ?? '';
+              if (pre && Date.now() - pre.at <= 10 * 60 * 1000) {
+                if (pre.hookDecision === 'deny') return { allowed: false, reason: pre.hookReason };
+                if (pre.hookDecision === 'ask') { needAsk = true; reason = pre.hookReason || reason; }
+              } else {
+                const hookResult = await runMcpPreToolUseHooks(`mcp__${server}__${toolName}`, toolArgs, effectiveMode());
+                if (hookResult.decision === 'deny') return { allowed: false, reason: hookResult.reason };
+                if (hookResult.decision === 'ask') { needAsk = true; reason = hookResult.reason || reason; }
+              }
+              if (needAsk && !consumeMcpApproval(server, toolName, toolArgs)) {
+                return { allowed: false, reason: reason || `Approval required for local MCP tool "mcp__${server}__${toolName}".` };
+              }
+              return { allowed: true };
+            },
           });
           sendToRelay({ type: 'local_reply', controlId, value });
           return;
@@ -1303,17 +1752,38 @@ async function main() {
         const tool = resolveLocalMcpTool(localMcpHub.allNames(), request.request.tool);
         if (tool) {
           if (PERMISSION_MODES.has(request.permissionMode)) observedClaudeMode = request.permissionMode;
+          const mode = effectiveMode();
           const permissions = await projectPermissions();
+          const toolArgs = request.request.arguments ?? {};
           const decision = evaluateLocalMcpToolCall({
             ...tool,
-            permissionMode: effectiveMode(),
+            arguments: toolArgs,
+            permissionMode: mode,
             t3Policy,
             projectPermissions: permissions,
             toolMeta: localMcpHub.getToolMetaAcrossConnections(tool.server, tool.toolName),
+            trustedServers,
           });
-          const value = decision.allowed
-            ? (decision.approval ? { decision: 'ask', reason: decision.approval } : { decision: 'inherit' })
-            : { decision: 'deny', reason: decision.reason };
+          if (!decision.allowed) {
+            sendToRelay({ type: 'local_reply', controlId, value: { decision: 'deny', reason: decision.reason } });
+            return;
+          }
+          const hookResult = await runMcpPreToolUseHooks(request.request.tool, toolArgs, mode);
+          if (hookResult.decision === 'deny') {
+            sendToRelay({ type: 'local_reply', controlId, value: { decision: 'deny', reason: hookResult.reason } });
+            return;
+          }
+          const key = mcpCallApprovalKey(tool.server, tool.toolName, toolArgs);
+          while (preflightedMcp.size >= 128) preflightedMcp.delete(preflightedMcp.keys().next().value);
+          preflightedMcp.set(key, { hookDecision: hookResult.decision, hookReason: hookResult.reason, at: Date.now() });
+
+          let value;
+          if (decision.approval || hookResult.decision === 'ask') {
+            value = { decision: 'ask', reason: decision.approval || hookResult.reason };
+          } else {
+            value = { decision: 'inherit' };
+          }
+          if (hookResult.additionalContext) value.additionalContext = hookResult.additionalContext;
           sendToRelay({ type: 'local_reply', controlId, value });
           return;
         }
@@ -1369,13 +1839,70 @@ async function main() {
       if (parsedOut?.type === 'system' && parsedOut.subtype === 'init' && typeof parsedOut.permissionMode === 'string') {
         observedClaudeMode = parsedOut.permissionMode;
       }
+      if (parsedOut?.type === 'control_request' && parsedOut.request?.subtype === 'can_use_tool'
+          && typeof parsedOut.request_id === 'string') {
+        while (pendingCanUseTools.size >= 128) pendingCanUseTools.delete(pendingCanUseTools.keys().next().value);
+        pendingCanUseTools.set(parsedOut.request_id, {
+          tool_name: parsedOut.request.tool_name,
+          input: parsedOut.request.input,
+          tool_use_id: parsedOut.request.tool_use_id,
+        });
+      }
       if (parsedOut?.type === 'control_request' && parsedOut.request?.subtype === 'mcp_message'
           && typeof parsedOut.request_id === 'string'
-          && typeof parsedOut.request.server_name === 'string'
-          && parsedOut.request.message?.method === 'tools/list'
-          && localMcpHub.hasSdk(parsedOut.request.server_name)) {
-        while (pendingSdkToolsList.size >= 64) pendingSdkToolsList.delete(pendingSdkToolsList.keys().next().value);
-        pendingSdkToolsList.set(parsedOut.request_id, parsedOut.request.server_name);
+          && typeof parsedOut.request.server_name === 'string') {
+        const srv = parsedOut.request.server_name;
+        const mcpMsg = parsedOut.request.message;
+        if (mcpMsg?.method === 'tools/list' && localMcpHub.hasSdk(srv)) {
+          while (pendingSdkToolsList.size >= 64) pendingSdkToolsList.delete(pendingSdkToolsList.keys().next().value);
+          pendingSdkToolsList.set(parsedOut.request_id, srv);
+        } else if (mcpMsg?.method === 'tools/call') {
+          if (!localMcpHub.hasSdk(srv) && srv.toLowerCase() !== 'acp') {
+            sendToRelay({
+              type: 'claude_in',
+              line: JSON.stringify({
+                type: 'control_response',
+                response: {
+                  subtype: 'success',
+                  request_id: parsedOut.request_id,
+                  response: {
+                    mcp_response: {
+                      jsonrpc: '2.0',
+                      id: mcpMsg.id ?? null,
+                      error: { code: -32602, message: `Local SDK MCP server "${srv}" is not registered for this session.` },
+                    },
+                  },
+                },
+              }),
+            });
+            return;
+          }
+          const gate = await evaluateMcpExecutionGate({
+            server: srv,
+            toolName: mcpMsg.params?.name,
+            arguments: mcpMsg.params?.arguments ?? {},
+          });
+          if (!gate.allowed) {
+            sendToRelay({
+              type: 'claude_in',
+              line: JSON.stringify({
+                type: 'control_response',
+                response: {
+                  subtype: 'success',
+                  request_id: parsedOut.request_id,
+                  response: {
+                    mcp_response: {
+                      jsonrpc: '2.0',
+                      id: mcpMsg.id ?? null,
+                      error: { code: -32602, message: gate.reason },
+                    },
+                  },
+                },
+              }),
+            });
+            return;
+          }
+        }
       }
       if (parsedOut?.type === 'control_response') {
         const response = parsedOut.response;
@@ -1394,6 +1921,10 @@ async function main() {
         if (pendingMcpUpdate && response?.request_id === pendingMcpUpdate.id) {
           pendingMcpUpdate.finish(response?.subtype === 'success');
           pendingMcpUpdate = null;
+        }
+        if (pendingInitMcp && response?.request_id === pendingInitMcp.id) {
+          pendingInitMcp.finish(response?.subtype === 'success');
+          pendingInitMcp = null;
         }
       }
       const echoedPrompts = parsedOut?.user_message_uuids ?? [parsedOut?.user_message_uuid].filter(Boolean);
@@ -1530,15 +2061,112 @@ async function main() {
         return;
       }
 
-      if (msg?.type === 'control_request' && msg.request?.subtype === 'initialize' && hasLocalConfig(msg.request)) {
-        respondControlError(msg.request_id, 'initialize contains local-only MCP or environment configuration');
+      if (msg?.type === 'control_request' && msg.request?.subtype === 'initialize') {
+        try {
+          if (typeof msg.request_id !== 'string' || !msg.request_id) {
+            respondControlError(msg.request_id, 'Missing initialize request ID');
+            return;
+          }
+          let nextReq = { ...msg.request };
+          if (nextReq.settings !== undefined) {
+            const parsedSettings = typeof nextReq.settings === 'string' ? parseJsonOrFile(nextReq.settings) : nextReq.settings;
+            if (!parsedSettings || typeof parsedSettings !== 'object' || hasLocalConfig(parsedSettings)) {
+              respondControlError(msg.request_id, 'initialize settings contains unreadable or local-only MCP or environment configuration');
+              return;
+            }
+            nextReq.settings = parsedSettings;
+          }
+          if (nextReq.mcpServers !== undefined) {
+            if (probeOnly && Object.keys(nextReq.mcpServers ?? {}).length > 0) {
+              respondControlError(msg.request_id, 'Local MCP requires a bound Windows project');
+              return;
+            }
+            if (pendingInitMcp) {
+              respondControlError(msg.request_id, 'An initialize MCP setup is already in progress');
+              return;
+            }
+            const mergedInput = { ...parsed.mcpServers, ...nextReq.mcpServers };
+            const staged = localMcpHub.stageServers(mergedInput, config.remoteRoot, info?.cwd ?? cwd);
+            pendingInitMcp = { ...staged, id: msg.request_id };
+            nextReq.mcpServers = staged.servers;
+          }
+          if (hasLocalConfig(nextReq)) {
+            pendingInitMcp?.finish(false);
+            pendingInitMcp = null;
+            respondControlError(msg.request_id, 'initialize contains local-only MCP or environment configuration');
+            return;
+          }
+          sendToRelay({ type: 'claude_in', line: JSON.stringify({ ...msg, request: nextReq }) });
+        } catch (err) {
+          pendingInitMcp?.finish(false);
+          pendingInitMcp = null;
+          respondControlError(msg.request_id, err?.message ?? 'Invalid initialize configuration');
+        }
         return;
       }
-      if (msg?.type === 'control_response' && typeof msg.response?.request_id === 'string' && pendingSdkToolsList.has(msg.response.request_id)) {
-        const sdkServer = pendingSdkToolsList.get(msg.response.request_id);
-        pendingSdkToolsList.delete(msg.response.request_id);
-        const tools = msg.response?.response?.mcp_response?.result?.tools ?? msg.response?.response?.result?.tools;
-        if (Array.isArray(tools)) localMcpHub.recordSdkTools(sdkServer, tools);
+      if (msg?.type === 'control_response' && typeof msg.response?.request_id === 'string') {
+        const reqId = msg.response.request_id;
+        if (pendingCanUseTools.has(reqId)) {
+          const pendingTool = pendingCanUseTools.get(reqId);
+          pendingCanUseTools.delete(reqId);
+          const inner = msg.response?.response;
+          if (msg.response.subtype === 'success' && inner?.behavior === 'allow' && info) {
+            const approvedInput = inner.updatedInput && typeof inner.updatedInput === 'object' ? inner.updatedInput : pendingTool.input;
+            if (pendingTool.tool_name === 'Bash' && typeof approvedInput?.command === 'string') {
+              const op = parseApprovedWorkspaceCommand(approvedInput.command);
+              if (op) workspace.recordApproval?.(sessionId, op);
+            } else if (typeof pendingTool.tool_name === 'string' && pendingTool.tool_name.startsWith('mcp__')) {
+              const resolved = resolveLocalMcpTool([...localMcpHub.allNames(), 'playwright', 'tavily'], pendingTool.tool_name);
+              if (resolved) {
+                if (resolved.server === 'playwright' && !localMcpHub.has('playwright')) {
+                  workspace.recordApproval?.(sessionId, {
+                    action: 'mcp-call',
+                    tool: pendingTool.tool_name,
+                    arguments: approvedInput ?? {},
+                  });
+                } else {
+                  recordMcpApproval(resolved.server, resolved.toolName, approvedInput ?? {});
+                }
+              }
+            }
+          }
+        }
+        if (pendingSdkToolsList.has(reqId)) {
+          const sdkServer = pendingSdkToolsList.get(reqId);
+          pendingSdkToolsList.delete(reqId);
+          const mcpResp = msg.response?.response?.mcp_response;
+          const tools = mcpResp?.result?.tools ?? msg.response?.response?.result?.tools;
+          if (Array.isArray(tools)) {
+            localMcpHub.recordSdkTools(sdkServer, tools);
+            const permissions = await projectPermissions();
+            const filtered = tools.filter(tool => tool && typeof tool.name === 'string' && evaluateLocalMcpToolCall({
+              server: sdkServer,
+              toolName: tool.name,
+              permissionMode: 'default',
+              t3Policy,
+              projectPermissions: permissions,
+              toolMeta: localMcpHub.getToolMeta(sdkServer, 'sdk', tool.name),
+              trustedServers,
+            }).allowed);
+            if (mcpResp?.result?.tools) {
+              const nextMsg = {
+                ...msg,
+                response: {
+                  ...msg.response,
+                  response: {
+                    ...msg.response.response,
+                    mcp_response: {
+                      ...mcpResp,
+                      result: { ...mcpResp.result, tools: filtered },
+                    },
+                  },
+                },
+              };
+              sendToRelay({ type: 'claude_in', line: JSON.stringify(nextMsg) });
+              return;
+            }
+          }
+        }
       }
       const forwardedMsg = mediaRemapper.rewriteIncomingFrame(msg);
       sendToRelay({ type: 'claude_in', line: forwardedMsg === msg ? line : JSON.stringify(forwardedMsg) });
@@ -1578,6 +2206,9 @@ async function main() {
     activeTurn = null;
     pendingMcpUpdate?.finish(false);
     pendingMcpUpdate = null;
+    pendingInitMcp?.finish(false);
+    pendingInitMcp = null;
+    try { workspace.clearSessionPolicyState?.(sessionId); } catch {}
     try { mcpRuntime?.closeMcpSession?.(sessionId); } catch {}
     await localMcpHub.closeAll().catch(() => {});
     await withBoundedTimeout(new Promise(resolve => process.stdout.write('', resolve)), 1000, () => {});

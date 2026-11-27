@@ -730,7 +730,8 @@ export class LocalMcpHub {
       catalog.set(tool.name, {
         known: true,
         readOnlyHint: tool.annotations?.readOnlyHint === true,
-        destructiveHint: tool.annotations?.destructiveHint !== undefined && tool.annotations.destructiveHint !== false,
+        // Per MCP ToolAnnotations spec, destructiveHint defaults to true when omitted.
+        destructiveHint: tool.annotations?.destructiveHint !== false,
       });
     }
     connMap.set('sdk', catalog);
@@ -846,10 +847,12 @@ export class LocalMcpHub {
       const decision = evaluateLocalMcpToolCall({
         server: name,
         toolName,
+        arguments: frame.params?.arguments ?? null,
         permissionMode: policyContext.permissionMode ?? 'default',
         t3Policy: policyContext.t3Policy ?? null,
         projectPermissions: policyContext.projectPermissions ?? null,
         toolMeta: this.getToolMeta(name, connectionId, toolName),
+        trustedServers: policyContext.trustedServers ?? null,
       });
       if (!decision.allowed) {
         return {
@@ -860,6 +863,25 @@ export class LocalMcpHub {
             message: decision.reason,
           },
         };
+      }
+      if (policyContext.checkApproval) {
+        const approved = await policyContext.checkApproval({
+          server: name,
+          toolName,
+          arguments: frame.params?.arguments ?? {},
+          requiresAsk: Boolean(decision.approval),
+          approvalReason: decision.approval ?? null,
+        });
+        if (!approved?.allowed) {
+          return {
+            jsonrpc: '2.0',
+            id: frame.id,
+            error: {
+              code: -32602,
+              message: approved?.reason ?? decision.approval ?? `Approval required for local MCP tool "mcp__${name}__${toolName}".`,
+            },
+          };
+        }
       }
     }
 
@@ -875,7 +897,7 @@ export class LocalMcpHub {
         catalog.set(tool.name, {
           known: true,
           readOnlyHint: tool.annotations?.readOnlyHint === true,
-          destructiveHint: tool.annotations?.destructiveHint !== undefined && tool.annotations.destructiveHint !== false,
+          destructiveHint: tool.annotations?.destructiveHint !== false,
         });
         const projectCheck = evaluateLocalMcpToolCall({
           server: name,
@@ -884,6 +906,7 @@ export class LocalMcpHub {
           t3Policy: policyContext.t3Policy ?? null,
           projectPermissions: policyContext.projectPermissions ?? null,
           toolMeta: catalog.get(tool.name),
+          trustedServers: policyContext.trustedServers ?? null,
         });
         if (!projectCheck.allowed) continue;
         filteredTools.push(tool);

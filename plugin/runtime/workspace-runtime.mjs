@@ -37,6 +37,81 @@ async function json(file) { return JSON.parse(await fs.readFile(file, 'utf8')); 
 // an older status land after a newer one.
 const writeChains = new Map();
 const cancelledTurns = new Map();
+const preflightRecords = new Map();
+const approvalRecords = new Map();
+const APPROVAL_TTL_MS = 10 * 60 * 1000;
+const SCOPE_KEYS = new Set(['cwd', 'projectId', 'sessionId', 'parentThread', 'bridgeRequestId', 'turnId']);
+
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .filter(k => value[k] !== undefined)
+        .sort()
+        .map(k => [k, canonicalValue(value[k])]),
+    );
+  }
+  return value;
+}
+
+export function operationApprovalKey(request) {
+  if (!request || typeof request !== 'object') return '';
+  const stripped = {};
+  for (const [key, value] of Object.entries(request)) {
+    if (SCOPE_KEYS.has(key) || value === undefined) continue;
+    stripped[key] = value;
+  }
+  return hash(JSON.stringify(canonicalValue(stripped)));
+}
+
+function recordPreflight(sessionId, key, record) {
+  if (!sessionId || !key) return;
+  let map = preflightRecords.get(sessionId);
+  if (!map) { map = new Map(); preflightRecords.set(sessionId, map); }
+  while (map.size >= 128) map.delete(map.keys().next().value);
+  map.set(key, { ...record, at: Date.now() });
+}
+
+function takePreflight(sessionId, key) {
+  const map = sessionId ? preflightRecords.get(sessionId) : null;
+  if (!map || !map.has(key)) return null;
+  const entry = map.get(key);
+  map.delete(key);
+  if (Date.now() - entry.at > APPROVAL_TTL_MS) return null;
+  return entry;
+}
+
+export function recordApproval(sessionId, requestOrKey) {
+  if (!sessionId) return;
+  const key = typeof requestOrKey === 'string' ? requestOrKey : operationApprovalKey(requestOrKey);
+  if (!key) return;
+  let list = approvalRecords.get(sessionId);
+  if (!list) { list = new Map(); approvalRecords.set(sessionId, list); }
+  while (list.size >= 128) list.delete(list.keys().next().value);
+  const existing = list.get(key);
+  const count = existing && Date.now() - existing.at <= APPROVAL_TTL_MS ? existing.count + 1 : 1;
+  list.set(key, { count, at: Date.now() });
+}
+
+function consumeApproval(sessionId, key) {
+  const list = sessionId ? approvalRecords.get(sessionId) : null;
+  if (!list || !list.has(key)) return false;
+  const entry = list.get(key);
+  if (Date.now() - entry.at > APPROVAL_TTL_MS || entry.count <= 0) {
+    list.delete(key);
+    return false;
+  }
+  if (entry.count === 1) list.delete(key);
+  else entry.count -= 1;
+  return true;
+}
+
+export function clearSessionPolicyState(sessionId) {
+  if (!sessionId) return;
+  preflightRecords.delete(sessionId);
+  approvalRecords.delete(sessionId);
+}
 async function atomic(file, value) {
   const write = async () => {
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -78,8 +153,9 @@ async function projectPath(info, value = '.') {
   }
   return target;
 }
-export async function bindSession(sessionId, info, parentThread) {
-  await atomic(path.join(state, 'sessions', safeId(sessionId) + '.json'), { ...info, sessionId, parentThread,attachments:[] });
+export async function bindSession(sessionId, info, parentThread, { enforceAskApprovals = false } = {}) {
+  clearSessionPolicyState(sessionId);
+  await atomic(path.join(state, 'sessions', safeId(sessionId) + '.json'), { ...info, sessionId, parentThread, attachments: [], ...(enforceAskApprovals ? { enforceAskApprovals: true } : {}) });
 }
 export async function setTurn(sessionId, turnId) {
   const file = path.join(state, 'sessions', safeId(sessionId) + '.json');
@@ -318,16 +394,77 @@ export async function cancelSessionJobs(sessionId,turnId){
   if(unconfirmed.length)fail('CANCEL_UNCONFIRMED','Some Windows jobs have not confirmed cancellation: '+unconfirmed.join(', '));
   return states;
 }
-export async function handle(request,{signal}={}){
+async function evaluateExecutionGate({ info, ctx, environment, request, mode, skipHooks = false }) {
+  const op = operation(request, info.cwd);
+  const decision = permissionDecision(environment, request, mode);
+  if (decision.decision === 'deny') fail('PERMISSION_DENIED', decision.reason);
+  const key = operationApprovalKey(request);
+  const preflighted = !skipHooks && ctx.sessionId ? takePreflight(ctx.sessionId, key) : null;
+  if (!skipHooks && !preflighted) {
+    const hooks = await runHooks(environment, 'PreToolUse', {
+      session_id: ctx.sessionId,
+      permission_mode: mode,
+      tool_name: op.tool,
+      tool_input: op.input,
+    });
+    for (const h of hooks) {
+      const d = h.hookSpecificOutput?.permissionDecision;
+      if (d === 'deny') fail('PERMISSION_DENIED', h.hookSpecificOutput.permissionDecisionReason ?? 'Local hook denied the operation');
+      if (d === 'ask') {
+        decision.decision = 'ask';
+        decision.reason = h.hookSpecificOutput.permissionDecisionReason ?? decision.reason;
+      }
+    }
+    const rules = typeof request.path === 'string' && inside(info.cwd, path.resolve(info.cwd, request.path))
+      ? await applicableRules(environment, request.path)
+      : [];
+    const unseen = rules.filter(r => !(ctx.presentedRules ?? []).includes(r.path + ':' + r.sha256));
+    if (unseen.length && op.mutating) {
+      const latest = await contextFor({ sessionId: ctx.sessionId }, info);
+      latest.presentedRules = [...new Set([...(latest.presentedRules ?? []), ...unseen.map(r => r.path + ':' + r.sha256)])];
+      await atomic(path.join(state, 'sessions', safeId(ctx.sessionId) + '.json'), latest);
+      fail('PERMISSION_DENIED', 'New or changed applicable rules must be considered before changing this file. No operation ran. Read these rules, revise the operation if needed, then submit it again:\n' + unseen.map(r => r.path + '\n' + r.content).join('\n'));
+    }
+  } else if (preflighted) {
+    if (preflighted.decision === 'deny') fail('PERMISSION_DENIED', preflighted.reason ?? 'Denied by local preflight policy');
+    if (preflighted.decision === 'ask') {
+      decision.decision = 'ask';
+      decision.reason = preflighted.reason ?? decision.reason;
+    }
+  }
+  if (!skipHooks && decision.decision === 'ask' && ctx.enforceAskApprovals) {
+    if (!consumeApproval(ctx.sessionId, key)) {
+      fail('PERMISSION_DENIED', decision.reason || 'Explicit user approval is required for this operation.');
+    }
+  }
+  return decision;
+}
+
+export async function handle(request,{signal,batchApproved=false}={}){
   validateRequest(request);
   if(request.action==='batch'){
     const requests=readBatch(request);
-    return {bridge:'windows-workspace-v1',ok:true,data:await Promise.all(requests.map(r=>handle({...r,cwd:request.cwd,projectId:request.projectId,sessionId:request.sessionId},{signal})))};
+    const info=await verifyProject(request.cwd||process.cwd(),request.projectId),ctx=await contextFor(request,info);
+    const environment=await projectEnvironment(info.cwd),mode=ctx.permissionMode??environment.defaultMode??'default';
+    const key=operationApprovalKey(request);
+    const preflighted=ctx.sessionId?takePreflight(ctx.sessionId,key):null;
+    const itemDecisions=[];
+    for(const item of requests){
+      const d=permissionDecision(environment,item,mode);
+      if(d.decision==='deny')fail('PERMISSION_DENIED',d.reason);
+      itemDecisions.push(d);
+    }
+    if(preflighted?.decision==='deny')fail('PERMISSION_DENIED',preflighted.reason??'Denied by local preflight policy');
+    const needsAsk=preflighted?.decision==='ask'||itemDecisions.some(d=>d.decision==='ask');
+    if(needsAsk&&ctx.enforceAskApprovals&&!consumeApproval(ctx.sessionId,key)){
+      fail('PERMISSION_DENIED',preflighted?.reason||itemDecisions.find(d=>d.decision==='ask')?.reason||'Explicit user approval is required for this batch operation.');
+    }
+    return {bridge:'windows-workspace-v1',ok:true,data:await Promise.all(requests.map(r=>handle({...r,cwd:request.cwd,projectId:request.projectId,sessionId:request.sessionId},{signal,batchApproved:true})))};
   }
   const info=await verifyProject(request.cwd||process.cwd(),request.projectId),ctx=await contextFor(request,info);
   const environment=await projectEnvironment(info.cwd);
-  const decision=permissionDecision(environment,request,ctx.permissionMode??environment.defaultMode??'default');
-  if(decision.decision==='deny')fail('PERMISSION_DENIED',decision.reason);
+  const mode=ctx.permissionMode??environment.defaultMode??'default';
+  const decision=await evaluateExecutionGate({info,ctx,environment,request,mode,skipHooks:batchApproved});
   let data;
   try{
   switch(request.action){
@@ -361,6 +498,7 @@ export async function handle(request,{signal}={}){
       data=await withWriters(state,ids,{kind:'isolation',requestId:request.requestId},()=>workspaceIsolation(state,info,request));break;
     }
     case 'agent': {
+      if(ctx.agentAvailable===false)fail('AGENT_BRIDGE_UNAVAILABLE','windows-agent requires an active CodexHost Desktop session; in standalone T3 Code / ACP mode use native subagent or t3-code MCP tools instead.');
       if(request.nativeAction&&!['resolve','native-read'].includes(request.nativeAction))fail('INVALID_ARGUMENT','nativeAction accepts only explicit read-only history operations');
       let argv=[...(request.argv??[])];
       let agentInfo=info,agentEnvironment=environment;
@@ -413,7 +551,7 @@ export async function control(request){
     const ctx=await contextFor(request,info);if(!ctx.sessionId)fail('SESSION_MISSING','MCP requires a bound session');
     const call=request.frame?.method==='tools/call',environment=call?await projectEnvironment(info.cwd):null;
     const op=call?{action:'mcp-call',tool:'mcp__playwright__'+request.frame.params?.name,arguments:request.frame.params?.arguments}:null;
-    if(call&&permissionDecision(environment,op,ctx.permissionMode??'default').decision==='deny')fail('PERMISSION_DENIED','Current project policy denies this MCP call');
+    if(call)await evaluateExecutionGate({info,ctx,environment,request:op,mode:ctx.permissionMode??environment.defaultMode??'default'});
     const result=await mcpRequest(request,info);
     if(call)await runHooks(environment,result.error||result.result?.isError?'PostToolUseFailure':'PostToolUse',{session_id:ctx.sessionId,tool_name:op.tool,tool_input:op.arguments,tool_response:result.result??result.error});
     if(call&&op.tool==='mcp__playwright__browser_take_screenshot'&&op.arguments?.filename&&!result.error&&!result.result?.isError){
@@ -446,23 +584,27 @@ export async function control(request){
   if(request.action==='permission'){await contextFor(request,info);await setMode(request.sessionId,request.mode);return {mode:request.mode};}
   if(request.action==='capability-context'){const ctx=await contextFor(request,info);ctx.invokedCapabilities=[...new Set([...(ctx.invokedCapabilities??[]),request.id])];await atomic(path.join(state,'sessions',safeId(request.sessionId)+'.json'),ctx);return capability(await projectEnvironment(info.cwd),request.id);}
   if(request.action==='attachments'){const ctx=await contextFor(request,info);ctx.attachments=[...new Set([...(ctx.attachments??[]),...await Promise.all((request.paths??[]).map(p=>fs.realpath(p)))])];await atomic(path.join(state,'sessions',safeId(request.sessionId)+'.json'),ctx);return {count:ctx.attachments.length};}
-  if(request.action==='media-export'){const ctx=await contextFor(request,info),environment=await projectEnvironment(info.cwd),decision=permissionDecision(environment,{action:'media',path:request.path},ctx.permissionMode);if(decision.decision==='deny')fail('PERMISSION_DENIED',decision.reason);return exportMedia(info,ctx,request);}
+  if(request.action==='media-export'){const ctx=await contextFor(request,info),environment=await projectEnvironment(info.cwd);await evaluateExecutionGate({info,ctx,environment,request:{action:'media',path:request.path},mode:ctx.permissionMode??environment.defaultMode??'default',skipHooks:true});return exportMedia(info,ctx,request);}
   if(request.action==='preflight'){
     if(request.request?.action==='batch'){
+      const ctx=await contextFor(request,info);
       const decisions=[];for(const item of readBatch(request.request))decisions.push(await control({...request,request:item}));
       const priority=['deny','ask','inherit','allow'];const decision=priority.find(d=>decisions.some(v=>v.decision===d))??'deny';
-      return {decision,reason:decisions.filter(d=>d.decision===decision).map(d=>d.reason).join('\n'),additionalContext:[...new Set(decisions.map(d=>d.additionalContext??'').filter(Boolean))].join('\n')};
+      const reason=decisions.filter(d=>d.decision===decision).map(d=>d.reason).join('\n');
+      recordPreflight(ctx.sessionId,operationApprovalKey(request.request),{decision,reason});
+      return {decision,reason,additionalContext:[...new Set(decisions.map(d=>d.additionalContext??'').filter(Boolean))].join('\n')};
     }
     const ctx=await contextFor(request,info),environment=await projectEnvironment(info.cwd),operationRequest=request.request;
     if(!operationRequest||typeof operationRequest.action!=='string')fail('INVALID_OPERATION','Missing structured Windows operation');
     const mode=request.permissionMode??ctx.permissionMode??environment.defaultMode??'default';
     await setMode(request.sessionId,mode);
-    const decision=permissionDecision(environment,operationRequest,mode);if(decision.decision==='deny')return decision;
+    const decision=permissionDecision(environment,operationRequest,mode);if(decision.decision==='deny'){recordPreflight(ctx.sessionId,operationApprovalKey(operationRequest),{decision:'deny',reason:decision.reason});return decision;}
     const op=operation(operationRequest,info.cwd),hooks=await runHooks(environment,'PreToolUse',{session_id:ctx.sessionId,permission_mode:mode,tool_name:op.tool,tool_input:op.input});
-    for(const h of hooks){const d=h.hookSpecificOutput?.permissionDecision;if(d==='deny')return {decision:'deny',reason:h.hookSpecificOutput.permissionDecisionReason??'Local hook denied the operation'};if(d==='ask')decision.decision='ask';}
+    for(const h of hooks){const d=h.hookSpecificOutput?.permissionDecision;if(d==='deny'){const r=h.hookSpecificOutput.permissionDecisionReason??'Local hook denied the operation';recordPreflight(ctx.sessionId,operationApprovalKey(operationRequest),{decision:'deny',reason:r});return {decision:'deny',reason:r};}if(d==='ask'){decision.decision='ask';decision.reason=h.hookSpecificOutput.permissionDecisionReason??decision.reason;}}
     const rules=typeof operationRequest.path==='string'&&inside(info.cwd,path.resolve(info.cwd,operationRequest.path))?await applicableRules(environment,operationRequest.path):[];
     const unseen=rules.filter(r=>!(ctx.presentedRules??[]).includes(r.path+':'+r.sha256));
-    if(unseen.length){const latest=await contextFor(request,info);latest.presentedRules=[...new Set([...(latest.presentedRules??[]),...unseen.map(r=>r.path+':'+r.sha256)])];await atomic(path.join(state,'sessions',safeId(request.sessionId)+'.json'),latest);if(op.mutating)return {decision:'deny',reason:'New or changed applicable rules must be considered before changing this file. No operation ran. Read these rules, revise the operation if needed, then submit it again:\n'+unseen.map(r=>r.path+'\n'+r.content).join('\n')};}
+    if(unseen.length){const latest=await contextFor(request,info);latest.presentedRules=[...new Set([...(latest.presentedRules??[]),...unseen.map(r=>r.path+':'+r.sha256)])];await atomic(path.join(state,'sessions',safeId(request.sessionId)+'.json'),latest);if(op.mutating){const r='New or changed applicable rules must be considered before changing this file. No operation ran. Read these rules, revise the operation if needed, then submit it again:\n'+unseen.map(r=>r.path+'\n'+r.content).join('\n');recordPreflight(ctx.sessionId,operationApprovalKey(operationRequest),{decision:'deny',reason:r});return {decision:'deny',reason:r};}}
+    recordPreflight(ctx.sessionId,operationApprovalKey(operationRequest),{decision:decision.decision,reason:decision.reason});
     // Turn start resets presentedRules, so each rule reaches the model once per
     // turn instead of riding along with every tool call.
     return {...decision,additionalContext:[...unseen.map(r=>'Applicable local rule '+r.path+':\n'+r.content),...hooks.map(h=>h.hookSpecificOutput?.additionalContext??h.additionalContext??'')].filter(Boolean).join('\n')};

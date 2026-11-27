@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
-import {remoteHealth,remoteRelayHealth} from '../plugin/diagnose.mjs';
+import {remoteHealth,remoteRelayHealth,remoteRelayDuplexProbe} from '../plugin/diagnose.mjs';
 import {runRouteCommand} from './route-command.mjs';
 import {validateConfig,getBridgeConfig} from '../plugin/runtime/bridge-config.mjs';
 import {verifyUpgradeHealth} from './upgrade-health.mjs';
@@ -34,6 +34,13 @@ try{
     assert.ok(typeof report.health.claudeVersion==='string'&&report.health.claudeVersion.length>0,'Remote Claude CLI version missing');
     for(const c of ['project-context','local-policy','local-hooks','media-cache','job-recovery','duplex-control','duplex-tools','local-mcp','account-usage'])assert.ok(report.health.capabilities.includes(c),c);
     report.checks.push({name:'Remote standalone stream relay and Claude CLI health match',status:'PASS'});
+    report.duplexProbe=await remoteRelayDuplexProbe(config,{timeoutMs:30000});
+    assert.equal(report.duplexProbe.ok,true,'Remote standalone duplex probe reported unhealthy');
+    assert.equal(report.duplexProbe.duplexOk,true,'Remote standalone duplex channel did not roundtrip');
+    assert.equal(report.duplexProbe.relayReady,true,'Remote standalone relay is not ready on duplex probe');
+    assert.equal(report.duplexProbe.bridgeVersion,manifest.version,'Active duplex bridge differs from the installation');
+    assert.equal(report.duplexProbe.protocol,policy.bridgeProtocol,'Bridge protocol changed on duplex probe');
+    report.checks.push({name:'Remote standalone duplex tool channel handshake succeeds',status:'PASS'});
   }else{
     report.health=await remoteHealth(config,{timeoutMs:30000});
     verifyUpgradeHealth(report.health,{policy,selection:installed.remote.adapter,manifest});

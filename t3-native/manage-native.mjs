@@ -13,8 +13,10 @@ import {
   installShim,
   normalizePath,
   readOptional,
+  registerShimConsumer,
   shimStatus,
   uninstallShim,
+  unregisterShimConsumer,
   withDirectoryLock,
   writeAtomic,
 } from '../shim/manage-shim.mjs';
@@ -91,7 +93,17 @@ async function cleanupLegacyShimFiles(legacyDir, neutralDir) {
     await writeFile(neutralCache, legacyCacheBytes).catch(() => {});
   }
   const retired = [];
-  const legacyFiles = [SHIM_NAME, NODE_PATH_NAME, ...SCRIPT_ASSETS.map(a => a.name), VERSION_CACHE_NAME];
+  const legacyExe = path.join(legacyDir, SHIM_NAME);
+  if (existsSync(legacyExe)) {
+    try {
+      await rm(legacyExe);
+      retired.push(SHIM_NAME);
+    } catch {
+      // Legacy executable is still in use by an active process; keep its sibling scripts intact until restart.
+      return retired;
+    }
+  }
+  const legacyFiles = [NODE_PATH_NAME, ...SCRIPT_ASSETS.map(a => a.name), VERSION_CACHE_NAME];
   for (const name of legacyFiles) {
     const file = path.join(legacyDir, name);
     if (!existsSync(file)) continue;
@@ -99,7 +111,7 @@ async function cleanupLegacyShimFiles(legacyDir, neutralDir) {
       await rm(file, { force: true });
       retired.push(name);
     } catch {
-      // Running legacy .exe stays untouched until exited; claude-home is never touched.
+      // Best-effort cleanup of non-locked legacy files; claude-home is never touched.
     }
   }
   await cleanupRetiredExeFiles(legacyDir, SHIM_NAME);
@@ -146,6 +158,11 @@ async function install(t3Home, { shimDir = defaultShimDir(), offline = false } =
   } else {
     await assertSettingsUnchanged(settings);
   }
+
+  await registerShimConsumer(shimResult.installDir, 't3-native', {
+    t3Home,
+    checkPath: settings.file,
+  });
 
   // 4. Best-effort cleanup of retired legacy Shim binaries in .t3/integrations/claude-vps-native (never touches claude-home).
   const retiredLegacy = await cleanupLegacyShimFiles(legacyDir, shimResult.installDir);
@@ -201,7 +218,7 @@ async function status(t3Home, { shimDir = defaultShimDir(), offline = false } = 
   }, null, 2));
 }
 
-async function uninstall(t3Home, { shimDir = defaultShimDir(), removeShim = false } = {}) {
+async function uninstall(t3Home, { shimDir = defaultShimDir(), removeShim = false, force = false } = {}) {
   const legacyDir = path.join(t3Home, 'integrations', 'claude-vps-native');
   const legacyExePath = path.join(legacyDir, SHIM_NAME);
   const targetExePath = path.join(path.resolve(shimDir), SHIM_NAME);
@@ -217,9 +234,10 @@ async function uninstall(t3Home, { shimDir = defaultShimDir(), removeShim = fals
   delete providers[INSTANCE_ID];
   await saveSettings(settings);
   await cleanupLegacyShimFiles(legacyDir, path.resolve(shimDir));
+  await unregisterShimConsumer(shimDir, 't3-native');
 
   if (removeShim) {
-    const removed = await uninstallShim({ shimDir });
+    const removed = await uninstallShim({ shimDir, force, excludeConsumer: 't3-native' });
     console.log(`已移除独立原生 Claude 实例 "${INSTANCE_ID}" 及中立 Shim（${removed.removed.length} 项，保留 claude-home）。`);
   } else {
     console.log(`已移除独立原生 Claude 实例 "${INSTANCE_ID}"（保留 claude-home 与共享中立 Shim：${path.resolve(shimDir)}）。`);
@@ -233,13 +251,14 @@ async function main() {
       't3-home': { type: 'string' },
       'shim-dir': { type: 'string' },
       'remove-shim': { type: 'boolean', default: false },
+      force: { type: 'boolean', default: false },
       offline: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h' },
     },
   });
 
   if (values.help || action === 'help') {
-    console.log('用法  node t3-native/manage-native.mjs <install|status|uninstall> [--t3-home <目录>] [--shim-dir <目录>] [--remove-shim] [--offline]');
+    console.log('用法  node t3-native/manage-native.mjs <install|status|uninstall> [--t3-home <目录>] [--shim-dir <目录>] [--remove-shim] [--force] [--offline]');
     return;
   }
   if (unexpected.length || !['install', 'status', 'uninstall'].includes(action)) {
@@ -264,7 +283,7 @@ async function main() {
   const lockDir = path.join(t3Home, 'integrations', 'claude-vps-native');
   await withDirectoryLock(lockDir, async () => {
     if (action === 'install') await install(t3Home, { shimDir, offline: values.offline });
-    else await uninstall(t3Home, { shimDir, removeShim: values['remove-shim'] });
+    else await uninstall(t3Home, { shimDir, removeShim: values['remove-shim'], force: values.force });
   });
 }
 

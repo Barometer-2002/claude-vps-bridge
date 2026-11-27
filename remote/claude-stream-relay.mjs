@@ -11,7 +11,9 @@ import { BRIDGE_PROTOCOL } from './bridge-protocol.mjs';
 import { bridgeRoot, workspaceRoot, agentCommand } from './remote-config.mjs';
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_TOOLS = 'Bash,Read,AskUserQuestion,WebSearch,WebFetch,TodoWrite,TaskCreate,TaskUpdate,TaskList,TaskGet,ExitPlanMode,EnterPlanMode,ToolSearch';
+const DEFAULT_TOOLS_LIST = ['Bash', 'Read', 'AskUserQuestion', 'WebSearch', 'WebFetch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ExitPlanMode', 'EnterPlanMode', 'ToolSearch'];
+const DEFAULT_TOOLS_SET = new Set(DEFAULT_TOOLS_LIST);
+const DEFAULT_TOOLS = DEFAULT_TOOLS_LIST.join(',');
 const SERVER_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const STANDALONE_CAPABILITIES = [
   'project-context',
@@ -102,8 +104,18 @@ async function writeAllowedMcpFile(servers) {
 }
 
 function extractProxiedServersFromControl(msg) {
-  if (msg?.type !== 'control_request' || msg.request?.subtype !== 'mcp_set_servers') return null;
-  const servers = msg.request?.servers;
+  if (msg?.type !== 'control_request') return null;
+  const subtype = msg.request?.subtype;
+  let servers = null;
+  let mergeWithInitial = false;
+  if (subtype === 'mcp_set_servers') {
+    servers = msg.request?.servers;
+  } else if (subtype === 'initialize' && msg.request?.mcpServers !== undefined) {
+    servers = msg.request.mcpServers;
+    mergeWithInitial = true;
+  } else {
+    return null;
+  }
   if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('Invalid MCP server map');
   const names = [];
   for (const [name, cfg] of Object.entries(servers)) {
@@ -116,7 +128,7 @@ function extractProxiedServersFromControl(msg) {
     if (!isLocalProxy && !isSdkStub) throw new Error('Invalid MCP proxy stub');
     names.push(name);
   }
-  return names;
+  return { names, mergeWithInitial };
 }
 
 async function prepareOutgoingStdinLine(line) {
@@ -127,12 +139,15 @@ async function prepareOutgoingStdinLine(line) {
     return line;
   }
   try {
-    const dynamicServers = extractProxiedServersFromControl(msg);
-    if (dynamicServers !== null) {
+    const dynamic = extractProxiedServersFromControl(msg);
+    if (dynamic !== null) {
       if (pendingMcpUpdate) throw new Error('An MCP update is already in progress');
-      await writeAllowedMcpFile(dynamicServers);
+      const nextServers = dynamic.mergeWithInitial
+        ? [...new Set([...allowedMcpServers, ...dynamic.names])]
+        : dynamic.names;
+      await writeAllowedMcpFile(nextServers);
       pendingMcpUpdate = { id: msg.request_id, previous: allowedMcpServers };
-      allowedMcpServers = dynamicServers;
+      allowedMcpServers = nextServers;
     }
   } catch (error) {
     send({ type: 'claude_out', line: JSON.stringify({
@@ -181,6 +196,8 @@ async function startClaude(params) {
     addedDirs = [],
     probeOnly = false,
     zeroTools = false,
+    requestedTools = null,
+    agentAvailable = false,
   } = params;
 
   const claudeCommand = (await readFile(path.join(bridgeRoot, 'claude-path'), 'utf8')).trim();
@@ -190,7 +207,11 @@ async function startClaude(params) {
 
   const runDir = path.join(bridgeRoot, 'run');
 
-  if (probeOnly || !localCwd || !projectId || !workspaceInfo) {
+  if (!probeOnly && (!localCwd || !projectId || !workspaceInfo)) {
+    throw new Error('Normal session requires bound Windows workspace identity');
+  }
+
+  if (probeOnly) {
     if (appendSystemPrompt) {
       if (Buffer.byteLength(appendSystemPrompt, 'utf8') > 32_768) {
         const promptFile = await writeSessionTempFile(runDir, 'system-prompt', 'md', appendSystemPrompt);
@@ -199,10 +220,14 @@ async function startClaude(params) {
         finalArgs.push('--append-system-prompt', appendSystemPrompt);
       }
     }
-    if (zeroTools) {
-      finalArgs.push('--tools', '');
-    }
-    finalArgs.push(...args);
+    finalArgs.push(
+      '--tools', '',
+      '--strict-mcp-config',
+      '--mcp-config', '{"mcpServers":{}}',
+      '--setting-sources', '',
+      '--disallowedTools', 'Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,Agent,Task,NotebookEdit',
+      ...args,
+    );
   } else {
     const prepared = await prepareWorkspace(workspaceInfo, workspaceRoot);
     spawnCwd = prepared.directory;
@@ -271,9 +296,20 @@ async function startClaude(params) {
       writeSessionTempFile(runDir, 'settings', 'json', JSON.stringify(mergedSettings)),
     ]);
 
+    let toolsArg = DEFAULT_TOOLS;
+    if (zeroTools) {
+      toolsArg = '';
+    } else if (Array.isArray(requestedTools) && requestedTools.length > 0) {
+      const invalid = requestedTools.filter(t => !DEFAULT_TOOLS_SET.has(t));
+      if (invalid.length > 0) {
+        throw new Error(`Requested --tools entries are not available on the Windows workspace bridge: ${invalid.join(', ')}`);
+      }
+      toolsArg = requestedTools.join(',');
+    }
+
     finalArgs.push(
       '--append-system-prompt-file', promptFile,
-      '--tools', zeroTools ? '' : DEFAULT_TOOLS,
+      '--tools', toolsArg,
       '--strict-mcp-config',
       '--mcp-config', mcpConfigFile,
       '--settings', settingsFile,
@@ -288,6 +324,7 @@ async function startClaude(params) {
       WINDOWS_BRIDGE_SESSION: sessionId,
       WINDOWS_MEDIA_SESSION: sessionId,
       WINDOWS_BRIDGE_ROOT: bridgeRoot,
+      WINDOWS_AGENT_AVAILABLE: agentAvailable ? '1' : '0',
       CODEXHOST_CLI_PATH: agentCommand,
       ...toolEnv,
       WINDOWS_T3_MCP: '0',
@@ -394,10 +431,75 @@ async function shutdown(code = 0) {
   process.exit(code);
 }
 
+async function runDuplexProbe() {
+  let probeBridge = null;
+  try {
+    const manifest = JSON.parse(await readFile(path.join(bridgeRoot, 'bridge-manifest.json'), 'utf8'));
+    const claudeCommand = (await readFile(path.join(bridgeRoot, 'claude-path'), 'utf8')).trim();
+    const healthEnv = {
+      ...process.env,
+      PATH: `${path.dirname(process.execPath)}:${path.dirname(claudeCommand)}:${process.env.PATH ?? ''}`,
+    };
+    const { stdout: verOut } = await execFileAsync(claudeCommand, ['--version'], { env: healthEnv, timeout: 10_000, maxBuffer: 16_384 });
+    const claudeVersion = verOut.trim();
+    if (!claudeVersion) throw new Error('Remote claude --version returned empty output');
+
+    const sessionId = `probe-${randomUUID()}`;
+    const localCwd = 'C:\\probe';
+    const projectId = '0'.repeat(64);
+    probeBridge = await createToolBridge(async (_binding, request, internal) => {
+      return duplexLocal(request, internal ? 'control' : 'tool');
+    });
+    const toolEnv = probeBridge.register({ sessionId, localCwd, projectId, remoteCwd: bridgeRoot });
+    const { stdout: wsOut } = await execFileAsync(
+      path.join(bridgeRoot, 'windows-workspace'),
+      ['{"action":"info"}'],
+      {
+        env: {
+          ...process.env,
+          ...toolEnv,
+          WINDOWS_PROJECT_CWD: localCwd,
+          WINDOWS_PROJECT_ID: projectId,
+          WINDOWS_BRIDGE_SESSION: sessionId,
+        },
+        timeout: 15_000,
+        maxBuffer: 65_536,
+      },
+    );
+    const parsedWs = JSON.parse(wsOut.trim());
+    if (parsedWs?.ok !== true) throw new Error('Probe windows-workspace roundtrip did not succeed');
+    send({
+      type: 'probe_result',
+      ok: true,
+      mode: 'standalone',
+      protocol: BRIDGE_PROTOCOL,
+      bridgeVersion: manifest.version ?? null,
+      claudeVersion,
+      duplexOk: true,
+      relayReady: true,
+    });
+    await shutdown(0);
+  } catch (error) {
+    send({
+      type: 'probe_result',
+      ok: false,
+      mode: 'standalone',
+      error: error?.message ?? String(error),
+    });
+    await shutdown(1);
+  } finally {
+    try { if (probeBridge) await probeBridge.close(); } catch {}
+  }
+}
+
 let stdinWriteChain = Promise.resolve();
 
 readJsonLines(process.stdin, frame => {
   if (!frame || typeof frame !== 'object') return;
+  if (frame.type === 'probe_duplex') {
+    void runDuplexProbe();
+    return;
+  }
   if (frame.type === 'start') {
     stdinWriteChain = stdinWriteChain.then(() => startClaude(frame)).catch(err => {
       send({ type: 'claude_err', text: `Claude VPS relay start error: ${err.message}\n` });

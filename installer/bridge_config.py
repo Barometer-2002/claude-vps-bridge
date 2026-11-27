@@ -78,5 +78,8 @@ if __name__=='__main__':
     elif sys.argv[1:]==['--mode']:
         config=load_config()
         print('codexhost' if config.get('hostRoot') else 'standalone')
+    elif sys.argv[1:]==['--node']:
+        config=load_config()
+        print(str(node_executable(config)))
     else:
-        raise SystemExit('usage: bridge_config.py --check-roots | --mode')
+        raise SystemExit('usage: bridge_config.py --check-roots | --mode | --node')

@@ -198,10 +198,12 @@ export function validateLocalMcpServerConfig(name, entry) {
 export function evaluateLocalMcpToolCall({
   server,
   toolName,
+  arguments: toolArgs = null,
   permissionMode = 'default',
   t3Policy = null,
   projectPermissions = null,
   toolMeta = null,
+  trustedServers = null,
 } = {}) {
   if (!isLocalMcpServerName(server)) {
     return { allowed: false, reason: 'Invalid MCP server name.' };
@@ -248,20 +250,41 @@ export function evaluateLocalMcpToolCall({
     }
   }
 
-  // 3. Custom local HTTP / Stdio MCP servers: fail-closed in Plan mode unless explicitly declared read-only.
-  if (server !== 't3-code' && permissionMode === 'plan') {
+  // 2.5. Built-in playwright & tavily rules in Plan mode (never rely on untrusted self-reported annotations).
+  if (server === 'playwright' && permissionMode === 'plan') {
+    const passivePlaywright = new Set(['browser_snapshot', 'browser_console_messages', 'browser_network_requests']);
+    if (!passivePlaywright.has(cleanTool) || toolArgs?.filename) {
+      return {
+        allowed: false,
+        reason: `Plan mode blocked Playwright tool "${cleanTool}". Switch mode before interacting with pages or saving screenshots.`,
+      };
+    }
+  }
+
+  // 3. Custom local HTTP / Stdio / SDK MCP servers: fail-closed in Plan mode unless both:
+  //    (a) explicitly annotated readOnlyHint=true and destructiveHint=false, AND
+  //    (b) explicitly trusted via trustedServers (or CLAUDE_VPS_TRUSTED_MCP_SERVERS) or project permissions.allow.
+  if (!['t3-code', 'playwright', 'tavily'].includes(server) && permissionMode === 'plan') {
     const isExplicitlyReadOnly = Boolean(
       toolMeta
       && toolMeta.known === true
       && toolMeta.readOnlyHint === true
-      && toolMeta.destructiveHint !== true,
+      && toolMeta.destructiveHint === false,
     );
     if (!isExplicitlyReadOnly) {
       return {
         allowed: false,
         reason: !toolMeta?.known
           ? `Plan mode blocked unknown local MCP tool "${fullToolName}". Discover tools first or switch out of Plan mode.`
-          : `Plan mode blocked local MCP tool "${fullToolName}" because it is not explicitly annotated readOnlyHint=true (non-destructive). Switch mode before executing side-effecting or unannotated tools.`,
+          : `Plan mode blocked local MCP tool "${fullToolName}" because it is not explicitly annotated readOnlyHint=true and destructiveHint=false. Switch mode before executing side-effecting or unannotated tools.`,
+      };
+    }
+    const explicitlyAllowed = Boolean(projectPermissions?.allow?.some(entry => ruleMatches(entry?.pattern)));
+    const isTrustedServer = trustedServers === '*' || (trustedServers instanceof Set && (trustedServers.has('*') || trustedServers.has(server)));
+    if (!explicitlyAllowed && !isTrustedServer) {
+      return {
+        allowed: false,
+        reason: `Plan mode blocked local MCP tool "${fullToolName}" because server "${server}" is not explicitly trusted for read-only annotations. Allow it in .claude/settings.json permissions.allow or CLAUDE_VPS_TRUSTED_MCP_SERVERS, or switch out of Plan mode.`,
       };
     }
   }

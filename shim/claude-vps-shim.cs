@@ -50,6 +50,35 @@ internal static class ClaudeVpsShimLauncher
         return sb.ToString();
     }
 
+    private static int GetNodeMajorVersion(string nodeExe)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = nodeExe,
+                Arguments = "-p \"process.versions.node.split('.')[0]\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using (var proc = Process.Start(psi))
+            {
+                if (proc == null) return 0;
+                string output = proc.StandardOutput.ReadToEnd().Trim();
+                proc.WaitForExit(3000);
+                int major;
+                if (proc.ExitCode == 0 && int.TryParse(output, out major)) return major;
+            }
+        }
+        catch
+        {
+            // Candidate failed to execute.
+        }
+        return 0;
+    }
+
     private static string FindNodeOnPath()
     {
         string pathEnv = Environment.GetEnvironmentVariable("PATH");
@@ -61,7 +90,7 @@ internal static class ClaudeVpsShimLauncher
             try
             {
                 string candidate = Path.Combine(dir, "node.exe");
-                if (File.Exists(candidate)) return candidate;
+                if (File.Exists(candidate) && GetNodeMajorVersion(candidate) >= 24) return candidate;
             }
             catch
             {
@@ -103,9 +132,9 @@ internal static class ClaudeVpsShimLauncher
         if (!string.IsNullOrEmpty(pf))
         {
             string candidate = Path.Combine(pf, "nodejs", "node.exe");
-            if (File.Exists(candidate)) return candidate;
+            if (File.Exists(candidate) && GetNodeMajorVersion(candidate) >= 24) return candidate;
         }
-        return "node.exe";
+        return null;
     }
 
     public static int Main(string[] args)
@@ -115,6 +144,12 @@ internal static class ClaudeVpsShimLauncher
         if (!File.Exists(script))
         {
             Console.Error.WriteLine("Claude VPS Shim script not found: " + script);
+            return 1;
+        }
+        string nodeExe = ResolveNode(exeDir);
+        if (string.IsNullOrEmpty(nodeExe))
+        {
+            Console.Error.WriteLine("Node.js 24+ executable not found. Run node shim/manage-shim.mjs install with Node.js 24+.");
             return 1;
         }
 
@@ -128,7 +163,7 @@ internal static class ClaudeVpsShimLauncher
 
         var psi = new ProcessStartInfo
         {
-            FileName = ResolveNode(exeDir),
+            FileName = nodeExe,
             Arguments = argBuilder.ToString(),
             UseShellExecute = false,
         };

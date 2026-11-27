@@ -99,6 +99,63 @@ export async function remoteRelayHealth(config,{execute=exec,timeoutMs=20000,onR
   return value;
 }
 
+export async function remoteRelayDuplexProbe(config,{spawnProcess=spawn,timeoutMs=25000,onRoute}={}){
+  const routes=new SshRoutes(config);
+  const value=await routes.firstAvailable(route=>duplexProbeOnRoute(config,route,{spawnProcess,timeoutMs}),
+    error=>['ROUTE_HELPER_UNAVAILABLE','SSH_START_FAILED','SSH_INPUT_FAILED','SSH_CONNECTION_FAILED','REMOTE_HEALTH_TIMEOUT'].includes(error.code));
+  onRoute?.({route:routes.current.name,routeType:routes.current.proxy?.type??'direct',lastSwitchReason:routes.lastSwitchReason,ingress:{kind:'standalone-relay',process:null}});
+  return value;
+}
+
+function duplexProbeOnRoute(config,route,{spawnProcess,timeoutMs}){
+  return new Promise((resolve,reject)=>{
+    const cmd='sh -c '+shellQuote(`exec "$(cat ${shellQuote(config.remoteRoot+'/node-path')})" ${shellQuote(config.remoteRoot+'/claude-stream-relay.mjs')}`);
+    const env={...process.env};for(const key of Object.keys(env))if(/ANTHROPIC|CLAUDE|CODEXHOST_RUNTIME|API_KEY|TOKEN|SECRET/i.test(key))delete env[key];
+    const child=spawnProcess(config.sshExecutable,route.args(cmd,{connectTimeout:10}),{env,windowsHide:true,stdio:['pipe','pipe','pipe']});
+    let buffer=Buffer.alloc(0),value=null,settled=false,sawLocalReq=false;
+    const finish=(error)=>{if(settled)return;settled=true;clearTimeout(timer);if(error)reject(error);else resolve(value);};
+    const timer=setTimeout(()=>{child.kill();finish(Object.assign(Error('Remote relay duplex probe timeout'),{code:'REMOTE_HEALTH_TIMEOUT'}));},timeoutMs);
+    child.on('error',()=>finish(Object.assign(Error('SSH could not start'),{code:'SSH_START_FAILED'})));
+    child.stdin.on('error',()=>finish(Object.assign(Error('SSH input unavailable'),{code:'SSH_INPUT_FAILED'})));
+    child.stderr.on('data',()=>{});
+    child.stdout.on('data',chunk=>{
+      const bufChunk=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);
+      buffer=buffer.length?Buffer.concat([buffer,bufChunk]):bufChunk;
+      if(buffer.length>262144){child.kill();finish(Object.assign(Error('Invalid duplex probe response'),{code:'REMOTE_HEALTH_INVALID'}));return;}
+      let nl;
+      while((nl=buffer.indexOf(10))!==-1){
+        const line=buffer.subarray(0,nl).toString('utf8').replace(/\r$/,'');
+        buffer=buffer.subarray(nl+1);
+        if(!line)continue;
+        let frame;
+        try{frame=JSON.parse(line);}catch{child.kill();finish(Object.assign(Error('Invalid duplex probe JSON'),{code:'REMOTE_HEALTH_INVALID'}));return;}
+        if(frame?.type==='local_req'&&typeof frame.controlId==='string'){
+          if(frame.request?.action!=='info'){
+            child.stdin.write(JSON.stringify({type:'local_reply',controlId:frame.controlId,error:'Unexpected probe request'})+'\n');
+            continue;
+          }
+          sawLocalReq=true;
+          child.stdin.write(JSON.stringify({
+            type:'local_reply',
+            controlId:frame.controlId,
+            value:{bridge:'windows-workspace-v1',ok:true,action:'info',data:{probe:true}},
+          })+'\n');
+        }else if(frame?.type==='probe_result'){
+          if(frame.ok!==true||frame.duplexOk!==true||!sawLocalReq){
+            child.kill();
+            finish(Object.assign(Error(frame.error||'Remote relay duplex probe failed'),{code:'REMOTE_HEALTH_FAILED'}));
+            return;
+          }
+          value=frame;
+          child.stdin.end();
+        }
+      }
+    });
+    child.on('close',code=>finish(code===0&&value?null:Object.assign(Error('Remote relay duplex probe did not complete'),{code:code===255?'SSH_CONNECTION_FAILED':'REMOTE_HEALTH_FAILED'})));
+    child.stdin.write(JSON.stringify({type:'probe_duplex'})+'\n');
+  });
+}
+
 export async function remoteHealth(config,{spawnProcess=spawn,timeoutMs=20000,onRoute}={}){
   const routes=new SshRoutes(config);
   const value=await routes.firstAvailable(route=>healthOnRoute(config,route,{spawnProcess,timeoutMs}),
