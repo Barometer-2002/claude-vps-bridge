@@ -3,7 +3,7 @@ from pathlib import Path
 import ast, json, os, re, shutil, subprocess, sys, tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN, REMOTE, INSTALLER, SHIM, T3_NATIVE = ROOT / 'plugin', ROOT / 'remote', ROOT / 'installer', ROOT / 'shim', ROOT / 't3-native'
+PLUGIN, REMOTE, INSTALLER, SHIM, T3_NATIVE, ACP = ROOT / 'plugin', ROOT / 'remote', ROOT / 'installer', ROOT / 'shim', ROOT / 't3-native', ROOT / 'acp'
 node = shutil.which('node')
 if not node:
     raise SystemExit('Node.js 24 must be on PATH')
@@ -13,7 +13,7 @@ python_files += [REMOTE / 'windows-agent', REMOTE / 'windows-workspace']
 for file in python_files:
     if not file.name.startswith('test-'):
         ast.parse(file.read_text(encoding='utf-8-sig'), filename=str(file))
-for file in [*PLUGIN.glob('*.mjs'), *(PLUGIN / 'runtime').glob('*.mjs'), *REMOTE.glob('*.mjs'), *INSTALLER.glob('*.mjs'), *SHIM.glob('*.mjs'), *T3_NATIVE.glob('*.mjs')]:
+for file in [*PLUGIN.glob('*.mjs'), *(PLUGIN / 'runtime').glob('*.mjs'), *REMOTE.glob('*.mjs'), *INSTALLER.glob('*.mjs'), *SHIM.glob('*.mjs'), *T3_NATIVE.glob('*.mjs'), *ACP.glob('*.mjs')]:
     if not file.name.startswith(('test-', 'benchmark-')):
         subprocess.run([node, '--check', str(file)], check=True, cwd=ROOT)
 
@@ -30,6 +30,9 @@ for name in ('claude-vps-shim.cs', 'claude-vps-shim.mjs', 'http-mcp-client.mjs',
         raise SystemExit('Missing neutral shim file: shim/' + name)
 if not (T3_NATIVE / 'manage-native.mjs').is_file():
     raise SystemExit('Missing T3 native registration manager: t3-native/manage-native.mjs')
+for name in ('package.json', 'package-lock.json', 'workspace-presenter.mjs', 'claude-vps-acp.mjs', 'claude-vps-acp.cs', 'manage-acp.mjs'):
+    if not (ACP / name).is_file():
+        raise SystemExit('Missing standard ACP wrapper file: acp/' + name)
 
 manifest = json.loads((PLUGIN / 'manifest.json').read_text(encoding='utf-8'))
 for field in ('entry', 'icon'):
@@ -65,7 +68,18 @@ pure_result = json.loads(pure_self_test.stdout.strip())
 if pure_result.get('ok') is not True:
     raise SystemExit('Shim pure offline self-test failed: ' + pure_self_test.stdout.strip())
 
-# On Windows, compile claude-vps-shim.cs with .NET csc.exe into a temp dir and verify execution.
+acp_self_test = subprocess.run(
+    [node, str(ACP / 'claude-vps-acp.mjs'), '--self-test', '--pure'],
+    check=True,
+    capture_output=True,
+    text=True,
+    cwd=ROOT,
+)
+acp_result = json.loads(acp_self_test.stdout.strip())
+if acp_result.get('ok') is not True:
+    raise SystemExit('ACP wrapper pure offline self-test failed: ' + acp_self_test.stdout.strip())
+
+# On Windows, compile claude-vps-shim.cs and claude-vps-acp.cs with .NET csc.exe into temp dirs and verify execution.
 if sys.platform == 'win32':
     windir = Path(os.environ.get('WINDIR', r'C:\Windows'))
     csc = next(
@@ -77,7 +91,7 @@ if sys.platform == 'win32':
         None,
     )
     if not csc:
-        raise SystemExit('Windows .NET csc.exe not found; cannot verify claude-vps-shim.cs compilation')
+        raise SystemExit('Windows .NET csc.exe not found; cannot verify C# launcher compilation')
     with tempfile.TemporaryDirectory(prefix='claude-vps-shim-check-') as tmp:
         tmp_dir = Path(tmp)
         for asset in ('bridge-installation.mjs', 'mcp-policy.mjs', 'http-mcp-client.mjs', 'claude-vps-shim.mjs'):
@@ -101,5 +115,28 @@ if sys.platform == 'win32':
         exe_result = json.loads(exe_test.stdout.strip())
         if exe_result.get('ok') is not True:
             raise SystemExit('Compiled claude-vps-shim.exe pure self-test failed: ' + exe_test.stdout.strip())
+    with tempfile.TemporaryDirectory(prefix='claude-vps-acp-check-') as tmp:
+        tmp_dir = Path(tmp)
+        for asset in ('workspace-presenter.mjs', 'claude-vps-acp.mjs'):
+            shutil.copy2(ACP / asset, tmp_dir / asset)
+        (tmp_dir / 'node-path.txt').write_text(str(Path(node).resolve()) + '\n', encoding='utf-8')
+        exe = tmp_dir / 'claude-vps-acp.exe'
+        subprocess.run(
+            [str(csc), '/nologo', '/optimize+', '/target:exe', f'/out:{exe}', str(ACP / 'claude-vps-acp.cs')],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        exe_test = subprocess.run(
+            [str(exe), '--self-test', '--pure'],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        exe_result = json.loads(exe_test.stdout.strip())
+        if exe_result.get('ok') is not True:
+            raise SystemExit('Compiled claude-vps-acp.exe pure self-test failed: ' + exe_test.stdout.strip())
 
-print('PASS Source syntax, shim offline self-test, plugin entry, shared transport and install manifest; runtime acceptance was not run')
+print('PASS Source syntax, shim & ACP offline self-tests, plugin entry, shared transport and install manifest; runtime acceptance was not run')

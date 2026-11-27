@@ -8,6 +8,7 @@ adapter-selection.json
 plugin/runtime/state/
 plugin/runtime/runtime-context/
 plugin/runtime/node_modules/
+acp/node_modules/
 run/
 transactions/
 backup*/
