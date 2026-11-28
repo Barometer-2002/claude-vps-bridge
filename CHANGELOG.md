@@ -2,7 +2,7 @@
 
 本 fork 的发行记录从 1.0.0 开始。文末保留上游基线及此前的发布历史。当前安装与兼容范围以 [安装指南](docs/SETUP.md) 和 [Fork 说明](docs/FORK_CHANGES.md) 为准。
 
-## Unreleased
+## 1.1.1 · 2026-11-28
 
 - ACP v1 客户端可用 `session/resume` 在重启后继续同一 Windows 工作区的 Claude 会话。
 - 重写安装、配置、客户端使用、安全和维护文档，补充 ACP v1 专用指南，并按实际源码说明权限、附件、断线和恢复限制。
