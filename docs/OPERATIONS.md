@@ -10,6 +10,7 @@
 node .\t3-native\manage-native.mjs status
 ```
 
+- **旧位置迁移**：`status` 里 `usesLegacyLocation` 为 `true` 时，重新运行 `install` 即可迁移到共享 Shim，见 [T3 Code 指南](T3CODE.md)。
 - **同步升级**：在仓库根目录重新执行：
   - 纯 T3 Code：`pwsh -NoProfile -File .\install.ps1 -T3Only`
   - T3 Code + CodexHost 共存：`pwsh -NoProfile -File .\install.ps1 -WithT3`
@@ -36,7 +37,7 @@ node .\acp\manage-acp.mjs install
 node .\acp\manage-acp.mjs uninstall
 ```
 
-共享 Shim 仍被其他使用方登记时不会随某一方卸载而删除；`--remove-shim` 和 `--force` 的行为见各脚本的 `--help`。
+卸载 T3 接入默认保留共享 Shim。给 `manage-native.mjs uninstall` 加 `--remove-shim` 才会移除它；如果仍有其他组件（如 ACP 包装器）引用，会报错并保留，再加 `--force` 才强制移除。卸载 ACP 包装器用 `node .\acp\manage-acp.mjs uninstall`，或 `pwsh -NoProfile -File .\install.ps1 -AcpOnly -Uninstall`；`uninstall.ps1` 只处理 T3 接入。
 
 ## 统一诊断（核心桥接与 SSH 线路）
 

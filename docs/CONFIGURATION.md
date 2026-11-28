@@ -16,7 +16,7 @@ python .\installer\configure.py --ssh-host my-linux-host --host-root 'D:\Apps\Co
 pwsh -NoProfile -File .\install.ps1 -WithT3
 ```
 
-`configure.py` 查询远端用户主目录与 Claude 路径，创建 `bridge-config.local.json`，不覆盖已有文件。可显式提供 `--remote-root`、`--remote-workspace-root`、`--remote-claude`。配置文件只保存非敏感连接与路径参数，不保存账号凭据。自动发现的 Claude 路径仍需实际存在；安装健康检查与真实运行验收是独立步骤。
+`configure.py` 查询远端用户主目录与 Claude 路径，创建 `bridge-config.local.json`，不覆盖已有文件。可显式提供 `--remote-root`、`--remote-workspace-root`、`--remote-claude`、`--remote-node`、`--ssh-executable`。独立模式用 `--t3-only`（别名 `--standalone`），需要指定本机 Node.js 24+ 时加 `--node-executable`；它与 `--host-root` 互斥。配置文件只保存非敏感连接与路径参数，不保存账号凭据。自动发现的 Claude 路径仍需实际存在；安装健康检查与真实运行验收是独立步骤。
 
 安装器优先读取 `CLAUDE_VPS_CONFIG` 指定的文件，然后是源码目录的 `bridge-config.local.json`，最后是已安装插件的 `bridge-config.json`。运行中的插件读取其安装目录下的配置。修改配置后重新安装，再执行 `codexhost stop`（CodexHost 安装目录下的 `bin\codexhost.exe`）后重新打开 CodexHost，使两端配置一致。
 
@@ -124,6 +124,24 @@ Claude 按任务需要调用本机程序。工具路径、命令参数和处理�
 
 图片/PDF 按原始字节传输，单个文件最多 5 MiB；超限会明确报错，由 Claude 决定是否转换。视频只返回本机文件信息，不自动处理。生成的图片通过 `media` 传输，文本通过文件读取或任务日志读取。
 
+## 本机环境变量
+
+以下变量只影响 Windows 端的 Shim、ACP 包装器和安装脚本，不会发往 VPS：
+
+| 变量 | 作用 |
+|---|---|
+| `T3CODE_HOME` | T3 Code 数据目录，默认 `%USERPROFILE%\.t3` |
+| `CLAUDE_VPS_SHIM_DIR` | 中立 Shim 的安装目录，默认 `%USERPROFILE%\.claude-vps\shim` |
+| `CLAUDE_VPS_ACP_DIR` | ACP 包装器的安装目录，默认 `%USERPROFILE%\.claude-vps\acp` |
+| `CLAUDE_VPS_CSC` | 指定 `csc.exe` 的路径，覆盖自动查找；路径不存在时安装会报错 |
+| `CLAUDE_VPS_PLUGIN_DIR` | 覆盖 Shim 定位核心桥接安装目录的位置 |
+| `CLAUDE_VPS_NODE` | 指定启动器使用的 `node.exe` |
+| `CLAUDE_VPS_ATTACHMENT_DIRS` | 额外允许读取附件的绝对目录，用 `;` 分隔；T3 附件目录始终包含 |
+| `CLAUDE_VPS_TRUSTED_MCP_SERVERS` | Plan 模式下视为只读可信的本机 MCP 服务器名，用逗号分隔；`*` 表示全部 |
+| `CLAUDE_VPS_RAW_TOOL_FRAMES` | 设为 `1` 时不做工具卡片转换，T3 看到原始的 `windows-workspace` 调用 |
+| `CLAUDE_VPS_PRESENT_WORKSPACE` | 设为 `1` 时强制启用工具卡片转换；ACP 包装器启动的会话默认关闭转换 |
+| `CLAUDE_VPS_CONSOLE_ENCODING` | 指定解码本机命令输出所用的控制台编码；未设置时按系统区域推断（简体中文为 GBK，繁体为 Big5） |
+
 ## 旧环境兼容
 
 新配置默认 `legacy.enabled=false`，现代路径使用本机主动发起的双向 SSH，不自动安装 Windows SSH 服务。缺少现代通道时明确报错。
@@ -132,6 +150,6 @@ Claude 按任务需要调用本机程序。工具路径、命令参数和处理�
 
 ## 验证范围
 
-安装后按[安装指南](SETUP.md#5-试用)确认工作目录、文件读写与命令执行。
+安装后按[安装指南](SETUP.md#5-验收与试用)确认工作目录、文件读写与命令执行。
 
 本机配置示例见 [bridge-config.example.json](../examples/bridge-config.example.json)，其中全部是占位值。优先通过配置命令发现自己的实际路径，不应直接把示例当成可运行配置。

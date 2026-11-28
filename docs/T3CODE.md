@@ -113,6 +113,8 @@ node .\t3-native\manage-native.mjs uninstall
 - `manage-native.mjs install` 支持先在独立暂存目录编译并执行离线 `--self-test` 与远端 `--version --live` 实时探针校验，通过后再原子热替换（Windows 下即使有旧会话在跑 `.exe` 也可安全热升级），失败自动回滚不破坏旧安装。
 - `manage-native.mjs status` 明确区分 `cachedVersion`、`liveCheck` 与 `offlineSelfTest`；如需离线快速检查，可加 `--offline`。
 - 自定义 T3 数据目录时，可设置 `T3CODE_HOME` 或追加 `--t3-home <目录>` / `-T3Home <目录>`。
+- Shim 内核是共享的，安装在 `%USERPROFILE%\.claude-vps\shim\`，可用 `--shim-dir` 或 `CLAUDE_VPS_SHIM_DIR` 修改。`status` 输出里的 `neutralShimPath` 是共享 Shim 的路径；`usesLegacyLocation` 为 `true` 表示实例还指向 1.0.x 的旧位置（`.t3\integrations\claude-vps-native`），重新运行 `install` 即可迁移，`claude-home` 不受影响。
+- `uninstall` 默认保留 `claude-home` 和共享 Shim（ACP 包装器可能还在用它）。加 `--remove-shim` 才会一并移除共享 Shim；如果仍有其他组件引用它，会报错并保留，需要再加 `--force` 才强制移除。
 
 ---
 
@@ -140,6 +142,8 @@ node .\t3-native\manage-native.mjs uninstall
 | `T3_MCP_ALLOW_TOOLS` | 逗号分隔的 `t3-code` MCP 工具白名单（设置后仅暴露并放行列表内工具）。 |
 | `T3_MCP_DENY_TOOLS` | 逗号分隔的 `t3-code` MCP 工具黑名单（例如 `request_secret,schedule_task`）。 |
 
+更多变量（Shim 与 ACP 目录、附件目录、可信 MCP 服务器、工具卡片开关等）见[配置说明](CONFIGURATION.md#本机环境变量)。
+
 ---
 
 ## 七、常见排障
@@ -149,4 +153,6 @@ node .\t3-native\manage-native.mjs uninstall
 | `Claude VPS` 提示未安装或版本探测失败 | 运行 `node .\t3-native\manage-native.mjs status`；确认 `liveCheck.ok` 为 `true`，并用 `node .\plugin\diagnose.mjs` 检查 SSH 连通性。 |
 | `t3-code` MCP 未连通或工具列表为空 | 确认两端已通过最新版 `install.ps1 -T3Only`（或 `-WithT3`）同步部署，保证 VPS 端 `remote/claude-stream-relay.mjs` 与 `remote/workspace-guard.py` 均为最新版本。 |
 | 读图卡片无法预览或路径显示为 `/home/.../.bridge-media/...` | 重新运行 `pwsh -NoProfile -File .\install.ps1 -T3Only`（或 `node .\t3-native\manage-native.mjs install`）确保两端已升级到 `v1.0.0` 及以上，启用远端读图路径自动回映射。 |
+| 想看到原始的 `windows-workspace` 调用，而不是 Read / Edit / Bash 卡片 | 设置 `CLAUDE_VPS_RAW_TOOL_FRAMES=1` 关闭卡片转换；ACP 包装器启动的会话默认不转换，可用 `CLAUDE_VPS_PRESENT_WORKSPACE=1` 强制开启，见[配置说明](CONFIGURATION.md#本机环境变量)。 |
+| 卡片里命令输出的中文是乱码 | 卡片转换按系统区域推断本机控制台编码（简体中文为 GBK，繁体为 Big5）；推断不对时用 `CLAUDE_VPS_CONSOLE_ENCODING` 指定。 |
 | 重装或升级后旧会话如何保留 | `uninstall` 默认保留 `%USERPROFILE%\.t3\integrations\claude-vps-native\claude-home` 与 `runtime/state/media-path-cache.json`，重装后可直接 `--resume` 续接。 |

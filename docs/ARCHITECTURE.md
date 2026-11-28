@@ -82,7 +82,7 @@ VPS 依赖跟随官方 `@codexhost/cli` 的 latest 发布，最低版本见 `ins
 
 部署按受管文件清单（VPS 上的 `managed-files.json`）更新文件。不再发布的受管文件在同一事务中删除，可随事务回滚；无法证明属于本插件的文件保持原状，内容被改动过的退役文件会让事务停止。
 
-`windows-workspace` 每个 action 的允许字段、类型和必填项由 `plugin/runtime/workspace-request-schema.json` 统一定义。VPS 端提前校验，Windows 端在权限与业务处理前权威校验；未知字段直接报错并列出允许字段，不再被静默忽略。`agent` 通道中，桥接需要读取任务身份和终态的命令（`delegate start`、`thread send/read/wait`）不会以 text 格式执行，CLI 成功与否只由退出码决定。
+`windows-workspace` 每个 action 的允许字段、类型和必填项由 `plugin/runtime/workspace-request-schema.json` 统一定义。`read` 同时支持 0 基的 `offset` / `limit` 与 1 基的 `startLine` / `endLine`。VPS 端提前校验，Windows 端在权限与业务处理前权威校验；未知字段直接报错并列出允许字段，不再被静默忽略。`agent` 通道中，桥接需要读取任务身份和终态的命令（`delegate start`、`thread send/read/wait`）不会以 text 格式执行，CLI 成功与否只由退出码决定。
 
 公开接口提供的结构化附件在本机保留来源身份，传给远端前单独提取精确路径；普通正文中的路径、代码示例和 Markdown 链接不产生附件授权。纯文本入口按上游 Desktop 附件清单的语法解析：标题开始一份文件清单，隔离提示行结束它，远程准备前置的清单可以再开始一份；图片与文档可以混排，只发图片时没有请求标题也能识别；清单之外的条目一律视为正文。纯文本入口本身没有独立的来源字段。UNC 和扩展 Windows 路径按同一规则处理。内联图片原样落盘，本机接收上限与远端单次传输上限分开；大于 5 MiB 的本机图片/PDF以路径与大小描述交给 Claude，不自动转换或阻断整轮。
 

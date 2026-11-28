@@ -100,11 +100,23 @@ python .\installer\configure.py --ssh-host my-linux-host --host-root 'D:\Apps\Co
 pwsh -NoProfile -File .\install.ps1
 ```
 
+### 场景 D：同时安装标准 ACP 包装器
+
+```powershell
+# 与 T3 接入一起安装，两者共享同一个 Shim
+pwsh -NoProfile -File .\install.ps1 -T3Only -WithAcp
+
+# 只装 ACP 包装器
+pwsh -NoProfile -File .\install.ps1 -AcpOnly
+```
+
+包装器安装到 `%USERPROFILE%\.claude-vps\acp\`（用 `-AcpDir` 或 `CLAUDE_VPS_ACP_DIR` 修改），生成 `claude-vps-acp.exe`，供支持 ACP 的客户端启动。它按锁文件通过 npm 安装锁定版本的官方 `@agentclientprotocol/claude-agent-acp`，因此首次安装需要 npm 能联网。v1.1.0 的 ACP 包装器只做过源码检查和隔离测试，尚未经过真实账号验收。
+
 ### 配置与部署细节说明
 
-- `configure.py` 会通过 SSH 验证远端可执行文件并生成 `bridge-config.local.json`（保留已有配置，不进入 Git）。安装脚本优先选择 `py -3` 或真实 Python 3.11+（自动排除 WindowsApps 占位程序）。
+- `configure.py` 会通过 SSH 验证远端可执行文件并生成 `bridge-config.local.json`（保留已有配置，不进入 Git）。安装脚本优先选择 `py -3` 或真实 Python 3.11+（自动排除 WindowsApps 占位程序）。独立模式的选项是 `--t3-only`（别名 `--standalone`，与 `--host-root` 互斥）；需要指定本机 Node.js 24+ 时加 `--node-executable <路径>`。
 - 两端部署采用事务式备份与文件哈希校验，保留既有会话和用户数据，不修改 T3 Code 或 CodexHost 任何程序文件。
-- 为保持与上游配置及数据目录兼容，核心桥接仍安装到 `%USERPROFILE%\.codexhost\plugins\claude-vps`，T3 原生 Shim 独立安装到 `%USERPROFILE%\.t3\integrations\claude-vps-native`（可通过 `-T3Home` 或 `T3CODE_HOME` 指定自定义 T3 数据目录）。
+- 为保持与上游配置及数据目录兼容，核心桥接仍安装到 `%USERPROFILE%\.codexhost\plugins\claude-vps`。共享的中立 Shim（`claude-vps-shim.exe`）安装到 `%USERPROFILE%\.claude-vps\shim\`（用 `-ShimDir` 或环境变量 `CLAUDE_VPS_SHIM_DIR` 修改），T3 的 `Claude VPS` 实例在 `settings.json` 中指向它；该实例的 `claude-home` 仍保存在 `%USERPROFILE%\.t3\integrations\claude-vps-native\claude-home`。从 1.0.x 升级时，旧目录里的 Shim 文件会在安装时迁移并清理，`claude-home` 不动。可通过 `-T3Home` 或 `T3CODE_HOME` 指定自定义 T3 数据目录。
 - 使用 CodexHost 模式时，`codexhost` 在 PATH 且能定位目录可省略 `--host-root`；安装脚本仅支持默认 `%USERPROFILE%\.codexhost`（遇到自定义 `CODEXHOST_DATA_DIR` / `CODEXHOST_PLUGIN_DIRECTORY` 会安全停止）。旧版曾打过宿主补丁的用户请重装或升级 CodexHost 清除旧补丁。
 
 ---
@@ -124,7 +136,11 @@ pwsh -NoProfile -File .\install.ps1
 
 ```powershell
 node .\t3-native\manage-native.mjs status
+node .\shim\manage-shim.mjs status
 node .\plugin\diagnose.mjs --json
+
+# 装了标准 ACP 包装器时
+node .\acp\manage-acp.mjs status
 ```
 
 ### 在 CodexHost 中验收（如已安装双宿/CodexHost 模式）

@@ -12,8 +12,12 @@
 | yaml 2.8.1 | 本机规则与能力元数据 | ISC |
 | @playwright/mcp 0.0.80（可选） | 本机浏览器 MCP | Apache-2.0 |
 | Playwright / playwright-core（可选传递依赖） | 浏览器执行 | Apache-2.0 |
+| @agentclientprotocol/claude-agent-acp 0.113.0 | 标准 ACP 包装器 `acp/` 调用的官方 ACP 适配器 | Apache-2.0；[npm](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp) |
+| @agentclientprotocol/sdk 2.12.0 | ACP 协议 SDK（上一项的依赖） | Apache-2.0 |
+| @anthropic-ai/claude-agent-sdk 0.3.331 及其按平台的原生子包 | 上一项的依赖 | 包内声明 `SEE LICENSE IN README.md` / `LICENSE.md`，条款由 Anthropic 提供，不是开源许可证；本仓库不分发，由使用者安装时从 npm 下载 |
+| 其余传递依赖（MCP SDK、express、zod 等约 100 个包） | 上述包的依赖 | 锁文件中声明为 MIT、ISC、BSD-2-Clause、BSD-3-Clause、Apache-2.0 或 Unlicense |
 
-第三方 npm 包由使用者安装时按锁文件下载，不以 `node_modules` 形式提交。精确版本、完整性哈希与包来源见 `plugin/runtime/package-lock.json`。依赖自身的许可文本应随相应软件包保留。
+第三方 npm 包由使用者安装时按锁文件下载，不以 `node_modules` 形式提交。精确版本、完整性哈希与包来源见 `plugin/runtime/package-lock.json`，ACP 包装器的见 `acp/package-lock.json`。依赖自身的许可文本应随相应软件包保留。
 
 CodexHost 适配器通过独立依赖目录安装；本仓库不复制其完整构建产物。插件与 T3 Code 接入均仅使用公开协议/配置接口，不包含任何宿主二进制补丁。
 
@@ -21,4 +25,4 @@ CodexHost 适配器通过独立依赖目录安装；本仓库不复制其完整�
 
 ## 原创矢量图形
 
-`plugin/icon.svg`、`docs/assets/banner.svg`、`docs/assets/banner-dark.svg`、`docs/assets/architecture.svg` 与 `docs/assets/architecture-dark.svg` 均为本仓库原创绘制的几何矢量图形，随本仓库采用 LGPL-3.0-only 许可。
+`plugin/icon.svg` 与 `docs/assets/` 下的 `banner`、`architecture`、`features` 三组 SVG（各含浅色和深色版）均为本仓库原创绘制的几何矢量图形，随本仓库采用 LGPL-3.0-only 许可。

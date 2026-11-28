@@ -54,6 +54,10 @@ fork 会创建聊天分支，但仍共用项目文件。需要并行修改文件
 
 本机的认证、模型和接口环境变量不会覆盖 VPS 配置。可通过工具的 `info` 操作查看配置详情。
 
+## T3 里的文件读取和命令为什么显示成 Read、Edit、Bash 卡片？
+
+从 v1.1.0 起，Shim 会把 Claude 对 `windows-workspace` 的调用和结果转换成 T3 原生的 Read、Grep、Glob、Bash、Edit、Write 卡片，Edit 和 Write 还附带本机生成的 diff。实际执行仍由 Windows 工作区运行时按本机权限完成。想看到原始调用时，设置环境变量 `CLAUDE_VPS_RAW_TOOL_FRAMES=1`，见[配置说明](CONFIGURATION.md#本机环境变量)。该功能目前只做过源码检查和隔离测试，没有真实账号验收。
+
 ## 必须安装 Tavily、Playwright 或 Windows SSH 服务吗？
 
 都不需要。Windows 使用 SSH 客户端连接 VPS。Tavily、Playwright 可按[配置说明](CONFIGURATION.md)分别启用。
@@ -102,7 +106,8 @@ Default 是 Claude 适配器的模型选择策略，Auto 是思考策略。指�
 
 ## 如何停用或卸载？
 
-- **卸载 T3 Code 接入**（不影响默认 `claudeAgent`，保留 `claude-home` 会话数据和共享桥接）：先结束正在运行的 Claude VPS 会话，再运行 `pwsh -NoProfile -File .\uninstall.ps1`，等同于 `node .\t3-native\manage-native.mjs uninstall`。
+- **卸载 T3 Code 接入**（不影响默认 `claudeAgent`，保留 `claude-home` 会话数据、共享桥接和共享 Shim）：先结束正在运行的 Claude VPS 会话，再运行 `pwsh -NoProfile -File .\uninstall.ps1`，等同于 `node .\t3-native\manage-native.mjs uninstall`。
+- **卸载标准 ACP 包装器**：运行 `pwsh -NoProfile -File .\install.ps1 -AcpOnly -Uninstall`（或 `node .\acp\manage-acp.mjs uninstall`）；`uninstall.ps1` 不处理它。
 - **停用或卸载 CodexHost 插件**：运行 `pwsh -NoProfile -File .\install.ps1 -Disable`（或 `-Uninstall`），仅移除启用条目并保留插件代码、会话与数据。详情见[维护说明](OPERATIONS.md)。
 
 ## 运行中可以追加指令吗？
