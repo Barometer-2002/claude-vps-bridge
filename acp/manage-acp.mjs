@@ -109,6 +109,7 @@ async function runAcpStdioHandshakeTest(exePath, { shimExe, env = process.env } 
         && caps?.mcpCapabilities?.sse === false
         && caps?.mcpCapabilities?.acp === false
         && caps?.loadSession === false
+        && Object.hasOwn(caps?.sessionCapabilities ?? {}, 'resume')
         && !('providers' in (caps ?? {}));
       finish(valid
         ? { ok: true, upstreamVersion: initResp.agentInfo?.version ?? null }

@@ -1,36 +1,34 @@
-# 本地优化到 GitHub
+# 贡献指南
 
-本仓库是可公开源码的维护入口。个人部署目录用来保存配置、历史证据与备份，不能作为整目录导入来源。
+在源码仓库中开发和验证。提交时逐文件挑选源码、公开示例和文档。个人安装目录里的配置和运行数据只供本地验证。
 
-## 推荐流程
+## 修改从哪里开始
 
-1. 在本仓库创建功能分支，明确要改变的行为与受影响接口。
-2. 修改代码，在本地验证受影响的行为，并在 PR 中说明复现步骤和验证结果。测试脚本与私人部署报告不随公开源码发布。
-3. 运行 `python scripts/check.py` 检查源码语法与插件入口文件，再运行 `python scripts/check-public.py` 检查公开内容。
-4. 阅读 `git diff`，仅暂存拟公开的文件，再运行 `python scripts/check-public.py --staged`。
-5. 检查提交的作者邮箱与内容，再提交并推送该分支，必要时创建 PR。
+- **客户端接入**（`shim/`、`t3-native/`、`acp/`）：改动宿主协议或权限时，核对其他入口依赖的公共行为。
+- **共享核心**（`plugin/`、`installer/`、`remote/`）：更新上游来源的实现时，检查插件 ID、目录和旧数据兼容性。见 [Fork 说明](docs/FORK_CHANGES.md)。
+- **扩展工具**：按 [扩展接口](docs/EXTENDING.md) 说明执行位置、权限和失败语义。
 
-不要从部署目录递归复制文件。需要迁移已验证的修复时，按文件和 diff 移入源码；不迁移安装状态或开发者日志。
+## 验证
 
-## 本仓库是 fork
+在隔离项目中验证实际变动路径。优先运行对应的定向测试，再运行相关隔离测试。记录测试所用宿主、模式和版本。
 
-本仓库 fork 自 [`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge)。改动前先判断它属于哪一部分：
+```powershell
+python .\scripts\check.py
+git diff --check
+```
 
-- **T3 接入层**（`shim/`、`t3-native/`、`acp/`、`remote/claude-stream-relay.mjs`、`remote/initialize-prompt.mjs`、`uninstall.ps1`）：本 fork 独有，直接在这里修改。
-- **核心桥接**（`plugin/`、`remote/` 其余文件、`installer/`）：来自上游。修改要保持向后兼容，不改插件 ID、配置文件名和远端目录；不加参数的 `install.ps1` 仍要与上游行为一致。
-- 改动了上游来源的文件时，同步更新 [docs/FORK_CHANGES.md](docs/FORK_CHANGES.md) 的差异说明和文件清单。
-- 与 T3 无关、且上游同样存在的问题，可以考虑同时向上游反馈。
+暂存后检查要公开的内容：
 
-## 修改边界
+```powershell
+python .\scripts\check-public.py --staged
+git diff --cached --check
+git diff --cached
+```
 
-- 核心连接、项目身份、工具配置和宿主兼容分别维护。添加工具不能成为基础安装的前置条件。
-- 配置、登录及升级不会自动获得额外的项目操作权限。
-- 结果未知时优先恢复或查询原操作，不能以自动重试掩盖副作用。
-- 对源码测试、隔离测试、已安装运行时和桌面操作分别说明验证结果。
-- 变更宿主兼容层时，检查原生 Codex 和其他 Harness 的原路径。
+CI 在 Windows 和 Linux 跑源码与公开内容检查，覆盖 Shim 与 ACP 离线自检，Windows 上还编译启动器并试跑。
 
-## 不应进入提交的内容
+## 公开材料
 
-本机/VPS 配置、授权头、token、SSH 密钥、Claude 凭据、机器与项目标识、原生会话、日志、截图、安装备份和生成报告。
+发布前审查私有路径、账号、授权、聊天、任务日志和备份。测试脚本留在本地开发目录。截图由检查器绑定固定路径和内容哈希，新增截图需单独检查。提交使用可公开的作者身份。
 
-自动检查是辅助检查，不替代人工审阅。不要通过新增忽略规则或扩大扫描例外来绕过一个真实的敏感内容问题。
+将本地验证脚本放在 `tests/` 或 `_checks/`，将临时渲染和导出放在 `output/`。文档正式引用的图片放在 `docs/assets/`。清理开发产物时，保留安装配置、运行状态和 `transactions/` 中用于回滚的记录。部署数据的清理方法见 [运维与排障](docs/OPERATIONS.md#日志清理)。

@@ -1,91 +1,60 @@
-# 架构与数据边界
+# 架构与数据流
 
-本文描述桥接的模块划分、恢复机制和数据去向。大部分内容（SSH 双向通道、协议 3、Windows 工作区运行时、CodexHost 插件）沿用上游 `vv-get-ti/claude-vps-bridge`；本 fork 新增的是 T3 Code 接入层（`t3-native/` 与 `remote/claude-stream-relay.mjs`），它复用同一套通道和运行时。T3 接入的数据流图见 [T3 Code 指南](T3CODE.md)，与上游的差异见 [Fork 说明](FORK_CHANGES.md)。
+Claude Code 在 VPS 负责模型请求和原生会话管理。桥接把受支持的项目操作送回 Windows 执行，并把结果返回 VPS。T3 和 ACP 使用不同的 Windows 客户端入口，两者共用 Shim、VPS Claude CLI relay 和 Windows 工作区实现。
 
-## 模块职责
+## 整体架构
 
-| 模块 | 职责 | 不应承担 |
-|---|---|---|
-| `shim/` | 中立 Claude VPS Shim 内核（`claude-vps-shim.exe`/`.mjs`、`http-mcp-client.mjs`、`mcp-policy.mjs`、`bridge-installation.mjs`、`stream-presenter.mjs`、`manage-shim.mjs`），直通 `stream-json`、读图路径双向回映射、把 `windows-workspace` 结果呈现为 T3 原生工具卡片，并在本机隔离 T3 / 自定义 MCP 凭据 | 修改默认 `claudeAgent` 或将 T3 Token 发往 VPS |
-| `t3-native/` | T3 Code 原生注册管理（`manage-native.mjs`）：把 `shim/` 注册为独立的 `claude-vps` 实例，负责安装、状态与卸载 | 承载 Shim 的运行逻辑，或修改默认 `claudeAgent` |
-| `acp/` | 标准 ACP 薄包装（`claude-vps-acp.mjs`、`manage-acp.mjs`、`workspace-presenter.mjs`），复用锁定版本的官方 `@agentclientprotocol/claude-agent-acp`，与 `t3-native/` 共用 `shim/` | 自行实现 ACP 协议或改动官方包 |
-| `plugin/plugin.mjs` | 满足上游兼容的 CodexHost Harness 接口，对应本机项目与远端会话 | 提供模型账号、代登录 |
-| `plugin/runtime/ssh-transport.mjs` | 持久连接、同一 relay 的消息确认与恢复 | 在结果未知时用新编号重做操作 |
-| `remote/remote-server.mjs` | 通过受管理的上游适配器运行官方 Claude，关联本机工具请求 | 保存整个本机项目的同步副本 |
-| `remote/claude-stream-relay.mjs` | 为 `shim/` 中立 Shim 直连 VPS 原版 Claude Code `stream-json`，复用 `tool-bridge.mjs` 与 `workspace-guard.py`；`initialize-prompt.mjs` 在宿主下发自己的 `appendSystemPrompt` 时，将它与桥接说明合并，不让宿主内容覆盖桥接说明 | 实现反代、篡改登录态或修改 VPS 全局 `~/.claude` |
-| `plugin/runtime/workspace-runtime.mjs` | 本机文件、任务、权限与结果登记 | 将目录检查宣传为系统沙箱 |
-| `plugin/runtime/project-environment.mjs` | 读取和解释支持的本机规则、能力与 Hooks | 假装所有 Claude 原生选项已兼容 |
-| 可选 MCP 模块 | 声明工具的执行位置、权限和生命周期 | 决定基础桥接能否安装 |
-| 安装与配置脚本 | 准备并校验官方依赖、检查、更新与恢复代码 | 将凭据、原生历史或项目文件随代码回滚 |
+```mermaid
+flowchart LR
+    T3["T3 Code"] --> SHIM["Windows 共享 Shim"]
+    ACP["ACP v1 客户端"] --> WRAP["Windows ACP 包装器"]
+    WRAP --> SHIM
+    HOST["CodexHost 插件"] <-->|SSH| ADAPTER["VPS 官方适配器入口"]
+    SHIM <-->|SSH / stream-json| RELAY["VPS Claude CLI relay"]
+    RELAY --> CLAUDE["VPS 官方 Claude Code"]
+    ADAPTER --> CLAUDE
+    SHIM --> LOCAL["Windows 工作区执行"]
+    HOST --> LOCAL
+    SHIM --> MCP["Windows HTTP / Stdio MCP"]
+```
 
-## 项目与会话身份
+## 各模块职责
 
-本机真实路径与稳定机器标识产生项目身份。远端协调目录记录对应关系，重名时使用稳定后缀。会话和工具请求都绑定该身份，参数不能覆盖绑定关系。
+| 源码位置 | 做什么 |
+| --- | --- |
+| `t3-native/manage-native.mjs` | 在 T3 用户配置中安装、检查或移除受管 Provider。 |
+| `acp/` | 启动锁定版本的上游 ACP Agent，收窄 ACP v1 能力，转换工作区事件和审批预览。 |
+| `shim/` | 启动并转发 Claude CLI 流，适配本机 MCP、工具卡片和附件路径。ACP 续接时，启动前在 VPS 核对旧会话是否属于当前 Windows 工作区。 |
+| `remote/claude-stream-relay.mjs` | 在 VPS 启动官方 Claude CLI 和工作区工具通道，合并宿主附加提示和桥接说明。 |
+| `plugin/`、`remote/remote-server.mjs` | CodexHost 的 Harness 接口与远端受管适配器。 |
+| `plugin/runtime/`、`remote/tool-bridge.mjs` | 执行本机工作区操作，处理任务、路径、项目规则、权限、MCP 与写入协调。 |
+| `installer/` | 发现依赖、准备两端文件、校验部署、记录并恢复事务。 |
 
-原生会话引用属于 VPS Claude；桌面聊天引用属于 Host。fork 需要同时继承正确的历史、项目身份与已授权附件。聊天分支共用工作文件，不能据此认为文件已经隔离。
+## 项目身份与权限
 
-## 状态、恢复与可见性
+真实 Windows 路径和机器标识用于生成项目身份。会话和工具请求都绑定该身份。VPS 维护协调目录，文件读写仍由 Windows 执行。
 
-SSH 连接与远端 relay 分离。临时断线或切换线路时可以重新连接原 relay、按游标恢复事件，并对相同请求编号去重。relay 崩溃、重启或事件超出保留范围时，结果可能未知；不提供跨机器崩溃的 exactly-once 保证。
+`plugin/runtime/workspace-request-schema.json` 定义工作区动作。VPS 先检查结构，Windows 在执行前重新校验字段、权限和路径。写入可要求内容哈希，项目规则和 Hooks 参与执行检查。写入协调覆盖桥接的结构化编辑、命令生命周期及受管委派。未知任务仍可能持有锁，外部程序对同一目录的写入需要另外核对。
 
-SSH 端的轻量 Python 进程只转发字节，每个方向最多缓存 128 KiB；帧校验、重放和去重仍由原 relay 负责。连接结束时排空已收到的输出，不改变模型输入、附件内容或提示词缓存。
+本机执行器按需启动，以独立命名管道管理任务。命令输出完整保存在本机，状态预览每路最多 64 KiB。搜索先检查逐文件权限，完整结果保存在本机快照并分页读取。旧日志由 [维护命令](OPERATIONS.md#日志清理) 清理。
 
-向宿主报告的投递结果分三种：确定没有送出、对端明确拒绝、已送出但结果未知。前两种返回 `ok:false`，宿主可以安全地重新投递；结果未知时抛出异常，CodexHost（0.20.0 起）据此暂停队列且不重放。本机任务启动和 adapter execute 共用同一分类（`plugin/runtime/delivery-outcome.mjs`）；无法证明没送出时一律按未知处理。
+## 连接中断与恢复
 
-账号额度查询与交互解耦：打开会话、输出、追加指令和取消都不等待额度结果。只有成功的账号查询会更新快照，失败或空结果保留上次可靠数据。提示词缓存只保存上游给出的绝对到期时间。
+| 路径 | 行为 |
+| --- | --- |
+| **CodexHost** | 桥接协议 3 的持久 relay，消息有请求编号和确认游标。大响应分块发送，小响应可插队。重连后按游标恢复并去重。relay 消失或保留范围耗尽时，操作结果可能未知。 |
+| **T3 / ACP** | Shim 启动 VPS `stream-json` relay，启动时可尝试备用线路。SSH 中断时保留可查询的本机任务编号，随后核对任务与原生会话状态。 |
 
-VPS 入口直接启动官方 Claude Code，不做启动排队或内存预算；低内存下的容量限制需要另行设计并完成实际验收。
+远端适配器最低版本和桥接协议见 [依赖策略](../installer/dependency-policy.json)。
 
-宿主查询后台工作时，桥接合并原生后台任务、本机项目持久任务及浏览器会话；未知状态按忙碌处理，空闲结果缓存最多 5 秒并随活动失效。关闭未确认时保留绑定与输出；close 的等待方收到失败，同时为未等待返回值的调用方附加拒绝处理，避免宿主因未处理拒绝退出。成功关闭只依据远端确认，后置 hook 失败与原生进程已经关闭分别记录。
+## 数据存放
 
-Windows 长任务由本机执行器托管，生命周期独立于 SSH。停止聊天与取消本机任务必须分别确认。文件结果使用实际路径和哈希，展示失败与任务失败分开处理。
+| 数据 | 位置 |
+| --- | --- |
+| 项目文件、搜索快照、任务日志 | Windows。读取返回的片段会经过 VPS，可能进入模型请求。 |
+| 对话、规则、附件 | 作为模型输入经 VPS。VPS 保存原生会话和桥接缓存，客户端也可能保存聊天数据。 |
+| Claude 登录 | VPS 上的官方 Claude Code 管理。VPS 的 CLI 和环境决定账号与模型服务。 |
+| 本机 MCP | 连接配置在 Windows 使用。工具的调用参数和结果可经桥接传输。 |
+| 安装配置与事务 | Windows 保留已部署配置和事务记录，VPS 保留远端配置和受管文件清单。 |
 
-本机执行器使用 protocol 2 的独立命名管道，按需启动且空闲退出。持久启动记录阻止并发提交和执行器重启后的重复启动；结果不明的任务保留原编号。命令输出流式写入本机任务日志，不按大小轮转或覆盖；状态返回末尾 64 KiB 预览，完整内容按字节偏移分页读取。写入失败会令任务失败，不把缺失结果标成成功。日志随任务数据保留，占用本机磁盘空间。文件成品校验失败不再覆盖命令本身成功的退出结果。
-
-任务状态返回每路日志末尾最多 64 KiB，并携带字节范围和截断标识。`job operation=output` 按项目内的任务编号分页读取保留日志，支持 stdout/stderr、上一轮转段和段身份校验；不会接受任意日志路径，也不会重新执行任务。分页保留 UTF-8 字符边界。任务结束后的残缺或非 UTF-8 输出以 Base64 返回原始字节，并注明解码状态；活动流的半个字符才会等待后续字节。旧任务已被轮转移除的内容不视为可恢复。
-
-搜索先枚举目标，并在读取每个文件前检查权限。完整结果写入本机快照，按字节分页；分页不重新搜索，权限与规则变化后旧快照拒绝继续读取。命令日志和搜索结果只通过显式维护命令清理，不按容量自动丢弃。
-
-工具选择和处理方法由 Claude 决定。桥接将本机程序产生的图片/PDF 按原始字节传给原生 Read，文本通过文件或任务输出读取。视频只返回本机文件信息；抽帧等处理通过 Claude 自行选择的本机程序执行。桥接不自动分析视频、选择转写工具或安装媒体依赖。
-
-图片/PDF 缓存按会话和内容哈希保存。重复请求仍在本机检查文件授权、大小和内容哈希；匹配时只返回缓存引用，远端重新验证文件哈希与长度。缓存缺失或损坏可补取一次 media-export 原始字节；权限拒绝、其他工具错误和结果未知的断线不进入补取路径。缓存只减少传输，不改变模型的附件路径/结果结构，不改变提示词缓存规则。远端工具响应按块收集后一次合并，继续保留 48 MiB 上限。
-
-项目写入协调覆盖结构化修改、完整后台命令生命周期和委派任务。委派只有收到匹配线程的终态 read/wait，且其受管理本机任务停止后才释放。持有预留的子线程可以通过 `thread send --steer true` 追加指令，沿用原写入所有权；其他线程和项目仍被拒绝。终态读取与追加指令同时发生、或追加结果未知时保留写入权，避免在子线程仍可能写入时提前释放。结果未知的锁不会按 PID 消失或超时自动抢占。不同 worktree 使用独立项目身份，应用成果时同时取得源目录和候选目录的写入权，并检查两个 HEAD 与干净状态。
-
-这些是参与桥接的任务之间的协作规则。通过外部编辑器、其他程序或具有完整用户权限的终端产生的修改仍需要 Git/文件哈希冲突检查，不能将协作锁称为系统沙箱。
-
-远端 relay 的独占启动使用 Linux 内核 flock，进程退出自动释放，旧空锁目录不再阻断恢复。打开中的会话收到关闭请求会先记录取消意图，迟到的资源仍须释放；只有完成清理才确认关闭。
-
-桥接协议 3 在两个方向上把大消息拆成小块（默认 32 KiB），并按字节确认；已发出但未确认的数据不超过窗口（默认 64 KiB），其余留在发送方自己的队列里。这样已经交给 SSH 的数据始终很少，控制消息和小回复可以排到大响应的后续分块之前，线路变慢时也只需等待少量在途字节。请求超时、被取消或会话关闭时，Windows 按原请求编号通知 relay，relay 丢弃尚未发出的分块，并以 `CANCELLED` 终结该请求；写操作被放弃后仍按“结果未知”处理，取消不代表没有执行。
-
-同一会话的并发只读请求合并为一次。快照响应带内容摘要：内容未变时只回一个“未变化”标记，只追加了新轮次时只传新增部分，插件复原后再核对摘要，向宿主返回与原来相同的结构。插件按最近使用保留最多 32 个会话、共 16 MiB 的快照。
-
-桥接协议号只来自 `installer/dependency-policy.json` 的 `bridgeProtocol`。旧 relay 遇到新客户端时按旧格式完成已受理请求；旧客户端连到新 relay 会在受理任何请求前被拒绝。安装不强制结束旧 relay，它们在空闲或离线到期后自行退出。
-
-SSH 线路由 `plugin/runtime/ssh-routes.mjs` 统一校验和选择，所有发起 SSH 的入口（持久连接、诊断、安装、升级校验、可选工具配置）共用它。每条新 SSH 连接上的 VPS 进程（`remote/transport-proxy.py`、`check-health`）通过 `remote/ssh_ingress.py` 观测本连接的实际入口：对端是外部地址记为 direct，是本机地址记为 local-proxy，并在能确认时给出对端进程名；结果不含任何地址。
-
-传输使用单调请求序号、确认游标及有界事件保留。本机控制请求也采用进程 epoch 与单调水位去重，无需累计保存每个历史编号；只有确认空闲 relay 重建时重置，旧协议保留有界兼容策略。已确认结果可以释放内存，退休请求序号仍被拒绝重放。插件事件队列满时报告明确故障并请求取消，用户可以从原生历史恢复；不会把丢弃事件伪装成正常完成。
-
-## 数据会去哪里
-
-项目文件保留在 Windows，但工具返回的文件文本、规则、日志片段和选择的附件会进入远端会话，并可能发送到模型服务提供方。凭据留在 VPS 不等于项目内容永远不会离开 Windows。
-
-可选 Tavily 在 VPS 发起请求；Playwright 在 Windows 的隔离浏览器上下文运行。其他工具接入前，需要先声明并验证其执行位置和数据流。
-
-## 宿主接口
-
-插件通过公开 Harness adapter 的 `open`、`execute`、`outputs`、`readCapabilities`、历史与用量接口连接宿主，通过公开 CLI 进行委派。安装只更新插件目录与启用列表；不改写、不加载宿主 bundle，也不读取宿主内部 mapping-store。
-
-VPS 依赖跟随官方 `@codexhost/cli` 的 latest 发布，最低版本见 `installer/dependency-policy.json`。新版本先装到临时目录，通过检查后才可被选用，不通过则保留当前版本。准备、部署和升级检查共用一个入口，核对包名与版本、适配器入口、`createHarnessAdapter` 和适配器 SHA256；health 同时返回依赖版本、适配器哈希、插件版本与协议，安装校验逐项比对。插件版本只来自 `plugin/manifest.json`。
-
-插件不复刻上游规则，这样宿主升级时无需同步修改：fork 的轮次边界以官方适配器的 fork 结果为准，插件只核对检查点归属和每轮输入一致，附件继承也按官方实际保留的轮次授权；委派 CLI 的子命令原样转发，只按通用规则校验会话引用。
-
-部署按受管文件清单（VPS 上的 `managed-files.json`）更新文件。不再发布的受管文件在同一事务中删除，可随事务回滚；无法证明属于本插件的文件保持原状，内容被改动过的退役文件会让事务停止。
-
-`windows-workspace` 每个 action 的允许字段、类型和必填项由 `plugin/runtime/workspace-request-schema.json` 统一定义。`read` 同时支持 0 基的 `offset` / `limit` 与 1 基的 `startLine` / `endLine`。VPS 端提前校验，Windows 端在权限与业务处理前权威校验；未知字段直接报错并列出允许字段，不再被静默忽略。`agent` 通道中，桥接需要读取任务身份和终态的命令（`delegate start`、`thread send/read/wait`）不会以 text 格式执行，CLI 成功与否只由退出码决定。
-
-公开接口提供的结构化附件在本机保留来源身份，传给远端前单独提取精确路径；普通正文中的路径、代码示例和 Markdown 链接不产生附件授权。纯文本入口按上游 Desktop 附件清单的语法解析：标题开始一份文件清单，隔离提示行结束它，远程准备前置的清单可以再开始一份；图片与文档可以混排，只发图片时没有请求标题也能识别；清单之外的条目一律视为正文。纯文本入口本身没有独立的来源字段。UNC 和扩展 Windows 路径按同一规则处理。内联图片原样落盘，本机接收上限与远端单次传输上限分开；大于 5 MiB 的本机图片/PDF以路径与大小描述交给 Claude，不自动转换或阻断整轮。
-
-模型观测来自远端 `usage.request.model`，按本机会话和轮次保存到插件自己的 `runtime/state/models`。目录默认与 requested/effective model 只作为配置选择；思考 Auto 不证明某一请求的实际模型。提示词缓存只保存上游已给出的绝对到期时间，位于远端工作区根下 `.bridge-cache`，按原生会话及项目绑定，不跨项目复用。
-
-模型控件和回答顺序沿用宿主原有行为。插件在后台保存本轮响应中的实际模型标识，不插入聊天附注，也不生成会话状态事件。观测记录保存失败只产生诊断事件，不影响最终回答的识别与排序。远端事件在进入插件时统一完成 Harness 身份转换，诊断与展示均使用转换后的事件。
+图片和 PDF 按会话与哈希缓存，复用前核对权限与内容。详见 [附件指南](ATTACHMENTS.md)。

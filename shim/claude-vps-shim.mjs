@@ -174,6 +174,7 @@ export function parseShimArgs(argv) {
   let pureSelfTest = false;
   let claudeSessionId = null;
   let resumesSession = false;
+  let resumeSessionId = null;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -240,7 +241,10 @@ export function parseShimArgs(argv) {
     if (flag === '--session-id' || flag === '--resume' || flag === '-r') {
       const val = readValue();
       if (UUID_RE.test(val)) claudeSessionId = val;
-      if (flag !== '--session-id') resumesSession = true;
+      if (flag !== '--session-id') {
+        resumesSession = true;
+        resumeSessionId = UUID_RE.test(val) ? val : null;
+      }
       forwarded.push(flag, val);
       continue;
     }
@@ -334,6 +338,7 @@ export function parseShimArgs(argv) {
     extraSettings,
     claudeSessionId,
     resumesSession,
+    resumeSessionId,
     initialPermissionMode,
     hasPermissionPromptTool,
     hasAllowDangerouslySkip,
@@ -341,6 +346,61 @@ export function parseShimArgs(argv) {
     requestedTools,
     disallowedTools,
   };
+}
+
+// Evaluated on the VPS immediately before starting the relay. Use the same
+// workspace mapping as the relay, and the transcript's cwd to disambiguate
+// workspaces that Claude encodes to the same directory name.
+async function verifyAcpResume(bridgeRoot, workspaceInfo, sessionId) {
+  const { open, readdir, realpath } = await import('node:fs/promises');
+  const { constants } = await import('node:fs');
+  const { homedir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { createInterface } = await import('node:readline');
+  const { pathToFileURL } = await import('node:url');
+  const { prepareWorkspace } = await import(pathToFileURL(join(bridgeRoot, 'workspace-map.mjs')).href);
+  const { workspaceRoot } = await import(pathToFileURL(join(bridgeRoot, 'remote-config.mjs')).href);
+  const { directory } = await prepareWorkspace(workspaceInfo, workspaceRoot);
+  const expectedCwd = await realpath(directory);
+  const projects = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+  const entries = await readdir(projects, { withFileTypes: true }).catch(error => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  let matched = false;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const file = await open(join(projects, entry.name, `${sessionId}.jsonl`), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      .catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+    if (!file) continue;
+    if (!(await file.stat()).isFile()) {
+      await file.close();
+      return false;
+    }
+    const stream = file.createReadStream();
+    const lines = createInterface({ input: stream, crlfDelay: Infinity });
+    let cwd;
+    try {
+      for await (const line of lines) {
+        let record;
+        try { record = JSON.parse(line); } catch { continue; }
+        if (record?.sessionId === sessionId && record.type === 'user' && typeof record.cwd === 'string') {
+          cwd = record.cwd;
+          break;
+        }
+      }
+    } finally {
+      lines.close();
+      stream.destroy();
+      await file.close();
+    }
+    if (matched || cwd !== expectedCwd) return false;
+    matched = true;
+  }
+  return matched;
 }
 
 function shellQuote(value) {
@@ -2204,7 +2264,19 @@ async function main() {
   const routes = new SshRoutes(config);
   const remoteNode = config.remoteNodeExecutable || 'node';
   const relayScript = `${config.remoteRoot}/claude-stream-relay.mjs`;
-  const remoteCmd = `${shellQuote(remoteNode)} ${shellQuote(relayScript)}`;
+  let remoteCmd = `${shellQuote(remoteNode)} ${shellQuote(relayScript)}`;
+  if (process.env.CLAUDE_VPS_ACP === '1' && parsed.resumesSession) {
+    if (probeOnly || !parsed.resumeSessionId) throw new Error('ACP resume requires a Claude session UUID and Windows workspace');
+    const { cwd: projectCwd, projectId, machineId, machine } = info;
+    const check = `const [root, info, id] = process.argv.slice(1);
+      if (!await (${verifyAcpResume})(root, JSON.parse(info), id)) {
+        console.error('No conversation found with session ID: ' + id + ' in this Windows workspace');
+        process.exitCode = 1;
+      }`;
+    const inputs = [config.remoteRoot, JSON.stringify({ cwd: projectCwd, projectId, machineId, machine }), parsed.resumeSessionId];
+    const command = [remoteNode, '--input-type=module', '-e', check, ...inputs].map(shellQuote).join(' ');
+    remoteCmd = `${command} && exec ${remoteCmd}`;
+  }
 
   const connected = await routes.firstAvailable(async route => {
     const sshArgs = route.args(remoteCmd, { connectTimeout: 12, keepAlive: true });

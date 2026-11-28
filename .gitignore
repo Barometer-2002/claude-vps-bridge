@@ -22,6 +22,8 @@ __pycache__/
 .test-*
 
 # Local development checks are not part of the public distribution.
+/_checks/
+/.claude-vps/render/
 test-*
 benchmark-*
 tests/

@@ -1,154 +1,74 @@
-# 安装与 VPS 登录
+# 安装指南
 
-本指南介绍如何安装 **T3 Claude VPS（`t3-claude-vps`）**：准备 Windows 和 VPS 两端环境、配置免密 SSH、在 VPS 登录 Claude Code，然后部署。默认按只用 T3 Code 的方式安装；第 4 步也列出了与 CodexHost 共存，以及只装 CodexHost 插件（与上游 `claude-vps-bridge` 相同）的方法。
+把 VPS 上已登录的 Claude Code 和 Windows 上的开发环境连起来。下面以 T3 Code 独立模式为例。CodexHost 入口见 [兼容说明](COMPATIBILITY.md)。
 
----
+## 两端依赖
 
-## 1. 先准备两端环境
+| 位置 | 需要什么 |
+| --- | --- |
+| **Windows** | Node.js 24+、npm、PowerShell 7、OpenSSH 客户端、Python 3.11+。项目搜索需要 ripgrep（`rg`）。T3 启动器编译使用 .NET Framework 的 `csc.exe`。 |
+| **Linux VPS** | Bash、Python 3、Node.js 24、官方 Claude Code，使用可写主目录的普通用户。PDF 渲染按需使用 `pdftoppm`。 |
+| **T3 Code** | 安装并启动一次以生成用户设置。默认数据目录 `%USERPROFILE%\.t3`。 |
 
-### Windows 本机
+Claude Code 的安装与登录在 VPS 上完成，参阅 [官方安装](https://code.claude.com/docs/en/setup) 和 [认证说明](https://code.claude.com/docs/en/authentication)。
 
-- **[T3 Code](https://github.com/pingdotgg/t3code)**（安装并至少打开一次，以生成 `%USERPROFILE%\.t3\userdata\settings.json`）
-- **Node.js 24+** 与 **npm**
-- **PowerShell 7**（`pwsh`）
-- **OpenSSH 客户端**（无需开启 Windows SSH 服务端）
-- **Python 3.11+**（安装与本机配置脚本使用标准库 `tomllib`）
-- **[ripgrep](https://github.com/BurntSushi/ripgrep#installation)**（`rg --version` 应正常输出，项目搜索依赖该程序）
-- **Windows 内置 .NET Framework 4**（`csc.exe`，用于编译原生 Shim 轻量启动器 `claude-vps-shim.exe`，Windows 10/11 默认自带）
-- *可选*：如需同时兼容 CodexHost 桌面端，准备 CodexHost 0.20.0+（[发布页](https://github.com/BytePioneer-AI/codex-host/releases)）；如需本机浏览器 MCP，准备本机 Chrome。
+## 获取源码
 
-### Linux x64 VPS
+```powershell
+git clone https://github.com/Barometer-2002/t3-claude-vps.git
+cd t3-claude-vps
+```
 
-- Python 3、Bash、Node.js 24 / npm
-- 已安装的官方 [Claude Code](https://code.claude.com/docs/en/setup)
-- 使用有权写入自身主目录的普通用户即可，**不要求 root**
-- *可选*：PDF 按页读取需要 `pdftoppm`（通常来自 `poppler-utils`），不影响基础聊天。
+已有源码目录的直接进入。
 
----
+## 配置 SSH
 
-## 2. 配置免密 SSH
-
-在 Windows 的 `~/.ssh/config` 中建立指向 VPS 的别名，例如：
+在 Windows `~/.ssh/config` 中定义 SSH 别名，把主机、用户和密钥换成自己的：
 
 ```sshconfig
 Host my-linux-host
-    HostName YOUR_VPS_HOST
+    HostName vps.example.com
     User YOUR_LINUX_USER
     IdentityFile ~/.ssh/id_ed25519
     IdentitiesOnly yes
 ```
 
-首次使用 `ssh my-linux-host` 时，核对 VPS 控制台或管理员提供的主机指纹。完成公钥授权后再检查非交互连接与远端程序路径：
+以 VPS 控制台提供的指纹为准完成首次连接，然后测试免密登录：
 
 ```powershell
-ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes my-linux-host 'echo SSH_READY'
-ssh my-linux-host 'command -v python3 node npm claude'
-```
+# 测试非交互连接
+ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes my-linux-host 'printf "SSH_READY\n"'
 
-连接由 Windows 主动发起，无需开启 Windows SSH 服务或开放任何本机端口。
-
-自检应输出四个程序的路径。非交互 SSH 不一定加载交互终端中的 nvm/fnm 配置；安装器会用登录 shell 探测并尝试常见用户安装位置。若仍找不到，可在配置时显式传入 `--remote-claude /绝对路径/claude` 或 `--remote-node /绝对路径/node`。
-
-默认使用 PATH 中的 SSH；需要指定客户端时可给 `configure.py` 加 `--ssh-executable 'C:\Windows\System32\OpenSSH\ssh.exe'`（示例路径）。输出会显示实际路径与版本，诊断也使用同一客户端。
-
----
-
-## 3. 在 VPS 登录官方 Claude Code
-
-打开交互式远端终端：
-
-```powershell
+# 进入 VPS 交互终端，检查依赖并登录 Claude
 ssh -t my-linux-host
 ```
 
-确认提示符位于你的 VPS 后执行：
+在 VPS 终端中：
 
 ```bash
+command -v python3 node claude
 claude --version
-claude auth login
+claude auth login          # 若已登录可跳过
 ```
 
-按终端提示完成浏览器授权（浏览器可在本机打开，授权命令与凭据均留在 VPS，切勿将授权码粘贴进聊天或公开 Issue）。完成后可启动一次 `claude` 确认能正常对话。登录问题请参考[官方认证文档](https://code.claude.com/docs/en/authentication)。
+非交互 shell 找不到 Node 或 Claude 时，可传 `--remote-node`、`--remote-claude` 的绝对路径给配置器，见 [配置参考](CONFIGURATION.md)。
 
----
+## 安装
 
-## 4. 回到 Windows 部署 T3 Claude VPS
-
-在仓库根目录打开 **PowerShell 7**：
-
-### 场景 A：纯 T3 Code 独立安装（推荐，无需 CodexHost 桌面端）
+在源码根目录用 PowerShell 7 执行，把 `my-linux-host` 换成上面验证过的 SSH 别名：
 
 ```powershell
-# 1. 生成连接配置（将 my-linux-host 替换为你的 SSH 别名）
 python .\installer\configure.py --ssh-host my-linux-host --t3-only
-
-# 2. 部署两端桥接 + 注册官方原生实例 Claude VPS
 pwsh -NoProfile -File .\install.ps1 -T3Only
-```
-
-### 场景 B：T3 Code 与 CodexHost 双宿共存
-
-```powershell
-python .\installer\configure.py --ssh-host my-linux-host --host-root 'D:\Apps\CodexHost'
-pwsh -NoProfile -File .\install.ps1 -WithT3
-```
-
-### 场景 C：仅安装 CodexHost 插件（上游兼容模式）
-
-```powershell
-python .\installer\configure.py --ssh-host my-linux-host --host-root 'D:\Apps\CodexHost'
-pwsh -NoProfile -File .\install.ps1
-```
-
-### 场景 D：同时安装标准 ACP 包装器
-
-```powershell
-# 与 T3 接入一起安装，两者共享同一个 Shim
-pwsh -NoProfile -File .\install.ps1 -T3Only -WithAcp
-
-# 只装 ACP 包装器
-pwsh -NoProfile -File .\install.ps1 -AcpOnly
-```
-
-包装器安装到 `%USERPROFILE%\.claude-vps\acp\`（用 `-AcpDir` 或 `CLAUDE_VPS_ACP_DIR` 修改），生成 `claude-vps-acp.exe`，供支持 ACP 的客户端启动。它按锁文件通过 npm 安装锁定版本的官方 `@agentclientprotocol/claude-agent-acp`，因此首次安装需要 npm 能联网。v1.1.0 的 ACP 包装器只做过源码检查和隔离测试，尚未经过真实账号验收。
-
-### 配置与部署细节说明
-
-- `configure.py` 会通过 SSH 验证远端可执行文件并生成 `bridge-config.local.json`（保留已有配置，不进入 Git）。安装脚本优先选择 `py -3` 或真实 Python 3.11+（自动排除 WindowsApps 占位程序）。独立模式的选项是 `--t3-only`（别名 `--standalone`，与 `--host-root` 互斥）；需要指定本机 Node.js 24+ 时加 `--node-executable <路径>`。
-- 两端部署采用事务式备份与文件哈希校验，保留既有会话和用户数据，不修改 T3 Code 或 CodexHost 任何程序文件。
-- 为保持与上游配置及数据目录兼容，核心桥接仍安装到 `%USERPROFILE%\.codexhost\plugins\claude-vps`。共享的中立 Shim（`claude-vps-shim.exe`）安装到 `%USERPROFILE%\.claude-vps\shim\`（用 `-ShimDir` 或环境变量 `CLAUDE_VPS_SHIM_DIR` 修改），T3 的 `Claude VPS` 实例在 `settings.json` 中指向它；该实例的 `claude-home` 仍保存在 `%USERPROFILE%\.t3\integrations\claude-vps-native\claude-home`。从 1.0.x 升级时，旧目录里的 Shim 文件会在安装时迁移并清理，`claude-home` 不动。可通过 `-T3Home` 或 `T3CODE_HOME` 指定自定义 T3 数据目录。
-- 使用 CodexHost 模式时，`codexhost` 在 PATH 且能定位目录可省略 `--host-root`；安装脚本仅支持默认 `%USERPROFILE%\.codexhost`（遇到自定义 `CODEXHOST_DATA_DIR` / `CODEXHOST_PLUGIN_DIRECTORY` 会安全停止）。旧版曾打过宿主补丁的用户请重装或升级 CodexHost 清除旧补丁。
-
----
-
-## 5. 验收与试用
-
-### 在 T3 Code 中验收
-
-1. 打开任意本机 Windows 测试项目，新建会话。
-2. 在模型选择器中选择 **`Claude VPS`**（原生 `claudeAgent` Shim）。如刚安装完未立即出现，可在 **Settings → Providers** 刷新或重启 T3 Code。
-3. 依次验证：
-   - **本机读写与 T3 MCP**：让它读取本机文件、查看当前 Windows 项目路径并调用 `t3_environment_read`。
-   - **实时额度与任务进度**：查看顶部 / 账号页 5h & 7d 实时额度圆环是否亮起，并测试 `TaskCreate` / `TaskUpdate` 进度面板。
-   - **图片预览渲染**：让它读取项目中的一张本地 PNG/JPG，确认 T3 Code 读图卡片正常渲染预览。
-
-同时可在终端执行快速健康检查（不提交模型请求）：
-
-```powershell
 node .\t3-native\manage-native.mjs status
-node .\shim\manage-shim.mjs status
-node .\plugin\diagnose.mjs --json
-
-# 装了标准 ACP 包装器时
-node .\acp\manage-acp.mjs status
 ```
 
-### 在 CodexHost 中验收（如已安装双宿/CodexHost 模式）
+> **已有配置？** 配置器会保留已有文件。用过其他接入方式时，核对 [配置读取顺序](CONFIGURATION.md#连接配置)。自定义 T3 数据目录或 Shim 目录时传入 `-T3Home` 或 `-ShimDir`。
 
-执行 `codexhost stop` 后重新打开 CodexHost（仅关闭桌面窗口不会重启共享后台），选择测试目录与 **Claude VPS Bridge**，验证本机文件读写、命令执行与重开续接。
+## 验证
 
----
+1. 运行 `node .\plugin\diagnose.mjs --json` 检查核心桥接，再用 `node .\t3-native\manage-native.mjs status` 查看 Provider 注册和远端探针。
+2. 在 T3 Code 中重新加载 Provider，选择 **Claude VPS** 并打开一个 Windows 测试项目。
+3. 先验证模型回复和已知文件读取，再按需测试权限提示、MCP、图片预览和会话续接。写入测试只用可丢弃的文件。
 
-## 6. 配置可选工具与多 SSH 线路
-
-如需启用 Tavily 搜索、Playwright 浏览器或配置 `direct` / SOCKS5 / `cloudflared` 多线路故障切换，见 [配置说明](CONFIGURATION.md)。日常排障与独立卸载见 [运维与排障](OPERATIONS.md) 与 [T3 Code 适配指南](T3CODE.md)。
+故障定位和回滚见 [运维与排障](OPERATIONS.md)。

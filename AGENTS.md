@@ -1,11 +1,15 @@
 # 仓库协作
 
-- 本目录是可公开源码的维护入口；上级目录及个人部署目录不属于本仓库。
-- 私有配置、凭据、聊天、运行报告、任务状态、截图和安装事务不得提交。
-- 测试和性能脚本留在本地开发目录，不加入公开仓库或发布包。验证使用隔离数据；真实账号验收须单独说明。
-- 开发调试优先使用定向单测（如 `node --test --test-name-pattern=... tests/<file>.test.mjs`）做秒级验证，收敛后再合跑全量隔离测试、`python scripts/check.py` 与 `python scripts/check-public.py --staged`。
-- 核心桥接不依赖任何特定可选 MCP。新增工具应在接入模块维护权限与生命周期。
-- 任何发布前运行 `python scripts/check.py`、`python scripts/check-public.py --staged` 并审阅 staged diff。
-- 不能将源码或隔离测试通过写成当前桌面已激活；不能声称任意宿主版本或所有原生 Claude 配置兼容。
-- 在 VPS 上执行维护命令时，把脚本写在单引号 here-string 里，经标准输入交给 `` ssh <host> "tr -d '\r' | bash -s" ``（PowerShell 管道会补 CRLF，必须在远端去掉），不要在一行里嵌套多层引号。
-- 提交使用不泄露私人邮箱的作者标识；发布范围以用户当前授权为准。
+## 仓库与状态
+
+- 在此源码仓库维护可公开的代码、示例和文档。上级目录与个人部署目录属于独立环境。
+- 私有配置、凭据、聊天、运行报告、任务状态、安装事务及未经审查的截图不得提交。使用不泄露私人邮箱的作者标识，发布范围按本次授权。
+- 测试与性能脚本留在本地开发目录。验证使用隔离数据，真实账号验收单独记录。
+
+## 验证与维护
+
+- 开发时先跑定向测试，例如 `node --test --test-name-pattern=... tests/<file>.test.mjs`。代码改动收敛后运行全量隔离测试。
+- 每次发布前运行 `python scripts/check.py`、`python scripts/check-public.py --staged`，并审阅暂存差异。检查方式详见 [贡献指南](CONTRIBUTING.md)。
+- 分别记录源码、隔离测试、已安装运行环境和客户端验收。宿主或 Claude 配置的兼容范围以实际证据为准。
+- 基础桥接独立于可选 MCP。工具接入模块负责自身权限、生命周期和失败后的状态。
+- Windows 通过 SSH 执行 VPS 维护脚本时，使用单引号 here-string，经标准输入传给 `ssh <host> "tr -d '\r' | bash -s"`。远端去除 PowerShell 管道添加的 CR，避免在一条命令里堆嵌套引号。

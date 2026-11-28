@@ -1,205 +1,76 @@
-# 运维、诊断、升级与排障
+# 运维与排障
 
-本文档覆盖 **T3 Claude VPS（`t3-claude-vps`）** 的日常运维，包括 T3 Code 原生接入管理、核心 Bridge 统一诊断、SSH 线路观测、日志清理、事务升级与回滚，以及上游兼容的 CodexHost 插件停用说明。
+先判断故障在哪一层，再决定重载客户端、修复接入还是恢复事务。诊断命令从源码根目录执行，自定义目录时沿用原来的参数或环境变量。
 
-## T3 Code 接入诊断、升级与独立卸载
-
-- **查看状态**（不提交模型请求；加 `--offline` 可跳过远端实时探针）：
+## 检查状态
 
 ```powershell
-node .\t3-native\manage-native.mjs status
+node .\plugin\diagnose.mjs --json          # 核心桥接，默认含远端检查
+node .\plugin\diagnose.mjs --local --json  # 只检查本机
+node .\t3-native\manage-native.mjs status  # T3 Provider
+node .\shim\manage-shim.mjs status         # 共享 Shim
+node .\acp\manage-acp.mjs status           # ACP 包装器
 ```
 
-- **旧位置迁移**：`status` 里 `usesLegacyLocation` 为 `true` 时，重新运行 `install` 即可迁移到共享 Shim，见 [T3 Code 指南](T3CODE.md)。
-- **同步升级**：在仓库根目录重新执行：
-  - 纯 T3 Code：`pwsh -NoProfile -File .\install.ps1 -T3Only`
-  - T3 Code + CodexHost 共存：`pwsh -NoProfile -File .\install.ps1 -WithT3`
-- **独立卸载（不碰默认 `claudeAgent`，保留 `claude-home` 会话数据）**：
+- `diagnose.mjs` 覆盖依赖、远端协议、任务和锁状态。退出码 `0` 无必需项失败，`1` 有必需项失败。
+- T3/Shim 状态区分离线自检、版本缓存和远端探针。ACP 状态含包装器自检和上游入口检查。管理器支持 `--offline`。
+- `plugin-activation` 对比已安装与宿主加载的版本：`current` 一致，`stale` 需重载，`not-loaded` 需检查插件实例。
+- **状态检查不提交模型请求**。桌面渲染、权限提示和真实账号需在客户端单独验证。
 
-```powershell
-node .\t3-native\manage-native.mjs uninstall
-```
+## SSH 线路
 
-## 中立 Shim 与标准 ACP 包装器
+`ssh-route` 显示已观测会话线路，`diagnostic-route` 反映诊断新建连接的结果。VPS 看到外部对端时记为 `direct`，看到本机代理时记为 `local-proxy`。
 
-中立 Shim（`shim/`）由 `t3-native/` 与 `acp/` 共用，安装在 `%USERPROFILE%\.claude-vps\shim\`，也可单独管理：
-
-```powershell
-node .\shim\manage-shim.mjs status
-node .\shim\manage-shim.mjs install
-```
-
-标准 ACP 包装器复用锁定版本的官方 `@agentclientprotocol/claude-agent-acp`。与 T3 接入一起安装时给 `install.ps1` 追加 `-WithAcp`（如 `-T3Only -WithAcp`），只装 ACP 包装器用 `-AcpOnly`。单独管理：
-
-```powershell
-node .\acp\manage-acp.mjs status
-node .\acp\manage-acp.mjs install
-node .\acp\manage-acp.mjs uninstall
-```
-
-卸载 T3 接入默认保留共享 Shim。给 `manage-native.mjs uninstall` 加 `--remove-shim` 才会移除它；如果仍有其他组件（如 ACP 包装器）引用，会报错并保留，再加 `--force` 才强制移除。卸载 ACP 包装器用 `node .\acp\manage-acp.mjs uninstall`，或 `pwsh -NoProfile -File .\install.ps1 -AcpOnly -Uninstall`；`uninstall.ps1` 只处理 T3 接入。
-
-## 统一诊断（核心桥接与 SSH 线路）
-
-在源码仓库或已安装插件目录运行：
-
-```powershell
-node .\plugin\diagnose.mjs --json
-node .\plugin\diagnose.mjs --local --json
-```
-
-默认检查本机与远端；`--local` 完全不发起网络请求。配置优先读取
-`CLAUDE_VPS_CONFIG` 指定文件，其次是当前目录的私有配置，再其次是当前用户
-`.codexhost/plugins/claude-vps/bridge-config.json`。可在 PowerShell 中显式选择：
-
-```powershell
-$env:CLAUDE_VPS_CONFIG = 'D:\Private\bridge-config.json'
-node .\plugin\diagnose.mjs --json
-Remove-Item Env:CLAUDE_VPS_CONFIG
-```
-
-诊断不提交模型任务、不登录、不启动本机任务执行器、不修复或清理文件。
-远端检查通过已配置 SSH 启动一次临时 `check-health` 进程，验证桥接和受管理的
-Claude 适配器能加载，结束时关闭临时进程；不启动反向隧道。
-它不代表当前桌面已加载磁盘上的新插件，也不代表 Claude 账号和实际业务已验收。
-
-输出按阶段说明本机版本、附件入口限制、SSH 路径与版本、远端 node-path 与 Claude 是否可执行、远端协议能力、
-任务与写入锁计数、可选浏览器依赖及会话最近一轮的实际模型记录。SSH 路径、会话/轮次标识用于定位，其余私人主机和项目路径隐藏，
-不读取任务日志、私有 MCP 配置或 Claude 凭据，不输出未过滤的异常文本。
-任务执行器尚未启动是正常空闲状态；可选工具未安装也不会作为核心失败。
-执行器空闲退出后仍可能留下描述文件；当可以确认其中的进程已不存在时，诊断显示
-`stopped`，只表示该执行器已停止，不推断退出原因或任何任务已成功、已取消。
-进程存在或无法确认时，连接检查失败仍显示 `unavailable`；无效描述文件也不会被当成正常停止。
-`unknown` 表示无法确认，不会据此清除锁或重新执行任务。
-
-退出码 `0` 表示本次检查未发现必需项失败，`1` 表示必需项需要处理，`2` 表示参数错误。
-`--local` 的成功不表示远端已通过检查。当前 Host 额度契约没有更新时间字段，
-诊断明确标注这项未检查，不从缓存倒计时推测额度或订阅到期。
-
-## 插件是否已生效
-
-插件由 CodexHost 的共享后台进程加载，关闭桌面窗口后它仍在运行，继续使用之前加载的代码。安装会在插件目录写入本次事务编号（`install-stamp.json`），宿主加载插件时记录自己加载的是哪一次安装。`node .\plugin\diagnose.mjs` 的 `plugin-activation` 显示：
-
-- `current`：宿主运行的就是已安装的版本。
-- `stale`：宿主仍在运行旧版本，输出中给出停止命令。
-- `not-loaded`：宿主没有运行，或还没有创建过插件实例。
-- `unknown`：插件目录没有安装标记（例如尚未用当前安装器安装）。
-
-## 线路与入口
-
-`node .\plugin\diagnose.mjs` 输出两项与线路有关的检查：
-
-- `ssh-route`：聊天实际在用的连接。显示线路名、VPS 观测到的入口、两者是否一致和最近一次切换的原因。宿主重开后、聊天第一次连接前显示 `not-observed`。
-- `diagnostic-route`：诊断时新开一条连接实测的结果，用来判断首选线路现在能否用。
-
-入口分类：`direct` 表示从外部地址直连；`local-proxy` 表示经 VPS 本机进程转入，`process` 给出该进程名（例如 `cloudflared`、`sing-box`）。一致性：`match` 表示观测与配置吻合；`mismatch` 表示不吻合，例如配置为 cloudflared 却观测到 direct；`unknown` 表示无法判断，例如 SOCKS5 线路只能看到代理的最后一跳。
-
-切换原因：`connection-failed`、`handshake-timeout`、`read-stalled`、`route-helper-unavailable`（例如找不到 cloudflared）。切换时还会记录 `lastSwitchDetail` 和 `lastSwitchAt`：前者是由 SSH 或 cloudflared 报错归类得到的原因（`dns-failed`、`connection-refused`、`connection-timeout`、`network-unreachable`、`host-key-mismatch`、`auth-failed`、`socks-failed`、`cloudflared-error`、`proxy-closed`、`closed-by-remote`、`unclassified`），后者是发生时间。原始报错只在内存中用于归类，不写盘也不输出，避免泄露地址。备用线路正常时不会主动切回首选；宿主重新启动或新建连接时重新从第一条开始。
-
-## 附件与热态检查
-
-插件只处理宿主公开接口传入的内容，不读取或修改 `host-runtime.mjs`。文字输入里的 Desktop 图片附件清单会被识别，登记其明确提供的本机路径并传输；没有可读路径时，可让 Claude 使用 `windows-workspace media` 读取已保存的项目文件。宿主若通过公开接口传入结构化附件，插件按实际类型处理，无法识别时拒绝提交。
-
-远端能力检查在同一有效连接中短期复用，连接恢复或 30 秒到期后重新检查。
-额度刷新和本机任务执行器不在普通消息提交的必经路径；执行器由实际命令任务按需启动。
-新版两端还协商 `prepare-turn` 能力，把登记轮次、读取当前规则、执行提交 Hook 合并成一次往返；本机仍按原顺序执行，任一步失败都不提交模型。旧客户端保留原来的分步流程。
-
-## 配置提示与会话恢复
-
-0.10.1 起，普通加载和未变化的会话恢复不再播报规则、Skill 数量。提示记录按原生会话保存，包含项目身份及规则、能力、兼容说明的摘要，不保存配置值；原生轮次确认开始后才更新。规则或能力内容变化、兼容限制出现/变化/解除时才给出对应提示。旧会话没有提示记录时建立基线，不把正常恢复说成配置变化。
-
-提示记录只用于界面去重，和模型上下文分开。恢复、fork 或压缩后仍按原流程提供完整规则，权限和 Hook 检查不减少。提示记录缺失、损坏或无法保存不会替换原生会话，也不会阻止模型执行；无法保存时跨进程可能重复兼容提示，诊断事件会记录保存失败。
-
-本机认证、接口地址和模型环境变量按设计不导入 VPS，在 `info` / `status` 的 `localOnlySettings` 中单独说明，不计为兼容告警；这里仅含设置名称、来源和原因，不包含值。真正的兼容限制仍在 `compatibility` / `compatibilityNotices` 中，相关执行拒绝保持不变。可以直接询问 Claude“查看本机配置兼容说明”，无需记忆工具参数。
-
-## 日志保留与清理
-
-在**需要维护的已安装插件目录**运行，默认只预览计数和体积：
-
-```powershell
-node .\plugin\maintenance.mjs --dry-run --age-days 30
-node .\plugin\maintenance.mjs --apply --age-days 30 --max-bytes 268435456
-```
-
-命令输出和完整搜索结果保存在本机，不按大小自动覆盖。清理只考虑已明确成功、失败或取消，且完成时间和日志修改时间都超过指定天数的任务，以及已完成的旧搜索快照。
-`--max-bytes` 是这些合格旧日志的保留预算，超过时按最旧顺序回收；默认 `0` 表示
-清理所有合格旧日志。不会为了满足预算删除年轻日志、活动任务或结果未知的任务。
-目标仅限任务与搜索目录中的 `stdout.log`、`stderr.log` 及各自旧 `.1` 轮转文件；搜索元数据、任务请求、状态、启动记录、
-心跳、成品、原生历史和升级事务全部保留。
-
-删除前复核任务状态哈希、文件身份、大小、修改时间和内容哈希，重新确认实际路径
-位于指定 state 目录内；遇到链接、目录重定向或并发变化就跳过。输出不包含日志正文。
-媒体与输入附件缓存可能仍被历史或 fork 引用，目前没有足够证据证明可回收，故保留。
-源码目录运行此命令只处理该源码目录自己的 state，不会自动清理已安装实例。
+失败时先看阶段和原因（主机密钥不匹配、认证失败、握手超时、找不到代理）。隔离 SSH 问题时按 [安装指南](SETUP.md#配置-ssh) 用相同别名检查。
 
 ## 升级
 
-1. 保留自己的本地配置、远端私有 MCP 配置和安装事务目录。
-2. 查看版本说明。宿主使用官方最新版即可，插件支持的最低版本见 `installer/dependency-policy.json`。
-3. 执行 `pwsh -NoProfile -File .\install.ps1`。
-4. 安装校验通过后，先结束正在进行的任务，执行 `codexhost stop`（CodexHost 安装目录下的 `bin\codexhost.exe`）后重新打开 CodexHost。只关闭桌面窗口不会生效。
-5. 在原来的小测试项目中验证恢复、读取与写入。
+1. 结束正在运行的任务，保留源码目录的 `transactions`。读 [更新记录](../CHANGELOG.md) 确认改动。
+2. 重新运行原安装命令。安装器验证依赖版本和哈希，桥接事务完成后才注册客户端。
+3. 核心已验证而客户端注册失败时，用相应管理器的 `install` 修复。
+4. 重开客户端，用原测试项目核对模型回复、文件读取和续接。
 
-宿主自动更新后，重新运行安装脚本即可让 VPS 端跟上。安装会在 VPS 上查询官方 `@codexhost/cli` 的最新版，先装到临时目录，核对包版本、插件 API、适配器入口和适配器 SHA256，通过后再切换依赖选择；不通过就保留当前已选版本，原因写在输出的 `notes` 里。准备结果保存在本机 `installation-dependency.json`，部署和校验都以它为准；旧版本的依赖目录和选择保留，可随事务回滚。升级校验比对 health 返回的依赖版本、适配器哈希、插件版本和协议，任一不符即失败。校验通过只说明新文件就位，正常重开宿主后才会生效。
+## 事务恢复
 
-VPS 上的受管文件记录在 `managed-files.json`。新版本不再发布的文件会在同一事务中删除并可回滚；无法确认属于本插件的文件不会被删除，内容被改动过的退役文件会让安装停止，需要人工检查。
-
-更新不应重新要求 Claude 登录。只有官方运行时明确报告授权失效时，才由使用者进入 VPS 重新登录。
-
-安装器记录两端备份与文件哈希，先检查再替换；它不是跨机器断电原子事务。失败时可能需要人工恢复，不能把“命令已执行”当作更新成功。
-
-## 停用与卸载
-
-在维护源码目录执行：
-
-```powershell
-pwsh -NoProfile -File .\install.ps1 -Disable
-# 保留数据的卸载使用同一操作
-pwsh -NoProfile -File .\install.ps1 -Uninstall
-```
-
-已核查的 CodexHost 0.20.0 CLI 未提供插件停用命令，宿主从 `$HOME/.codexhost/plugins/enabled.json` 读取启用列表。脚本只移除 `claude-vps`，保留其他条目，正常退出并重开宿主后生效。不修改宿主文件，不停止任务进程，也不连接 VPS；先让当前任务结束再停用。
-
-旧版宿主补丁不由安装、升级、停用或回滚自动撤销。重装或升级 CodexHost 可以清除旧补丁，随后按当前插件安装步骤检查。不要用旧宿主备份覆盖新版宿主。
-
-默认保留插件代码及以下数据：
-
-| 位置 | 删除后果 |
-|---|---|
-| VPS `remoteWorkspaceRoot`（默认 `~/windows-local-work`） | 项目映射和原生会话续接关系可能丢失 |
-| VPS `~/.claude` 与凭据 | 原生聊天、设置或登录授权丢失 |
-| VPS 插件目录内 `mcp-config.private.json` | 私有工具配置和凭据丢失 |
-| Windows 已安装插件内 `runtime/state` | 本机任务、模型观测、隔离目录和恢复记录丢失 |
-| 两端 `transactions`、本机安装记录 | 无法按原事务回滚插件代码 |
-
-如仅需释放代码空间，停用后可以手动移除已安装插件顶层的 `.mjs`、`manifest.json`、`icon.svg` 与 `runtime` 直属 `.mjs`/`.ps1` 文件；保留配置、`runtime/state`、`runtime/runtime-context`、依赖及事务。彻底清理上述数据是单独操作，本脚本不执行。项目与聊天需要继续使用时保留原路径。
-
-## 回滚
-
-查看本机 `installation-workspace.json`，定位该次安装的 `transaction`。在同一源码目录执行：
+桥接部署记录备份、并发检查和哈希。跨机器中断可能留下待恢复事务。查看 `installation-workspace.json` 的 `transaction` 字段：
 
 ```powershell
 python .\installer\deploy-transaction.py --rollback .\transactions\TRANSACTION_ID
 ```
 
-恢复前会检查并发修改与备份哈希；发现冲突会停止，不覆盖其他工作。包含宿主文件的旧事务一律拒绝回滚，绝不恢复旧宿主备份。回滚只处理本次代码与配置，不回滚项目文件、原生聊天、任务状态和 MCP 私有凭据。完成后正常重开宿主。
+回滚核对备份与当前文件，遇到冲突停止。它只处理该事务记录的文件。T3/ACP 注册需分别核对。
 
-**保留执行安装的源码目录和事务记录，直到确认不再需要回滚。** 它们已被 Git 忽略，不应发布。
+## 卸载
 
-## 常见停止点
+先结束使用相关组件的会话。
 
-| 表现 | 优先检查 |
-|---|---|
-| SSH 无法连接 | 使用自己的 SSH 别名手动连接，检查密钥、主机指纹和网络 |
-| Claude 要求登录 | 在 VPS 交互终端运行官方登录命令，不把授权码交给插件 |
-| 拖入附件无法读取 | 检查文字附件清单是否有本机图片路径、文件是否仍存在；没有路径时先保存到项目，再让 Claude 查看 |
-| node-path / Claude 路径失效 | Node 或 Claude 更换位置后核对配置，重新运行插件安装 |
-| 工具未发现 | 确认单独启用了工具，并关闭/恢复原聊天以刷新原生工具目录 |
-| Playwright 不可用 | 检查可选依赖与本机 Chrome，基础文件操作仍应独立可用 |
-| 额度暂时不更新 | 可能保留上次快照；不等于额度已恢复或账号已退出 |
-| 任务执行结果未知 | 查原 requestId 的状态和日志，不直接发同一任务的新编号 |
-| 配置了新路径但历史消失 | 更换协调根目录不会自动迁移历史映射，先核对配置 |
+| 目标 | 命令 | 影响 |
+| --- | --- | --- |
+| T3 接入 | `pwsh -NoProfile -File .\uninstall.ps1` | 删除 Provider 注册。保留 `claude-home`、Shim 和核心。 |
+| ACP 接入 | `pwsh -NoProfile -File .\install.ps1 -AcpOnly -Uninstall` | 移除 ACP 文件。保留 Shim 和核心。 |
+| CodexHost | `pwsh -NoProfile -File .\install.ps1 -Disable` | 从启用列表移除插件，重载宿主生效。 |
 
-## 提交问题前
+保留 VPS 的 `~/.claude`、工作区映射和两端事务，才能继续使用相应历史和恢复记录。
 
-报告版本、操作步骤、预期与实际结果、错误阶段即可。不要上传 `installation-workspace.json`、事务目录、完整本机配置、私有 MCP JSON、原生聊天或任务日志。必要片段先去除账号、路径、项目内容和授权信息。安全问题参见 [SECURITY.md](../SECURITY.md)。
+## 日志清理
+
+从已安装的插件目录运行 `maintenance.mjs`：
+
+```powershell
+node .\maintenance.mjs --dry-run --age-days 30
+node .\maintenance.mjs --apply --age-days 30 --max-bytes 268435456
+```
+
+按完成时间和状态挑选旧任务日志和搜索快照。活动任务、媒体缓存和事务数据继续保留。
+
+## 常见问题
+
+| 现象 | 处理 |
+| --- | --- |
+| 远端 Claude 或 Node 路径失效 | 在 VPS 核对可执行文件，更新 [配置](CONFIGURATION.md) 并重新部署。 |
+| 账号要求重新授权 | 在 VPS 终端执行 `claude auth login`，然后重新打开会话。 |
+| 任务结果未知或锁仍在 | 用原 `requestId` 查询状态，确认终态前不要重新执行。 |
+| 能聊天但某个工具不可用 | 检查工具启用状态、权限和客户端是否刷新了目录。 |
+| 执行器显示 `stopped` / `unavailable` | 任务是否完成以自身终态为准。 |
+
+报告问题时附上脱敏版本、安装模式、失败阶段和最小复现步骤。

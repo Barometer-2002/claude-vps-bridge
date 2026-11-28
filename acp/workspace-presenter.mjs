@@ -5,16 +5,16 @@ const MAX_REMEMBERED_CALLS = 512;
 const DISABLED_V1_METHODS = new Set([
   'session/list',
   'session/load',
-  'session/resume',
   'session/fork',
   'providers/list',
   'providers/set',
   'providers/disable',
   'logout',
 ]);
-const ALLOWED_V1_SESSION_CAPS = new Set(['additionalDirectories', 'close', 'options', 'status', 'systemPrompt', 'title']);
-const FORBIDDEN_EXTRA_ARGS = new Set(['sdk-url', 'mcp-config', 'settings', 'setting-sources', 'plugin-dir', 'plugin-dir-no-mcp', 'project-config-root']);
-const SENSITIVE_ENV_RE = /ANTHROPIC|OPENAI|API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|BASE_URL|AUTH|CODEXHOST|CLAUDE_CODE|NODE_OPTIONS|NODE_PATH|PYTHONPATH/i;
+const ALLOWED_V1_SESSION_CAPS = new Set(['additionalDirectories', 'close', 'options', 'resume', 'status', 'systemPrompt', 'title']);
+const FORBIDDEN_EXTRA_ARGS = new Set(['sdk-url', 'mcp-config', 'settings', 'setting-sources', 'plugin-dir', 'plugin-dir-no-mcp', 'project-config-root', 'session-id', 'resume', 'resume-session-at', 'continue', 'fork-session', 'r', 'c']);
+const SESSION_ID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const SENSITIVE_ENV_RE = /ANTHROPIC|OPENAI|API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|BASE_URL|AUTH|CODEXHOST|CLAUDE_CODE|CLAUDE_VPS_|NODE_OPTIONS|NODE_PATH|PYTHONPATH/i;
 const SENSITIVE_SETTINGS_RE = /^(?:url|headers|env|mcpServers|mcpConfig|mcp_config|mcp_servers|apiKeyHelper|hooks)$/i;
 
 export function parseWorkspaceCommand(command) {
@@ -426,11 +426,14 @@ export function sanitizeAgentInitializeResponse(msg) {
   };
 }
 
-function validateAndRewriteSessionNew(msg) {
+function validateAndRewriteSessionSetup(msg) {
   const params = msg.params;
-  if (!params || typeof params !== 'object') return { error: 'Missing session/new params' };
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return { error: `Missing ${msg.method} params` };
+  if (msg.method === 'session/resume' && (typeof params.sessionId !== 'string' || !SESSION_ID_RE.test(params.sessionId))) {
+    return { error: 'session/resume requires a Claude session UUID' };
+  }
   if (params.mcpServers !== undefined) {
-    if (!Array.isArray(params.mcpServers)) return { error: 'session/new mcpServers must be an array' };
+    if (!Array.isArray(params.mcpServers)) return { error: `${msg.method} mcpServers must be an array` };
     for (const srv of params.mcpServers) {
       if (!srv || typeof srv !== 'object') return { error: 'Invalid MCP server entry in session/new' };
       if (srv.type === 'sse') return { error: 'SSE MCP transport is unsupported; use Streamable HTTP or stdio' };
@@ -443,9 +446,10 @@ function validateAndRewriteSessionNew(msg) {
   const meta = params._meta && typeof params._meta === 'object' ? params._meta : {};
   const claudeCode = meta.claudeCode && typeof meta.claudeCode === 'object' ? meta.claudeCode : {};
   const opts = claudeCode.options && typeof claudeCode.options === 'object' ? claudeCode.options : {};
+  if (Object.hasOwn(opts, 'resume')) return { error: 'Use session/resume to continue an existing session' };
   if (opts.extraArgs && typeof opts.extraArgs === 'object') {
     for (const flag of Object.keys(opts.extraArgs)) {
-      const base = String(flag).replace(/^--/, '').split('=')[0];
+      const base = String(flag).replace(/^--?/, '').split('=')[0];
       if (FORBIDDEN_EXTRA_ARGS.has(base)) {
         return { error: `Session option extraArgs.${flag} is not allowed in Claude VPS ACP v1` };
       }
@@ -567,12 +571,9 @@ export function createAcpStreamTransformer() {
     if (['session/new', 'session/load', 'session/resume', 'session/fork'].includes(msg.method)) {
       const cwd = typeof msg.params?.cwd === 'string' && msg.params.cwd.trim() ? msg.params.cwd.trim() : null;
       if (cwd) {
-        if (typeof msg.params?.sessionId === 'string' && msg.params.sessionId) {
-          sessionCwds.set(msg.params.sessionId, cwd);
-        }
         if (msg.id !== undefined && msg.id !== null) {
           while (pendingSessionCwds.size >= 128) pendingSessionCwds.delete(pendingSessionCwds.keys().next().value);
-          pendingSessionCwds.set(String(msg.id), cwd);
+          pendingSessionCwds.set(String(msg.id), { cwd, sessionId: msg.params?.sessionId });
         }
       }
     }
@@ -603,8 +604,8 @@ export function createAcpStreamTransformer() {
     }
 
     let nextMsg = msg;
-    if (msg.method === 'session/new') {
-      const checked = validateAndRewriteSessionNew(msg);
+    if (msg.method === 'session/new' || msg.method === 'session/resume') {
+      const checked = validateAndRewriteSessionSetup(msg);
       if (checked.error) {
         return {
           forwardLine: null,
@@ -656,9 +657,9 @@ export function createAcpStreamTransformer() {
 
     // Track sessionId -> cwd from session/new / load / resume / fork responses.
     if (msg.id !== undefined && msg.id !== null && pendingSessionCwds.has(String(msg.id))) {
-      const cwd = pendingSessionCwds.get(String(msg.id));
+      const { cwd, sessionId } = pendingSessionCwds.get(String(msg.id));
       pendingSessionCwds.delete(String(msg.id));
-      const sid = msg.result?.sessionId;
+      const sid = msg.result && (msg.result.sessionId ?? sessionId);
       if (typeof sid === 'string' && sid && cwd) {
         sessionCwds.set(sid, cwd);
       }

@@ -162,6 +162,8 @@ export function runAcpSelfTest({ pure = false, env = process.env } = {}) {
     && initRespOut.result.agentCapabilities.mcpCapabilities.acp === false
     && !('providers' in initRespOut.result.agentCapabilities)
     && !('list' in initRespOut.result.agentCapabilities.sessionCapabilities)
+    && !('fork' in initRespOut.result.agentCapabilities.sessionCapabilities)
+    && 'resume' in initRespOut.result.agentCapabilities.sessionCapabilities
     && !('logout' in initRespOut.result.agentCapabilities.auth)
     && Array.isArray(initRespOut.result.authMethods) && initRespOut.result.authMethods.length === 0;
 
@@ -182,11 +184,29 @@ export function runAcpSelfTest({ pure = false, env = process.env } = {}) {
   const deliveryOpts = JSON.parse(deliveryInjected.forwardLine)?.params?._meta?.claudeCode?.options;
   const deliveryOk = deliveryOpts?.mcpServersDelivery === 'initialize' && deliveryOpts?.settingsDelivery === 'initialize';
 
+  const resumed = createAcpStreamTransformer();
+  const resumeId = '01234567-89ab-4def-8123-456789abcdef';
+  const resumeRequest = { jsonrpc: '2.0', id: 1, method: 'session/resume', params: {
+    sessionId: resumeId, cwd: 'C:\\example\\repo', mcpServers: [],
+  } };
+  const resumeForwarded = resumed.processClientLine(JSON.stringify(resumeRequest));
+  const resumeParams = JSON.parse(resumeForwarded.forwardLine)?.params;
+  const invalidResume = resumed.processClientLine(JSON.stringify({ ...resumeRequest, id: 2, params: {
+    ...resumeRequest.params, mcpServers: [{ name: 'bad', type: 'sse' }],
+  } }));
+  const cwdPending = resumed.getSessionCwd(resumeId) === null;
+  resumed.transformAgentToClient(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { sessionId: resumeId } }));
+  const resumeOk = resumeParams?.sessionId === resumeId
+    && resumeParams?._meta?.claudeCode?.options?.mcpServersDelivery === 'initialize'
+    && cwdPending
+    && resumed.getSessionCwd(resumeId) === resumeRequest.params.cwd
+    && invalidResume.forwardLine === null && JSON.parse(invalidResume.immediateReply)?.error?.code === -32602;
+
   const shimExe = defaultShimExePath(env);
   const agentEntry = resolveUpstreamAgentEntry(env);
   const shimPresent = existsSync(shimExe);
   const agentEntryPresent = existsSync(agentEntry);
-  const ok = initSanitizedOk && toolCallOk && permissionPreviewOk && passthroughOk && capsNarrowedOk && sseBlockedOk && deliveryOk && (pure || (shimPresent && agentEntryPresent));
+  const ok = initSanitizedOk && toolCallOk && permissionPreviewOk && passthroughOk && capsNarrowedOk && sseBlockedOk && deliveryOk && resumeOk && (pure || (shimPresent && agentEntryPresent));
 
   return {
     ok,
@@ -200,6 +220,7 @@ export function runAcpSelfTest({ pure = false, env = process.env } = {}) {
     capsNarrowedOk,
     sseBlockedOk,
     deliveryOk,
+    resumeOk,
     ...(pure ? {} : { shimPresent, agentEntryPresent }),
   };
 }
@@ -235,6 +256,7 @@ function main() {
       ...process.env,
       CLAUDE_CODE_EXECUTABLE: shimExe,
       CLAUDE_AGENT_ACP_PROTOCOL: 'v1',
+      CLAUDE_VPS_ACP: '1',
     },
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'inherit'],

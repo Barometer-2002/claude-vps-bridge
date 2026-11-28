@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="224" viewBox="0 0 760 224" role="img" aria-labelledby="title description">
+  <title id="title">T3 Code 与 ACP 的独立部署架构</title>
+  <desc id="description">Windows 上的 T3 Code 或 ACP 客户端通过共享 Shim 和 SSH 连接 VPS 上的 Claude CLI relay。Windows 处理项目工具，VPS 上的 Claude Code 发起模型请求。</desc>
+  <style>
+    svg { font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+    .outline { fill: #f6f8fa; stroke: #d0d7de; }
+    .major { fill: #20262d; }
+    .minor { fill: #46505b; }
+    .link { fill: none; stroke: #9b4b31; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .link-caption { fill: #833f29; }
+    .rule { stroke: #d0d7de; }
+    @media (prefers-color-scheme: dark) {
+      .outline { fill: #161b22; stroke: #3d444d; }
+      .major { fill: #f0f3f6; }
+      .minor { fill: #b5bdc7; }
+      .link { stroke: #e5a38a; }
+      .link-caption { fill: #f1ae94; }
+      .rule { stroke: #3d444d; }
+    }
+  </style>
+
+  <rect class="outline" x="16" y="16" width="219" height="192" rx="14"/>
+  <rect class="outline" x="525" y="16" width="219" height="192" rx="14"/>
+  <g class="minor" font-size="19" font-weight="600">
+    <text x="36" y="53">Windows 本机</text>
+    <text x="545" y="53">Linux VPS</text>
+  </g>
+  <g class="major" font-size="26" font-weight="700">
+    <text x="36" y="93">T3 Code / ACP</text>
+    <text x="545" y="93">Claude Code</text>
+  </g>
+  <g class="minor" font-size="17">
+    <text x="36" y="124">共享 Windows Shim</text>
+    <text x="545" y="124">由 CLI relay 启动</text>
+    <text x="36" y="175">文件、终端、本机 MCP</text>
+    <text x="545" y="175">登录、模型请求、会话</text>
+  </g>
+  <path class="rule" d="M36 145H215m330 0h179"/>
+
+  <g text-anchor="middle">
+    <text class="link-caption" x="380" y="73" font-size="18" font-weight="600">SSH</text>
+    <text class="minor" x="380" y="104" font-size="17">对话、附件与工具结果</text>
+    <text class="minor" x="380" y="163" font-size="17">模型回复与本机工具请求</text>
+  </g>
+  <path class="link" d="M251 116H509m-7-5 7 5-7 5M509 136H251m7-5-7 5 7 5"/>
+</svg>

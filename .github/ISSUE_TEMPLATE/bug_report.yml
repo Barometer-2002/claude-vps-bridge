@@ -1,33 +1,33 @@
 name: 故障反馈
-description: 报告可以复现的安装、连接、会话或本机工具问题。
+description: 报告安装、连接、会话或工具故障，提供最小复现。
 title: '[问题] '
 body:
   - type: markdown
     attributes:
-      value: 请使用脱敏内容。不要粘贴凭据、SSH 私钥、真实服务器地址、完整聊天或生产日志；安全问题请先阅读 SECURITY.md。
+      value: 请只填写脱敏信息。疑似漏洞或凭据泄露请按仓库的 SECURITY.md 报告。
   - type: textarea
     id: versions
     attributes:
       label: 运行环境
-      description: 本项目版本（t3-claude-vps）、使用方式（只装 T3 / T3 与 CodexHost 共存 / 只装 CodexHost）、T3 Code 或 CodexHost 版本、Claude Code、Windows、Linux 与 PowerShell 的版本；注明是否启用了可选 MCP。
+      description: 写明桥接版本或提交、安装参数、所用 T3 Code / ACP 客户端 / CodexHost 版本，以及 VPS 上的 Claude Code 版本。涉及可选 MCP 时写明工具名和传输类型。
     validations:
       required: true
   - type: textarea
     id: reproduction
     attributes:
       label: 复现步骤
-      description: 从打开哪个项目、恢复或新建哪个类型的聊天开始描述。路径可用示例代替。
+      description: 从安装、启动客户端、新建或恢复会话中的最早失败步骤写起。使用示例路径和可公开的测试输入。
     validations:
       required: true
   - type: textarea
     id: behavior
     attributes:
       label: 预期与实际结果
-      description: 写明预期行为、实际发生的情况及最近是否升级过组件。
+      description: 写明预期结果、实际结果及故障发生的阶段。若升级前正常，请给出升级前后的版本。
     validations:
       required: true
   - type: textarea
     id: evidence
     attributes:
       label: 必要的脱敏证据
-      description: 只提供相关错误片段，提交前检查文本和图片是否包含私人信息。
+      description: 仅保留相关状态项和错误片段，去掉路径、服务器地址、授权、项目内容和会话标识。
