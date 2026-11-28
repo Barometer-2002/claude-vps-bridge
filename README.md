@@ -36,6 +36,17 @@
 
 ### 特性
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/features-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/features.svg">
+    <img src="docs/assets/features.svg" alt="核心能力：官方协议直通、本机执行、本机 MCP 代理、读图与附件、本机 Skills 与 Commands、多线路 SSH、T3 原生工具卡片、标准 ACP 包装器、兼容上游" width="100%">
+  </picture>
+</p>
+
+<details>
+<summary>文字版特性清单</summary>
+
 - **官方协议直通**：T3 自带的额度显示、权限审批、自动标题、`--resume` / fork 会话等可直接使用。
 - **本机执行**：文件读写、搜索、PowerShell、构建、测试都在 Windows 按本机权限和项目规则执行，不同步整份项目到 VPS。
 - **本机 MCP 代理**：T3 内置 MCP 与自定义 HTTP / Stdio MCP 在 Windows 运行，每次调用前在本机检查权限；T3 本地地址和 Token 不发到 VPS。
@@ -45,6 +56,8 @@
 - **T3 原生工具卡片**（v1.1.0 新增）：把 `windows-workspace` 结果呈现为 Read、Grep、Glob、Bash、Edit、Write 卡片。
 - **标准 ACP 包装器**（v1.1.0 新增）：基于锁定版本的官方 `@agentclientprotocol/claude-agent-acp` 的薄包装，供支持 ACP 的客户端使用。
 - **兼容上游**：保留 CodexHost 0.20.0+ 插件，插件 ID、配置文件名和远端目录不变。
+
+</details>
 
 > [!IMPORTANT]
 > **验证范围**：v1.1.0 新增的 T3 原生工具卡片和标准 ACP 包装器目前只做过源码检查和隔离测试，尚未经过真实账号验收；源码与隔离测试通过不代表任何桌面环境已激活。本项目不声称兼容任意 T3 Code / CodexHost 版本，也不声称兼容所有原生 Claude 配置，不支持的配置会在诊断中说明。
