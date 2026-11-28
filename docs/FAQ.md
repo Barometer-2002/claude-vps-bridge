@@ -8,7 +8,7 @@
 
 本项目 fork 自 [`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge)，基线 `0.14.1`，许可证同为 LGPL-3.0-only。
 
-上游是 CodexHost 插件；本 fork 沿用它的核心桥接（SSH 传输、Windows 工作区运行时、事务部署），新增 T3 Code 接入（`t3-native/`）、Windows 端 MCP 代理、读图路径映射和只装 T3 的安装模式，并保留 CodexHost 插件。差异清单见 [Fork 说明](FORK_CHANGES.md)。
+上游是 CodexHost 插件；本 fork 沿用它的核心桥接（SSH 传输、Windows 工作区运行时、事务部署），新增 T3 Code 接入（`shim/` 与 `t3-native/`）、标准 ACP 包装（`acp/`）、Windows 端 MCP 代理、读图路径映射和只装 T3 的安装模式，并保留 CodexHost 插件。差异清单见 [Fork 说明](FORK_CHANGES.md)。
 
 ## 我已经在用上游，能直接换过来吗？
 

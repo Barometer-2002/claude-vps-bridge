@@ -19,6 +19,25 @@ node .\t3-native\manage-native.mjs status
 node .\t3-native\manage-native.mjs uninstall
 ```
 
+## 中立 Shim 与标准 ACP 包装器
+
+中立 Shim（`shim/`）由 `t3-native/` 与 `acp/` 共用，安装在 `%USERPROFILE%\.claude-vps\shim\`，也可单独管理：
+
+```powershell
+node .\shim\manage-shim.mjs status
+node .\shim\manage-shim.mjs install
+```
+
+标准 ACP 包装器复用锁定版本的官方 `@agentclientprotocol/claude-agent-acp`。与 T3 接入一起安装时给 `install.ps1` 追加 `-WithAcp`（如 `-T3Only -WithAcp`），只装 ACP 包装器用 `-AcpOnly`。单独管理：
+
+```powershell
+node .\acp\manage-acp.mjs status
+node .\acp\manage-acp.mjs install
+node .\acp\manage-acp.mjs uninstall
+```
+
+共享 Shim 仍被其他使用方登记时不会随某一方卸载而删除；`--remove-shim` 和 `--force` 的行为见各脚本的 `--help`。
+
 ## 统一诊断（核心桥接与 SSH 线路）
 
 在源码仓库或已安装插件目录运行：

@@ -16,7 +16,7 @@
 
 本仓库 fork 自 [`vv-get-ti/claude-vps-bridge`](https://github.com/vv-get-ti/claude-vps-bridge)。改动前先判断它属于哪一部分：
 
-- **T3 接入层**（`t3-native/`、`remote/claude-stream-relay.mjs`、`uninstall.ps1`）：本 fork 独有，直接在这里修改。
+- **T3 接入层**（`shim/`、`t3-native/`、`acp/`、`remote/claude-stream-relay.mjs`、`remote/initialize-prompt.mjs`、`uninstall.ps1`）：本 fork 独有，直接在这里修改。
 - **核心桥接**（`plugin/`、`remote/` 其余文件、`installer/`）：来自上游。修改要保持向后兼容，不改插件 ID、配置文件名和远端目录；不加参数的 `install.ps1` 仍要与上游行为一致。
 - 改动了上游来源的文件时，同步更新 [docs/FORK_CHANGES.md](docs/FORK_CHANGES.md) 的差异说明和文件清单。
 - 与 T3 无关、且上游同样存在的问题，可以考虑同时向上游反馈。

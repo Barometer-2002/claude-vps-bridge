@@ -30,10 +30,10 @@
 
 ### 新增
 
-**1. T3 Code 原生 Shim（`t3-native/` + `remote/claude-stream-relay.mjs`）**
+**1. T3 Code 原生 Shim（`shim/`、`t3-native/` 与 `remote/claude-stream-relay.mjs`）**
 
 - 在 T3 Code 中注册独立实例 `claude-vps`（显示名 **Claude VPS**，`driver: claudeAgent`），使用单独的 `homePath`（`claude-home`）。不改默认 `claudeAgent` 实例，不碰本机 `~/.claude`，不改 T3 Code 程序文件。
-- Windows 启动器（`claude-vps-shim.cs` 编译为 `.exe`）和 Node 代理（`claude-vps-shim.mjs`）通过 SSH 连接 VPS 上的 `claude-stream-relay.mjs`，由 relay 启动官方 `claude` CLI 并转发 `stream-json`。
+- 中立内核 `shim/` 提供 Windows 启动器（`claude-vps-shim.cs` 编译为 `.exe`）和 Node 代理（`claude-vps-shim.mjs`），`t3-native/` 只负责把它注册为 T3 的 `claude-vps` 实例。Shim 通过 SSH 连接 VPS 上的 `claude-stream-relay.mjs`，由 relay 启动官方 `claude` CLI 并转发 `stream-json`。
 - 因为走的是官方协议，T3 自带的 Claude 功能可以直接使用：5 小时 / 7 天额度（`get_usage`、`rate_limit_event`）、权限审批（`can_use_tool`）、`textGeneration`（自动标题、Commit、PR 描述）、`--resume` / `--fork-session`、`effort` / `fastMode` 等模型参数，以及缓存过期前自动压缩。
 
 **2. 只装 T3 的安装模式**
@@ -62,12 +62,22 @@
 - 停止会话时取消本机长任务并等待确认；SSH 意外断线后查询原任务状态并保留 `requestId`，不盲目重放。
 - 自动授权 T3 附件目录中的图片 / PDF；把 `bridge-instructions.md` 与本机项目规则合并进 `initialize.appendSystemPrompt`。
 
+**6. 中立 Shim 与标准 ACP 包装器（`shim/`、`acp/`）**
+
+- Shim 内核从 `t3-native/` 抽到 `shim/`：`manage-shim.mjs` 负责安装、状态与卸载，共享 Shim 安装在 `%USERPROFILE%\.claude-vps\shim\`。`t3-native/` 与 `acp/` 作为使用方登记，卸载时按登记情况决定是否保留共享 Shim。
+- `acp/` 是基于官方 `@agentclientprotocol/claude-agent-acp`（锁定版本）的标准 ACP 薄包装，通过 `CLAUDE_CODE_EXECUTABLE` 指向共享 Shim，收窄到 ACP v1，并在执行侧拒绝未知的 `isolation`、`job`、`agent` 动作。用 `install.ps1 -AcpOnly` 或 `-WithAcp` 安装，用 `node .\acp\manage-acp.mjs` 管理。
+
+**7. T3 原生工具卡片与提示词合并（`shim/stream-presenter.mjs`、`remote/initialize-prompt.mjs`）**
+
+- 把 `windows-workspace` 的 `read`、`search`、`list`、`run`、`edit`、`write` 以及 `batch`、`info`、`status`、`job` 结果转换成 T3 的 Read、Grep、Glob、Bash、Edit、Write 卡片；Edit 和 Write 附带本机生成的 unified diff。非 workspace 的 Bash 保持原样。
+- 宿主在 `initialize` 阶段下发自己的 `appendSystemPrompt` 时，Relay 将它与桥接说明合并，不让宿主内容覆盖桥接说明。
+
 ### 修改（向后兼容）
 
 - **`remote/workspace-guard.py`**：不再改写 `updatedInput`。JSON 中出现未转义单引号时直接拒绝并提示写成 `\u0027`，修复 Claude Code `auto` 模式下并发调用被分类器拒绝的问题；放行 `ToolSearch`、任务工具、`EnterPlanMode` / `ExitPlanMode`，并支持 `WINDOWS_ALLOWED_MCP_FILE` 动态放行本机 MCP。
 - **`remote/claude-windows`、`remote/mcp-local.py`、`remote/tool-bridge.mjs`、`remote/bridge-instructions.md`**：配合上面的放行规则和 `--server <name>` 路由；补充读图路径的使用约束。
 - **`plugin/runtime/*`、`plugin/diagnose.mjs`**：支持在没有 CodexHost 的情况下运行和诊断；新增轮次任务取消（`cancel-jobs`）和活动任务查询（`listProjectJobs`）；1.0.1 起可在确认安全时回收已停止执行器留下的写锁。
-- **`scripts/check.py`**：语法与受管文件检查覆盖 `t3-native/`。
+- **`scripts/check.py`**：语法与受管文件检查覆盖 `shim/`、`t3-native/` 和 `acp/`。
 
 ### 保持不变
 
@@ -83,7 +93,7 @@
 
 ### 已移除
 
-- 开发过程中试验过的 Local ACP 适配器（`t3/`）已在 `v1.0.0` 移除，由 `t3-native/` 取代。它从未出现在上游中。
+- 开发过程中试验过的 Local ACP 适配器（`t3/`）已在 `v1.0.0` 移除，由 `t3-native/` 取代。它从未出现在上游中。`v1.1.0` 新增的 `acp/` 是另一套实现（复用官方 `claude-agent-acp` 的薄包装），不是该适配器的恢复。
 
 ---
 
@@ -91,7 +101,10 @@
 
 | 路径 | 类型 | 说明 |
 |---|---|---|
-| `t3-native/*` | 新增 | `claude-vps-shim.cs`、`claude-vps-shim.mjs`、`http-mcp-client.mjs`、`mcp-policy.mjs`、`bridge-installation.mjs`、`manage-native.mjs` |
+| `shim/*` | 新增 | 中立 Shim 内核：`claude-vps-shim.cs`、`claude-vps-shim.mjs`、`http-mcp-client.mjs`、`mcp-policy.mjs`、`bridge-installation.mjs`、`stream-presenter.mjs`、`manage-shim.mjs` |
+| `t3-native/manage-native.mjs` | 新增 | T3 原生实例的注册、状态与卸载（Shim 内核在 `v1.1.0` 迁到 `shim/`） |
+| `acp/*` | 新增 | 标准 ACP 薄包装：`claude-vps-acp.cs`、`claude-vps-acp.mjs`、`manage-acp.mjs`、`workspace-presenter.mjs`、`package.json` 与锁文件 |
+| `remote/initialize-prompt.mjs` | 新增 | 合并宿主 `appendSystemPrompt` 与桥接说明 |
 | `remote/claude-stream-relay.mjs` | 新增 | T3 Shim 使用的 VPS 端 `stream-json` 中继 |
 | `uninstall.ps1` | 新增 | 卸载 T3 接入的简写入口 |
 | `docs/T3CODE.md`、`docs/FORK_CHANGES.md` | 新增 | T3 接入指南与本文 |

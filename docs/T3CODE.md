@@ -17,6 +17,7 @@ T3 Code 接入是本 fork 相对上游 [`claude-vps-bridge`](https://github.com/
 | **模型与高级参数** | 完整模型目录 + `effort` / `ultracode` / `fastMode` / `autoCompactWindow` / `beforeCacheExpires` + `--resume` / `--fork-session` |
 | **T3 与本机自定义 MCP** | 拦截 `--mcp-config` 与动态 `mcp_set_servers`，在 Windows 本机运行 Streamable HTTP（流式逐事件 SSE）与 Stdio MCP，支持 `ToolSearch` 延迟加载 |
 | **本机工作区与读图渲染** | 原生 `Bash`（`windows-workspace`）+ 零改写 PreToolUse 守卫 + 本机 Hooks；`windows-workspace media` 导出后自动将远端 `.bridge-media` 路径回映射为 Windows 原始路径，保障 T3 读图预览渲染与审批弹窗双向还原 |
+| **原生工具卡片** | `shim/stream-presenter.mjs` 把 `windows-workspace` 的读取、搜索、列目录、命令和编辑结果呈现为 T3 原生的 Read、Grep、Glob、Bash、Edit、Write 卡片，Edit / Write 带本机生成的 diff；非 workspace 的 Bash 保持原样 |
 | **Plan 任务面板与审批** | 原生 `TaskCreate` / `TaskUpdate` / `TodoWrite` / `ExitPlanMode` / `EnterPlanMode` |
 | **本机 Skills / Commands** | 发送 `/skill`、`$skill` 或 `/command` 时自动识别并展开 Windows 本机 `.claude/{skills,commands}`（替换 `$ARGUMENTS`，不劫持内置命令） |
 | **SSH 多线路与任务恢复** | 启动时支持 `sshRoutes` 多线路自动故障切换（`cloudflared` / `socks5` / `direct`）；停止会话自动取消本机长任务，SSH 意外断线自动保留原 `requestId` 防重放 |
@@ -31,8 +32,8 @@ flowchart LR
         T3["T3 Code 桌面端 / 服务端"]
         T3MCP["T3 内置 & 自定义本机 MCP<br/>127.0.0.1 HTTP / Stdio + Bearer Token<br/>（严格留在 Windows）"]
 
-        subgraph NATIVE["官方 claudeAgent 原生 Shim（t3-native/）"]
-            SHIM["claude-vps-shim.exe + .mjs<br/>mcp-policy · LocalMcpHub (流式 SSE)<br/>读图路径双向回映射 · 本机 Skill 展开"]
+        subgraph NATIVE["官方 claudeAgent 原生 Shim（shim/ · 由 t3-native/ 注册）"]
+            SHIM["claude-vps-shim.exe + .mjs<br/>mcp-policy · LocalMcpHub (流式 SSE)<br/>读图路径双向回映射 · 本机 Skill 展开<br/>stream-presenter · 原生工具卡片"]
         end
 
         WR["plugin/runtime/workspace-runtime.mjs<br/>本机文件 / 搜索 / 命令 / Hooks / 权限"]
@@ -65,7 +66,7 @@ flowchart LR
 - **VPS 端**使用 VPS 上的 Claude Code 配置和登录会话，发起模型请求并保存原生会话记录。
 - **Windows 端**执行项目读写和命令。MCP 代理用本机的 `url`、`headers` 和 `env` 配置连接 HTTP 服务或启动 Stdio 进程，VPS 端接收对应的代理入口。
 - **SSH 传输**包括对话正文、发送的附件、工具请求及返回的数据。文件内容、命令输出和 MCP 返回值（如 `t3_thread_read` 读出的文本）可能进入模型请求。
-- **MCP 调用检查**在 Windows 端进行。`t3-native/mcp-policy.mjs` 在收到 `tools/call` 时检查权限模式、`T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与项目的 `permissions.deny`。Plan 模式按只读白名单和自定义工具声明的 `readOnlyHint`、`destructiveHint` 筛选调用。
+- **MCP 调用检查**在 Windows 端进行。`shim/mcp-policy.mjs` 在收到 `tools/call` 时检查权限模式、`T3_MCP_ALLOW_TOOLS` / `T3_MCP_DENY_TOOLS` 与项目的 `permissions.deny`。Plan 模式按只读白名单和自定义工具声明的 `readOnlyHint`、`destructiveHint` 筛选调用。
 
 ---
 
